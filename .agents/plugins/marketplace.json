@@ -1,0 +1,16 @@
+{
+  "name": "gibek-skills",
+  "interface": {
+    "displayName": "Gibek Skills"
+  },
+  "plugins": [
+    {
+      "name": "prawo-pl-eli",
+      "source": {
+        "source": "local",
+        "path": "./plugins/prawo-pl-eli"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 # prawo-pl-eli
 
 **Polskie prawo z OFICJALNEGO API ELI Sejmu — zamiast cytowania przepisów z pamięci.**
-*A Claude Code skill (and standalone CLI) that reads Polish primary law straight from the official Sejm ELI API.*
+*Cross-tool agent skill (Claude Code + OpenAI Codex) that reads Polish primary law straight from the official Sejm ELI API.*
 
 Cytowanie polskich przepisów „z głowy" jest zawodne: ustawy są nowelizowane, sygnatury się mylą, a model
 potrafi podać brzmienie sprzed kilku zmian. Ten skill sięga do **źródła pierwotnego** — oficjalnego
@@ -12,26 +12,60 @@ potrafi podać brzmienie sprzed kilku zmian. Ten skill sięga do **źródła pie
 - sprawdzić **nowelizacje**, podstawę prawną i czy akt **nadal obowiązuje**,
 - zacytować przepis z poprawną sygnaturą `Dz.U.`/`M.P.` i identyfikatorem ELI.
 
-Wszystko **read-only** (same żądania `GET`), bez zależności pip — wyłącznie biblioteka standardowa Pythona.
+Skill jest w otwartym standardzie **[Agent Skills](https://agentskills.io)** (`SKILL.md`), więc działa w
+**Claude Code** i **OpenAI Codex**. Silnik (`scripts/eli.py`) to czysty Python (tylko stdlib), wszystko
+**read-only** (same `GET`).
 
 ## Wymagania
 
 - Python 3.8+ (tylko stdlib; brak `pip install`)
 - dostęp do internetu (`https://api.sejm.gov.pl/eli`)
 
-## Instalacja jako skill Claude Code
+## Instalacja
 
-```bash
-git clone https://github.com/<twoj-user>/prawo-pl-eli ~/.claude/skills/prawo-pl-eli
+### Claude Code
+
+```
+/plugin marketplace add jamarpl21/prawo-pl-eli
+/plugin install prawo-pl-eli@gibek-skills
 ```
 
-Po sklonowaniu skill `prawo-pl-eli` jest dostępny w Claude Code — wyzwala się m.in. przy
-„co mówi ustawa o…", „art. X ustawy…", „tekst jednolity", „Dz.U. {rok} poz. {nr}",
-„czy ten przepis nadal obowiązuje".
+Aktualizacje: `/plugin marketplace update`.
 
-## Użycie jako samodzielne CLI (bez Claude Code)
+### OpenAI Codex
+
+```
+codex plugin marketplace add jamarpl21/prawo-pl-eli
+codex plugin add prawo-pl-eli@gibek-skills
+```
+
+Aktualizacje: `codex plugin marketplace upgrade`.
+
+### Ręcznie / dev (oba narzędzia)
+
+Sklonuj repo i podlinkuj sam katalog skilla (otwarty standard Agent Skills):
 
 ```bash
+git clone https://github.com/jamarpl21/prawo-pl-eli
+SKILL="$PWD/prawo-pl-eli/plugins/prawo-pl-eli/skills/prawo-pl-eli"
+ln -s "$SKILL" ~/.claude/skills/prawo-pl-eli    # Claude Code
+ln -s "$SKILL" ~/.agents/skills/prawo-pl-eli    # OpenAI Codex
+```
+
+### Paczka ZIP (offline / pojedyncza sesja)
+
+Każdy tag `v*` publikuje `prawo-pl-eli-<wersja>.zip` w GitHub Releases (artefakt budowany przez GitHub Actions):
+
+```bash
+claude --plugin-dir ./prawo-pl-eli-v1.0.0.zip
+# albo zdalnie, bez pobierania:
+claude --plugin-url https://github.com/jamarpl21/prawo-pl-eli/releases/download/v1.0.0/prawo-pl-eli-v1.0.0.zip
+```
+
+## Użycie jako samodzielne CLI (bez żadnego LLM-a)
+
+```bash
+cd plugins/prawo-pl-eli/skills/prawo-pl-eli
 python3 scripts/eli.py <komenda> [...]
 ```
 
@@ -60,10 +94,27 @@ python3 scripts/eli.py tekst DU 2024 18                                 # → od
 ## Struktura
 
 ```
-SKILL.md            # instrukcja skilla (reguły: najpierw znajdź akt, sprawdź nowelizacje, cytuj z PDF)
-scripts/eli.py      # helper CLI (stdlib only, read-only GET)
-references/api.md   # pełna referencja endpointów API ELI
+.claude-plugin/marketplace.json          # marketplace dla Claude Code
+.agents/plugins/marketplace.json         # marketplace dla Codex (Claude czyta .claude-plugin/)
+plugins/prawo-pl-eli/
+├── .claude-plugin/plugin.json           # manifest pluginu — Claude
+├── .codex-plugin/plugin.json            # manifest pluginu — Codex ("skills": "./skills/")
+└── skills/prawo-pl-eli/                  # Agent Skills — WSPÓLNE dla obu narzędzi
+    ├── SKILL.md
+    ├── scripts/eli.py                    # silnik (stdlib, read-only)
+    └── references/api.md                 # referencja endpointów API ELI
+tools/validate.py                        # walidator manifestów (używany w CI)
+.github/workflows/release.yml            # GitHub Actions: walidacja + ZIP release na tagu v*
 ```
+
+## GitHub Actions (deploy)
+
+- **push / PR** → `tools/validate.py` waliduje oba manifesty pluginu (Claude + Codex), oba marketplace'y i
+  frontmatter `SKILL.md`.
+- **tag `v*`** → build `prawo-pl-eli-<tag>.zip` (zawartość pluginu) + GitHub Release z paczką
+  (instalowalną przez `claude --plugin-dir` / `--plugin-url`).
+
+Wydanie nowej wersji: bump `version` w obu `plugin.json` i wpisie marketplace → `git tag v1.0.1` → `git push --tags`.
 
 ## Ważne zastrzeżenia
 
@@ -77,4 +128,4 @@ references/api.md   # pełna referencja endpointów API ELI
 
 ## Licencja
 
-Kod udostępniony na licencji wskazanej w pliku [`LICENSE`](LICENSE).
+MIT — zobacz [`LICENSE`](LICENSE).

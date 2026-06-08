@@ -1,0 +1,36 @@
+name: validate-and-release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate plugin manifests + SKILL.md (Claude + Codex)
+        run: python3 tools/validate.py
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build plugin package (zip)
+        run: |
+          ZIP="prawo-pl-eli-${GITHUB_REF_NAME}.zip"
+          ( cd plugins/prawo-pl-eli && zip -r "$GITHUB_WORKSPACE/$ZIP" . -x '**/.DS_Store' )
+          echo "ZIP=$ZIP" >> "$GITHUB_ENV"
+      - name: Create GitHub Release with the package
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ZIP }}
+          generate_release_notes: true
