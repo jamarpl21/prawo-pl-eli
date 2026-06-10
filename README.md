@@ -57,9 +57,9 @@ ln -s "$SKILL" ~/.agents/skills/prawo-pl-eli    # OpenAI Codex
 Każdy tag `v*` publikuje `prawo-pl-eli-<wersja>.zip` w GitHub Releases (artefakt budowany przez GitHub Actions):
 
 ```bash
-claude --plugin-dir ./prawo-pl-eli-v1.0.0.zip
+claude --plugin-dir ./prawo-pl-eli-v1.0.1.zip
 # albo zdalnie, bez pobierania:
-claude --plugin-url https://github.com/jamarpl21/prawo-pl-eli/releases/download/v1.0.0/prawo-pl-eli-v1.0.0.zip
+claude --plugin-url https://github.com/jamarpl21/prawo-pl-eli/releases/download/v1.0.1/prawo-pl-eli-v1.0.1.zip
 ```
 
 ## Użycie jako samodzielne CLI (bez żadnego LLM-a)
@@ -114,7 +114,18 @@ tools/validate.py                        # walidator manifestów (używany w CI)
 - **tag `v*`** → build `prawo-pl-eli-<tag>.zip` (zawartość pluginu) + GitHub Release z paczką
   (instalowalną przez `claude --plugin-dir` / `--plugin-url`).
 
-Wydanie nowej wersji: bump `version` w obu `plugin.json` i wpisie marketplace → `git tag v1.0.1` → `git push --tags`.
+## Wersjonowanie
+
+Wersja pluginu (obecnie **1.0.1**) jest zadeklarowana w sześciu miejscach i musi być wszędzie identyczna —
+`tools/validate.py` wymusza to w CI:
+
+- `plugins/prawo-pl-eli/.claude-plugin/plugin.json` i `.codex-plugin/plugin.json` (pole `version`),
+- wpis pluginu w obu marketplace'ach (`.claude-plugin/marketplace.json`, `.agents/plugins/marketplace.json`),
+- frontmatter `SKILL.md` (pole `version`),
+- `scripts/eli.py` (`__version__`; CLI: `python3 scripts/eli.py --version`).
+
+Wydanie nowej wersji: bump `version` we wszystkich powyższych → `python3 tools/validate.py` →
+`git tag v1.0.1` → `git push --tags`.
 
 ## Ważne zastrzeżenia
 

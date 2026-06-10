@@ -6,12 +6,14 @@ Checks both plugin manifests, both marketplace catalogs, the shared Agent Skills
 frontmatter, and that the eli.py engine compiles. Run locally or in CI (no pip deps).
 """
 import json
+import re
 import sys
 import py_compile
 import pathlib
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 errors = []
+versions = {}  # source file -> declared version (all must match)
 
 
 def load_json(rel):
@@ -35,6 +37,8 @@ for rel in ("plugins/prawo-pl-eli/.claude-plugin/plugin.json", "plugins/prawo-pl
                 errors.append(f"{rel}: missing field '{k}'")
         if d.get("name") != "prawo-pl-eli":
             errors.append(f"{rel}: name should be 'prawo-pl-eli'")
+        if "version" in d:
+            versions[rel] = d["version"]
 
 # Marketplace catalogs (Claude + Codex)
 for rel in (".claude-plugin/marketplace.json", ".agents/plugins/marketplace.json"):
@@ -44,6 +48,12 @@ for rel in (".claude-plugin/marketplace.json", ".agents/plugins/marketplace.json
             errors.append(f"{rel}: missing 'name'")
         if not isinstance(d.get("plugins"), list) or not d.get("plugins"):
             errors.append(f"{rel}: 'plugins' must be a non-empty list")
+        for entry in d.get("plugins") or []:
+            if isinstance(entry, dict) and entry.get("name") == "prawo-pl-eli":
+                if "version" not in entry:
+                    errors.append(f"{rel}: plugin entry 'prawo-pl-eli' missing 'version'")
+                else:
+                    versions[rel] = entry["version"]
 
 # Shared SKILL.md frontmatter (open Agent Skills standard)
 skill = ROOT / "plugins/prawo-pl-eli/skills/prawo-pl-eli/SKILL.md"
@@ -56,9 +66,12 @@ else:
     else:
         parts = text.split("---", 2)
         fm = parts[1] if len(parts) >= 3 else ""
-        for k in ("name:", "description:"):
+        for k in ("name:", "description:", "version:"):
             if k not in fm:
                 errors.append(f"SKILL.md: frontmatter missing '{k}'")
+        m = re.search(r"^version:\s*(\S+)\s*$", fm, re.M)
+        if m:
+            versions["SKILL.md"] = m.group(1).strip("'\"")
 
 # Engine compiles
 engine = ROOT / "plugins/prawo-pl-eli/skills/prawo-pl-eli/scripts/eli.py"
@@ -69,10 +82,20 @@ else:
         py_compile.compile(str(engine), doraise=True)
     except py_compile.PyCompileError as e:
         errors.append(f"eli.py: syntax error ({e})")
+    m = re.search(r"^__version__\s*=\s*[\"']([^\"']+)[\"']", engine.read_text(encoding="utf-8"), re.M)
+    if not m:
+        errors.append("eli.py: missing __version__")
+    else:
+        versions["eli.py"] = m.group(1)
+
+# Single version everywhere (manifests, marketplaces, SKILL.md, engine)
+if len(set(versions.values())) > 1:
+    listing = ", ".join(f"{src}={v}" for src, v in sorted(versions.items()))
+    errors.append(f"version mismatch: {listing}")
 
 if errors:
     print("VALIDATION FAILED:")
     for e in errors:
         print(f"  - {e}")
     sys.exit(1)
-print("OK: Claude + Codex manifests, SKILL.md frontmatter, and eli.py all valid.")
+print(f"OK: Claude + Codex manifests, SKILL.md frontmatter, and eli.py all valid (version {next(iter(versions.values()))}).")

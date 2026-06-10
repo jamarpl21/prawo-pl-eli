@@ -16,6 +16,7 @@ Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
 import sys, json, re, argparse, urllib.request, urllib.parse, urllib.error
 from html.parser import HTMLParser
 
+__version__ = "1.0.1"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://api.sejm.gov.pl/eli"
 
 
@@ -25,7 +26,7 @@ def _get(path, params=None):
         q = urllib.parse.urlencode({k: v for k, v in params.items() if v not in (None, "", False)})
         if q:
             url += "?" + q
-    req = urllib.request.Request(url, headers={"User-Agent": "eli-skill/1.0", "Accept": "application/json, text/html"})
+    req = urllib.request.Request(url, headers={"User-Agent": f"eli-skill/{__version__}", "Accept": "application/json, text/html"})
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             ctype = r.headers.get("Content-Type", "")
@@ -224,6 +225,7 @@ def cmd_tj(a):
 
 def main():
     ap = argparse.ArgumentParser(description="API ELI Sejmu (read-only). Źródło pierwotne prawa polskiego.")
+    ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     ap.add_argument("--json", action="store_true", help="zrzut surowego JSON")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
