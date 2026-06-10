@@ -6,41 +6,77 @@ Tylko biblioteka standardowa Pythona (urllib/json/re) — brak zależności pip.
 Operacje WYŁĄCZNIE read-only (GET). Źródło pierwotne prawa polskiego: Dziennik Ustaw (DU) i Monitor Polski (MP).
 
 Komendy:
-  szukaj "<fraza>" [--typ T] [--rok R] [--wyd DU|MP] [--obowiazujace] [--limit N]
+  szukaj ["<fraza>"] [--typ T] [--rok R] [--wyd DU|MP] [--haslo H] [--obowiazujace] [--limit N] [--offset N]
   meta <sygnatura...>            np. meta DU 2024 18  |  meta "Dz.U. 2024 poz. 18"  |  meta WDU20240000018
-  tekst <sygnatura...> [--pdf ŚCIEŻKA]   tekst aktu (z text.html → czysty tekst); --pdf zapisuje urzędowy PDF
+  tekst <sygnatura...> [--fragment "art. 299"] [--pdf ŚCIEŻKA]
+                                 tekst aktu (text.html → czysty tekst); --fragment wycina tylko jednostki
+                                 z frazą (np. jeden artykuł); --pdf zapisuje urzędowy PDF
+  struktura <sygnatura...> [--filtr F] [--poziom N]   spis jednostek redakcyjnych aktu (z /struct)
   odniesienia <sygnatura...>     nowelizacje, tekst jednolity, podstawa prawna
-  tj <sygnatura...>              znajduje TEKST JEDNOLITY dla aktu (z odniesień) i podaje jego sygnaturę
+  tj <sygnatura...>              znajduje AKTUALNY TEKST JEDNOLITY dla aktu i podaje jego sygnaturę
 Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
 """
-import sys, json, re, argparse, urllib.request, urllib.parse, urllib.error
+import sys, json, re, time, argparse, urllib.request, urllib.parse, urllib.error
 from html.parser import HTMLParser
 
-__version__ = "1.0.1"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "1.1.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://api.sejm.gov.pl/eli"
 
 
-def _get(path, params=None):
+def _get(path, params=None, soft=False):
+    """GET z jednym ponowieniem na błąd przejściowy. soft=True: zamiast wyjścia zwraca None."""
     url = BASE + path
     if params:
         q = urllib.parse.urlencode({k: v for k, v in params.items() if v not in (None, "", False)})
         if q:
             url += "?" + q
     req = urllib.request.Request(url, headers={"User-Agent": f"eli-skill/{__version__}", "Accept": "application/json, text/html"})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            ctype = r.headers.get("Content-Type", "")
-            raw = r.read().decode("utf-8", "replace")
-    except urllib.error.HTTPError as e:
-        sys.exit(f"BŁĄD HTTP {e.code}: {url}")
-    except Exception as e:
-        sys.exit(f"BŁĄD sieci: {url} ({e})")
+    raw, ctype = None, ""
+    for attempt in (1, 2):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                ctype = r.headers.get("Content-Type", "")
+                raw = r.read().decode("utf-8", "replace")
+            break
+        except urllib.error.HTTPError as e:
+            if e.code >= 500 and attempt == 1:
+                time.sleep(2); continue
+            if soft:
+                return None
+            sys.exit(f"BŁĄD HTTP {e.code}: {url}")
+        except Exception as e:
+            if attempt == 1:
+                time.sleep(2); continue
+            if soft:
+                return None
+            sys.exit(f"BŁĄD sieci: {url} ({e})")
+    if raw is not None and "Request Rejected" in raw and "rejected" in raw.lower():
+        # zapora (WAF) api.sejm.gov.pl potrafi odrzucać wybrane URL-e (m.in. /text.html/{tree})
+        if soft:
+            return None
+        sys.exit(f"BŁĄD: zapora api.sejm.gov.pl odrzuciła żądanie (Request Rejected): {url}\n"
+                 "Spróbuj ponownie; do pojedynczego artykułu użyj: tekst <syg> --fragment \"art. N\".")
     if "json" in ctype:
         try:
             return json.loads(raw)
         except json.JSONDecodeError:
             return raw
     return raw
+
+
+def _get_bytes(url):
+    req = urllib.request.Request(url, headers={"User-Agent": f"eli-skill/{__version__}"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return r.read()
+    except Exception as e:
+        sys.exit(f"BŁĄD pobierania: {url} ({e})")
+
+
+def _expect_dict(d, what):
+    if not isinstance(d, dict):
+        sys.exit(f"BŁĄD: API zwróciło nieoczekiwaną odpowiedź ({what}) — spróbuj ponownie za chwilę.")
+    return d
 
 
 class _Stripper(HTMLParser):
@@ -66,11 +102,79 @@ class _Stripper(HTMLParser):
 def html_to_text(html):
     p = _Stripper()
     p.feed(html)
-    t = "".join(p.out)
+    # API ELI używa twardych spacji (NBSP), np. "Art.\xa0299." — normalizuj, żeby frazy były wyszukiwalne
+    t = "".join(p.out).replace("\xa0", " ")
     t = re.sub(r"[ \t]+", " ", t)
     t = re.sub(r"\n[ \t]+", "\n", t)
     t = re.sub(r"\n{3,}", "\n\n", t)
     return t.strip()
+
+
+# granice jednostek redakcyjnych w tekście po konwersji (nagłówki na początku linii)
+_GRANICE = r"(?m)^(Art\.\s*\d|Tytuł\s|TYTUŁ\s|Dział\s|DZIAŁ\s|Rozdział\s|Oddział\s|Księga\s|KSIĘGA\s|Załącznik)"
+
+
+def _fragmenty(txt, fraza, maks=8):
+    """Spany (start, end) fragmentów z frazą, docięte do granic jednostek redakcyjnych.
+
+    Fraza w formie "art. 299" trafia w NAGŁÓWEK artykułu (nie w odesłania w treści);
+    inna fraza działa jak wyszukiwanie pełnotekstowe (bez rozróżniania wielkości liter).
+    """
+    bounds = [m.start() for m in re.finditer(_GRANICE, txt)]
+    m = re.match(r"(?i)^art\.?\s*(\d+[a-z]*)\.?$", fraza.strip())
+    if m:
+        hits = [h.start() for h in re.finditer(rf"(?m)^Art\.\s*{m.group(1)}\.", txt)]
+    else:
+        low, f = txt.lower(), fraza.lower()
+        hits, p = [], low.find(f)
+        while p != -1:
+            hits.append(p)
+            p = low.find(f, p + len(f))
+    spans = []
+    for pos in hits:
+        if len(spans) >= maks:
+            break
+        start = max((b for b in bounds if b <= pos), default=max(0, pos - 400))
+        end = min((b for b in bounds if b > pos), default=len(txt))
+        if spans and start < spans[-1][1]:
+            spans[-1] = (spans[-1][0], max(spans[-1][1], end))
+        else:
+            spans.append((start, end))
+    return spans
+
+
+def _eli_rok_poz(act):
+    try:
+        _, rok, poz = (act.get("ELI") or "").split("/")
+        return (int(rok), int(poz))
+    except Exception:
+        return (0, 0)
+
+
+def _tj_acts(refs):
+    """Akty z kategorii 'Inf. o tekście jednolitym' (tylko na akcie bazowym), najnowszy pierwszy."""
+    key = next((k for k in refs if k.lower().startswith("inf. o tekście jednolit")), None)
+    if not key:
+        return []
+    items = refs[key] if isinstance(refs[key], list) else [refs[key]]
+    acts = [r.get("act") for r in items if isinstance(r, dict) and isinstance(r.get("act"), dict)]
+    return sorted(acts, key=_eli_rok_poz, reverse=True)
+
+
+def _ostrzezenia(refs):
+    """Ostrzeżenia o aktualności (lista linii) na podstawie odniesień aktu."""
+    out = []
+    tj = _tj_acts(refs)
+    if tj:
+        a = tj[0]
+        out.append(f"UWAGA: ten akt ma TEKST JEDNOLITY — cytuj z najnowszego: "
+                   f"{a.get('displayAddress') or a.get('ELI', '')} (ELI {a.get('ELI', '')}).")
+    key = next((k for k in refs if k.lower().startswith("nowelizacje po tekście jednolit")), None)
+    if key:
+        items = refs[key] if isinstance(refs[key], list) else [refs[key]]
+        out.append(f"UWAGA: po tym tekście jednolitym odnotowano zmiany ({len(items)}) — sprawdź ich wejście w życie:")
+        out += [_fmt_ref(r) for r in items]
+    return out
 
 
 def act_path(sig_parts):
@@ -102,14 +206,18 @@ def act_path(sig_parts):
 
 
 def cmd_szukaj(a):
-    params = {"title": a.fraza, "limit": a.limit, "type": a.typ, "year": a.rok, "publisher": a.wyd}
+    if not (a.fraza or a.haslo):
+        sys.exit("Podaj frazę tytułu (np. szukaj \"Kodeks cywilny\") albo --haslo.")
+    params = {"title": a.fraza, "limit": a.limit, "offset": a.offset, "type": a.typ,
+              "year": a.rok, "publisher": a.wyd, "keyword": a.haslo}
     if a.obowiazujace:
         params["inForce"] = 1
     d = _get("/acts/search", params)
     if a.json:
         print(json.dumps(d, ensure_ascii=False, indent=2)); return
-    items = d.get("items", []) if isinstance(d, dict) else []
-    print(f"Znaleziono: {d.get('count', '?')} (pokazuję {len(items)})\n")
+    d = _expect_dict(d, "wyniki wyszukiwania")
+    items = d.get("items", [])
+    print(f"Znaleziono: {d.get('count', '?')} (pokazuję {len(items)}, offset {a.offset})\n")
     for it in items:
         print(f"  {it.get('address','')}  [{it.get('status','')}]")
         print(f"    {it.get('title','').strip()[:160]}")
@@ -123,11 +231,16 @@ def cmd_meta(a):
     d = _get(path)
     if a.json:
         print(json.dumps(d, ensure_ascii=False, indent=2)); return
+    d = _expect_dict(d, "metadane aktu")
     print(f"Akt: {label}")
     print(f"  Tytuł:   {d.get('title','').strip()}")
+    print(f"  Adres:   {d.get('displayAddress','')}")
     print(f"  Typ:     {d.get('type','')}")
     print(f"  Status:  {d.get('status','')}  (inForce={d.get('inForce','')})")
-    print(f"  Ogłoszono: {d.get('announcementDate','')}   Stan prawny: {d.get('legalStatusDate','')}")
+    print(f"  Ogłoszono: {d.get('announcementDate','')}   WEJŚCIE W ŻYCIE: {d.get('entryIntoForce') or '—'}"
+          f"   Stan prawny na: {d.get('legalStatusDate','')}")
+    if d.get("validFrom") and d.get("validFrom") != d.get("entryIntoForce"):
+        print(f"  Obowiązuje od: {d['validFrom']}")
     if d.get("keywordsNames"):
         print(f"  Hasła:   {', '.join(d['keywordsNames'])}")
     print(f"  ELI:     {d.get('ELI','')}")
@@ -137,14 +250,18 @@ def cmd_meta(a):
         for t in texts:
             print(f"    - {t.get('type','?')}: {t.get('fileName','')}")
     print(f"  Tekst HTML: {BASE}{path}/text.html")
+    if "tekst jednolity" in (d.get("status") or "").lower():
+        print(f"  → Akt ma tekst jednolity — ustal aktualny: python3 {sys.argv[0]} tj {label}")
 
 
 def cmd_tekst(a):
     path, label = act_path(a.sygnatura)
+    refs = _get(path + "/references", soft=True)
+    ostrz = _ostrzezenia(refs) if isinstance(refs, dict) else []
     if a.pdf:
         # pobierz urzędowy PDF (preferuj tekst jednolity, typ 'U'/'T', inaczej oryginał 'O')
-        meta = _get(path)
-        texts = meta.get("texts", []) if isinstance(meta, dict) else []
+        meta = _expect_dict(_get(path), "metadane aktu")
+        texts = meta.get("texts", [])
         pick = None
         for code in ("U", "T", "O", "H"):
             pick = next((t for t in texts if t.get("type") == code and t.get("fileName", "").lower().endswith(".pdf")), None)
@@ -153,18 +270,64 @@ def cmd_tekst(a):
         if not pick:
             sys.exit("Brak PDF w metadanych aktu.")
         url = f"{BASE}{path}/text/{pick['type']}/{pick['fileName']}"
-        req = urllib.request.Request(url, headers={"User-Agent": "eli-skill/1.0"})
-        with urllib.request.urlopen(req, timeout=60) as r:
-            data = r.read()
+        data = _get_bytes(url)
         with open(a.pdf, "wb") as f:
             f.write(data)
         print(f"Zapisano PDF ({len(data)} B): {a.pdf}\n(źródło: {url})")
+        for w in ostrz:
+            print(w)
         return
     html = _get(path + "/text.html")
     if isinstance(html, (dict, list)):
         html = json.dumps(html, ensure_ascii=False)
-    print(f"# {label} — tekst (z text.html; ASR/HTML→tekst, do cytatu zweryfikuj z PDF urzędowym)\n")
-    print(html_to_text(html))
+    txt = html_to_text(html)
+    print(f"# {label} — tekst (z text.html; HTML→tekst, do dosłownego cytatu zweryfikuj z PDF urzędowym)\n")
+    for w in ostrz:
+        print(w)
+    if ostrz:
+        print()
+    if a.fragment:
+        spans = _fragmenty(txt, a.fragment)
+        if not spans:
+            sys.exit(f"Nie znaleziono frazy {a.fragment!r} w tekście aktu ({len(txt)} znaków). "
+                     "Spróbuj inną frazą albo bez --fragment.")
+        for i, (s, e) in enumerate(spans):
+            if i:
+                print("\n[...]\n")
+            print(txt[s:e].strip())
+        print(f"\n(fragmenty: {len(spans)} — pominięto resztę aktu; pełny tekst: bez --fragment)")
+        return
+    if len(txt) > 60000:
+        print(f"(UWAGA: pełny tekst ma {len(txt)} znaków — do pojedynczego przepisu użyj --fragment \"art. N\")\n")
+    print(txt)
+
+
+def cmd_struktura(a):
+    path, label = act_path(a.sygnatura)
+    d = _get(path + "/struct")
+    if a.json:
+        print(json.dumps(d, ensure_ascii=False, indent=2)); return
+    nodes = d if isinstance(d, list) else [d] if isinstance(d, dict) else None
+    if not nodes:
+        sys.exit("Brak struktury dla tego aktu (API udostępnia /struct głównie dla tekstów jednolitych i starszych aktów).")
+    filtr = (a.filtr or "").lower()
+    poziom = a.poziom if a.poziom is not None else (None if filtr else 3)
+    print(f"Struktura: {label}  (frazę z 'title' podaj w: tekst {label} --fragment \"...\")\n")
+    wypisane = 0
+
+    def walk(n, depth=0):
+        nonlocal wypisane
+        line = f"{'  ' * depth}{n.get('id','?')}  [{n.get('type','')}]  {(n.get('title') or '').strip()}"
+        if (not filtr or filtr in line.lower()) and (poziom is None or depth < poziom):
+            print(line)
+            wypisane += 1
+        for c in n.get("children") or []:
+            walk(c, depth + 1)
+
+    for n in nodes:
+        walk(n)
+    if not wypisane:
+        print(f"(nic nie pasuje do filtra {a.filtr!r})")
 
 
 def _fmt_ref(ref):
@@ -205,22 +368,40 @@ def cmd_odniesienia(a):
 def cmd_tj(a):
     path, label = act_path(a.sygnatura)
     d = _get(path + "/references")
-    if not isinstance(d, dict):
-        sys.exit("Brak odniesień.")
-    key = next((k for k in d if "jednolit" in k.lower()), None)
-    if not key:
-        print(f"Dla {label} brak wskazanego tekstu jednolitego w odniesieniach — sam akt może już nim być.")
+    if a.json:
+        print(json.dumps(d, ensure_ascii=False, indent=2)); return
+    d = _expect_dict(d, "odniesienia aktu")
+    # akt bazowy: kategoria 'Inf. o tekście jednolitym' listuje obwieszczenia z t.j.
+    tj = _tj_acts(d)
+    if tj:
+        print(f"TEKSTY JEDNOLITE dla {label} (najnowszy pierwszy):")
+        for i, act in enumerate(tj):
+            marker = "  ← AKTUALNY" if i == 0 else ""
+            print(f"  - {act.get('displayAddress') or act.get('ELI','')}  [{act.get('status','')}]{marker}")
+        eli = tj[0].get("ELI", "")
+        if eli:
+            sig = eli.replace("/", " ")
+            print(f"\nDalej: python3 {sys.argv[0]} tekst {sig} --fragment \"art. N\"")
+            print(f"oraz:  python3 {sys.argv[0]} odniesienia {sig}   (sekcja „Nowelizacje po tekście jednolitym\")")
         return
-    items = d[key] if isinstance(d[key], list) else [d[key]]
-    print(f"TEKST JEDNOLITY dla {label}:")
-    for ref in items:
-        act = ref.get("act") if isinstance(ref, dict) else None
-        if isinstance(act, dict):
-            print(f"  - {act.get('displayAddress') or act.get('ELI','')}  {act.get('title','')}".rstrip())
-            if act.get("ELI"):
-                print(f"    tekst: python3 eli.py tekst {act['ELI'].replace('/', ' ')}")
-        else:
-            print(_fmt_ref(ref))
+    # akt sam jest tekstem jednolitym: kategoria 'Tekst jednolity dla aktu' wskazuje akt BAZOWY
+    base_key = next((k for k in d if k.lower().startswith("tekst jednolity dla aktu")), None)
+    if base_key:
+        items = d[base_key] if isinstance(d[base_key], list) else [d[base_key]]
+        base = next((r.get("act") for r in items if isinstance(r, dict) and isinstance(r.get("act"), dict)), None)
+        print(f"{label} SAM JEST tekstem jednolitym" + (f" (dla: {base.get('displayAddress','')} — {base.get('title','')[:90]})" if base else "") + ".")
+        for w in _ostrzezenia(d):
+            print(w)
+        # sprawdź na akcie bazowym, czy nie ma już NOWSZEGO tekstu jednolitego
+        m = re.match(r"^/acts/(DU|MP)/(\d+)/(\d+)$", path)
+        if base and base.get("ELI") and m:
+            base_refs = _get(f"/acts/{base['ELI']}/references", soft=True)
+            newer = _tj_acts(base_refs) if isinstance(base_refs, dict) else []
+            if newer and _eli_rok_poz(newer[0]) > (int(m.group(2)), int(m.group(3))):
+                print(f"UWAGA: istnieje NOWSZY tekst jednolity: {newer[0].get('displayAddress') or newer[0].get('ELI','')} — cytuj z niego.")
+        return
+    print(f"Dla {label} brak tekstu jednolitego w odniesieniach — akt może nie mieć t.j. (cytuj z aktu, "
+          f"ale sprawdź „Akty zmieniające\" w: odniesienia {label}).")
 
 
 def main():
@@ -229,14 +410,22 @@ def main():
     ap.add_argument("--json", action="store_true", help="zrzut surowego JSON")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    s = sub.add_parser("szukaj"); s.add_argument("fraza"); s.add_argument("--typ"); s.add_argument("--rok")
-    s.add_argument("--wyd", default=None, choices=[None, "DU", "MP"]); s.add_argument("--obowiazujace", action="store_true")
+    s = sub.add_parser("szukaj"); s.add_argument("fraza", nargs="?", default=None); s.add_argument("--typ"); s.add_argument("--rok")
+    s.add_argument("--wyd", type=str.upper, choices=["DU", "MP"]); s.add_argument("--obowiazujace", action="store_true")
+    s.add_argument("--haslo", help="hasło przedmiotowe (keyword)"); s.add_argument("--offset", type=int, default=0)
     s.add_argument("--limit", type=int, default=10); s.set_defaults(func=cmd_szukaj)
 
     for name, fn in (("meta", cmd_meta), ("odniesienia", cmd_odniesienia), ("tj", cmd_tj)):
         p = sub.add_parser(name); p.add_argument("sygnatura", nargs="+"); p.set_defaults(func=fn)
 
-    t = sub.add_parser("tekst"); t.add_argument("sygnatura", nargs="+"); t.add_argument("--pdf"); t.set_defaults(func=cmd_tekst)
+    t = sub.add_parser("tekst"); t.add_argument("sygnatura", nargs="+"); t.add_argument("--pdf")
+    t.add_argument("--fragment", help='wytnij tylko jednostki z frazą, np. "art. 299" albo "przedawnienie"')
+    t.set_defaults(func=cmd_tekst)
+
+    st = sub.add_parser("struktura"); st.add_argument("sygnatura", nargs="+")
+    st.add_argument("--filtr", help="pokaż tylko linie z frazą (np. 'Art. 299')")
+    st.add_argument("--poziom", type=int, help="maks. głębokość drzewa (domyślnie 3; z --filtr bez limitu)")
+    st.set_defaults(func=cmd_struktura)
 
     a = ap.parse_args()
     a.func(a)

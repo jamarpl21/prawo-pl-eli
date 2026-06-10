@@ -8,8 +8,8 @@
     {
       "name": "prawo-pl-eli",
       "source": "./plugins/prawo-pl-eli",
-      "description": "Polskie prawo z oficjalnego API ELI Sejmu (Dz.U./M.P.): akty, tekst jednolity, nowelizacje, podstawa prawna.",
-      "version": "1.0.1",
+      "description": "Polskie prawo z oficjalnego API ELI Sejmu (Dz.U./M.P.) do pracy nad umowami i pismami procesowymi: akty, pojedyncze artykuły, tekst jednolity, nowelizacje, podstawa prawna.",
+      "version": "1.1.0",
       "author": {
         "name": "Krzysztof Gibek"
       }
