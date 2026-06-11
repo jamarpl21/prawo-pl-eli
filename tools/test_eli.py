@@ -81,5 +81,61 @@ class TestFragmenty(unittest.TestCase):
         self.assertEqual(eli._fragmenty(self.TXT, "nie ma takiej frazy"), [])
 
 
+class TestTjZTekstem(unittest.TestCase):
+    """Fallback, gdy API zwraca 200 i 0 bajtów dla text.html świeżego tekstu jednolitego."""
+
+    REFS_TJ = {"Tekst jednolity dla aktu": [
+        {"act": {"ELI": "DU/1964/296", "displayAddress": "Dz.U. 1964 nr 43 poz. 296"}}]}
+    BASE_REFS = {"Inf. o tekście jednolitym": [
+        {"act": {"ELI": "DU/2026/468", "displayAddress": "Dz.U. 2026 poz. 468"}},
+        {"act": {"ELI": "DU/2024/1568", "displayAddress": "Dz.U. 2024 poz. 1568"}},
+    ]}
+
+    def _z_fake_get(self, odpowiedzi, path, refs):
+        def fake_get(p, params=None, soft=False):
+            return odpowiedzi.get(p)
+        orig = eli._get
+        eli._get = fake_get
+        try:
+            return eli._tj_z_tekstem(path, refs)
+        finally:
+            eli._get = orig
+
+    def test_akt_jest_tj_bez_html_bierze_poprzedni_tj(self):
+        wynik = self._z_fake_get({
+            "/acts/DU/1964/296/references": self.BASE_REFS,
+            "/acts/DU/2024/1568/text.html": "<p>Art. 1. Treść.</p>",
+        }, "/acts/DU/2026/468", self.REFS_TJ)
+        self.assertIsNotNone(wynik)
+        act, txt = wynik
+        self.assertEqual(act["ELI"], "DU/2024/1568")
+        self.assertIn("Art. 1.", txt)
+
+    def test_pomija_tj_z_pustym_html(self):
+        # najnowszy kandydat też bez HTML — idzie dalej po liście
+        refs_bazowe = {"Inf. o tekście jednolitym": [
+            {"act": {"ELI": "DU/2026/468"}},
+            {"act": {"ELI": "DU/2024/1568"}},
+            {"act": {"ELI": "DU/2023/1550"}},
+        ]}
+        wynik = self._z_fake_get({
+            "/acts/DU/2026/468/text.html": "",
+            "/acts/DU/2024/1568/text.html": "",
+            "/acts/DU/2023/1550/text.html": "<p>Art. 1.</p>",
+        }, "/acts/DU/1964/296", refs_bazowe)
+        self.assertEqual(wynik[0]["ELI"], "DU/2023/1550")
+
+    def test_brak_kandydatow_zwraca_none(self):
+        self.assertIsNone(self._z_fake_get({}, "/acts/DU/2026/468", {}))
+
+    def test_nie_zwraca_aktu_biezacego(self):
+        # jedyny t.j. na liście to akt bieżący — fallback nie może zwrócić jego samego
+        wynik = self._z_fake_get({
+            "/acts/DU/1964/296/references": {"Inf. o tekście jednolitym": [
+                {"act": {"ELI": "DU/2026/468"}}]},
+        }, "/acts/DU/2026/468", self.REFS_TJ)
+        self.assertIsNone(wynik)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

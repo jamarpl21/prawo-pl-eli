@@ -19,7 +19,7 @@ Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
 import sys, json, re, time, argparse, urllib.request, urllib.parse, urllib.error
 from html.parser import HTMLParser
 
-__version__ = "1.1.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "1.2.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://api.sejm.gov.pl/eli"
 
 
@@ -177,6 +177,34 @@ def _ostrzezenia(refs):
     return out
 
 
+def _tj_z_tekstem(path, refs):
+    """Najnowszy tekst jednolity z NIEPUSTYM text.html, pomijając akt bieżący.
+
+    API potrafi zwrócić 200 i 0 bajtów dla text.html świeżego tekstu jednolitego (HTML pojawia
+    się z opóźnieniem względem PDF) — wtedy czytamy poprzedni t.j. zamiast zostawiać użytkownika
+    bez oficjalnego źródła. Zwraca (akt, tekst) albo None.
+    """
+    biezacy_eli = path[len("/acts/"):]
+    tj = _tj_acts(refs)
+    if not tj:
+        # akt sam jest t.j. — pełną listę tekstów jednolitych mają odniesienia aktu BAZOWEGO
+        base_key = next((k for k in refs if k.lower().startswith("tekst jednolity dla aktu")), None)
+        items = (refs[base_key] if isinstance(refs[base_key], list) else [refs[base_key]]) if base_key else []
+        base = next((r.get("act") for r in items if isinstance(r, dict) and isinstance(r.get("act"), dict)), None)
+        if base and base.get("ELI"):
+            base_refs = _get(f"/acts/{base['ELI']}/references", soft=True)
+            tj = _tj_acts(base_refs) if isinstance(base_refs, dict) else []
+    for act in tj:
+        eli_id = act.get("ELI")
+        if not eli_id or eli_id == biezacy_eli:
+            continue
+        html = _get(f"/acts/{eli_id}/text.html", soft=True)
+        txt = html_to_text(html) if isinstance(html, str) else ""
+        if txt:
+            return act, txt
+    return None
+
+
 def act_path(sig_parts):
     """Zwraca ścieżkę bazową aktu, akceptując różne formy sygnatury."""
     s = " ".join(sig_parts).strip()
@@ -280,7 +308,20 @@ def cmd_tekst(a):
     html = _get(path + "/text.html")
     if isinstance(html, (dict, list)):
         html = json.dumps(html, ensure_ascii=False)
-    txt = html_to_text(html)
+    txt = html_to_text(html if isinstance(html, str) else "")
+    if not txt:
+        fb = _tj_z_tekstem(path, refs if isinstance(refs, dict) else {})
+        if not fb:
+            sys.exit(f"BŁĄD: text.html dla {label} jest PUSTE w API (HTML bywa dodawany z opóźnieniem) "
+                     f"i nie znalazłem innego tekstu jednolitego z tekstem. "
+                     f"Pobierz urzędowy PDF: tekst {label} --pdf plik.pdf")
+        act, txt = fb
+        addr = act.get("displayAddress") or act.get("ELI", "")
+        sig = (act.get("ELI") or "").replace("/", " ")
+        ostrz = [f"UWAGA: text.html dla {label} jest PUSTE w API — poniżej tekst z innego t.j.: {addr}.",
+                 f"Nałóż zmiany pomiędzy nimi: odniesienia {sig} (sekcja „Nowelizacje po tekście jednolitym\");"
+                 f" do dosłownego cytatu: tekst {label} --pdf plik.pdf"] + ostrz
+        label = f"{label} (tekst z: {addr})"
     print(f"# {label} — tekst (z text.html; HTML→tekst, do dosłownego cytatu zweryfikuj z PDF urzędowym)\n")
     for w in ostrz:
         print(w)

@@ -62,9 +62,9 @@ ln -s "$SKILL" ~/.agents/skills/prawo-pl-eli    # OpenAI Codex
 Każdy tag `v*` publikuje `prawo-pl-eli-<wersja>.zip` w GitHub Releases (artefakt budowany przez GitHub Actions):
 
 ```bash
-claude --plugin-dir ./prawo-pl-eli-v1.1.0.zip
+claude --plugin-dir ./prawo-pl-eli-v1.2.0.zip
 # albo zdalnie, bez pobierania:
-claude --plugin-url https://github.com/jamarpl21/prawo-pl-eli/releases/download/v1.1.0/prawo-pl-eli-v1.1.0.zip
+claude --plugin-url https://github.com/jamarpl21/prawo-pl-eli/releases/download/v1.2.0/prawo-pl-eli-v1.2.0.zip
 ```
 
 ## Użycie jako samodzielne CLI (bez żadnego LLM-a)
@@ -126,7 +126,7 @@ tools/test_eli.py                        # testy jednostkowe silnika, offline (u
 
 ## Wersjonowanie
 
-Wersja pluginu (obecnie **1.1.0**) jest zadeklarowana w sześciu miejscach i musi być wszędzie identyczna —
+Wersja pluginu (obecnie **1.2.0**) jest zadeklarowana w sześciu miejscach i musi być wszędzie identyczna —
 `tools/validate.py` wymusza to w CI:
 
 - `plugins/prawo-pl-eli/.claude-plugin/plugin.json` i `.codex-plugin/plugin.json` (pole `version`),

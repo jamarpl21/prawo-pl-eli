@@ -1,27 +1,46 @@
 ---
 name: prawo-pl-eli
-version: 1.1.0
+version: 1.2.0
 description: >-
   Odpytuje OFICJALNE API ELI Sejmu (api.sejm.gov.pl/eli) — źródło pierwotne prawa polskiego
-  (Dziennik Ustaw, Monitor Polski): wyszukiwanie aktów, pełny tekst i TEKST JEDNOLITY, pojedyncze
-  artykuły, metadane, nowelizacje i podstawę prawną, po sygnaturze Dz.U./M.P. Używaj ZAWSZE przy
-  TWORZENIU lub ANALIZIE UMÓW i PISM PROCESOWYCH oraz gdy trzeba ustalić lub zacytować treść
-  polskiego przepisu (ustawa, rozporządzenie, kodeks), sprawdzić sygnaturę Dz.U., aktualny tekst
-  jednolity, czy akt OBOWIĄZUJE albo czy był NOWELIZOWANY — zamiast cytować przepisy z pamięci.
-  Wyzwalaj również przy: „co mówi ustawa o…", „art. X ustawy…", „tekst jednolity", „Dz.U. {rok}
-  poz. {nr}", „czy ten przepis nadal obowiązuje", weryfikacja podstawy prawnej umowy lub pisma
-  procesowego, zgodność klauzuli umownej z przepisami, terminy ustawowe (przedawnienie, zawity).
-  Polish primary law (statutes, codes, regulations) from the official Sejm ELI API — use when
-  drafting or reviewing contracts and court filings governed by Polish law.
+  (Dziennik Ustaw, Monitor Polski): wyszukiwanie aktów, TEKST JEDNOLITY, pojedyncze artykuły,
+  metadane, nowelizacje, podstawa prawna, sygnatury Dz.U./M.P. Używaj przy KAŻDYM pytaniu
+  z prawa polskiego — TAKŻE gdy przepis nie jest jeszcze znany (ustalenie podstawy prawnej:
+  właściwość sądu, wyłączenie sędziego, przekazanie sprawy, przesłanki wniosku lub pozwu,
+  terminy) — oraz ZAWSZE przy TWORZENIU lub ANALIZIE UMÓW i PISM PROCESOWYCH. Wywołuj PRZED
+  wyszukiwaniem w internecie: treść polskiego przepisu cytuj WYŁĄCZNIE z ELI, nigdy z pamięci
+  ani z portali (arslege, lexlege, infor, LEX); internet służy tylko do orzecznictwa i doktryny.
+  Wyzwalaj też przy: „co mówi ustawa o…", „art. X ustawy…", „Dz.U. {rok} poz. {nr}", „tekst
+  jednolity", „czy przepis obowiązuje", „czy był nowelizowany". Polish primary law (statutes,
+  codes, regulations) from the official Sejm ELI API — always use for Polish law questions
+  BEFORE web search.
 ---
 
 # Prawo polskie z oficjalnego API ELI Sejmu
 
-Skill do pracy z prawem polskim przy **tworzeniu i analizie umów oraz pism procesowych** — wszędzie tam,
-gdzie trzeba przywołać przepis, zweryfikować podstawę prawną, termin lub procedurę. Cytowanie przepisów
-z pamięci jest zawodne (zmiany, nowelizacje, błędne sygnatury) — ten skill sięga do **źródła pierwotnego**:
-oficjalnego API ELI Sejmu (`https://api.sejm.gov.pl/eli`), czyli Dziennika Ustaw (DU) i Monitora Polskiego (MP).
+Skill do pracy z prawem polskim — przy **każdym pytaniu prawnym** oraz przy **tworzeniu i analizie umów
+i pism procesowych**: wszędzie tam, gdzie trzeba przywołać przepis, zweryfikować podstawę prawną, termin
+lub procedurę. Cytowanie przepisów z pamięci albo z nieoficjalnych portali jest zawodne (zmiany,
+nowelizacje, błędne sygnatury) — ten skill sięga do **źródła pierwotnego**: oficjalnego API ELI Sejmu
+(`https://api.sejm.gov.pl/eli`), czyli Dziennika Ustaw (DU) i Monitora Polskiego (MP).
 Używaj go, zanim podasz brzmienie przepisu, sygnaturę albo stwierdzisz, że coś „obowiązuje".
+
+## Kolejność źródeł (przepis ≠ internet)
+
+1. **Treść przepisu — wyłącznie z ELI.** Nigdy nie cytuj brzmienia polskiego przepisu z pamięci ani
+   z portali (arslege.pl, lexlege.pl, infor.pl, LEX itp.). Jeśli wynik wyszukiwania internetowego
+   podał brzmienie przepisu — zweryfikuj je przez `eli.py`, zanim go użyjesz w odpowiedzi.
+2. **Internet — tylko do orzecznictwa, doktryny i identyfikacji aktów.** Komentarze, wyroki, nazwy
+   ustaw — tak; po identyfikacji wróć do ELI po tekst przepisu.
+3. **Pytanie bez wskazanego przepisu** („czy jest podstawa, by…", „czy mogę wnieść o…", „jaki mam
+   termin na…") to też zadanie dla tego skilla — nie zaczynaj od wyszukiwarki. Najpierw ustal
+   WŁAŚCIWĄ PROCEDURĘ z rodzaju sprawy (pozew/pozwany → k.p.c.; oskarżony/akt oskarżenia → k.p.k.;
+   decyzja organu → k.p.a.; podatki → Ordynacja podatkowa), pobierz kandydackie przepisy z ELI
+   (`struktura --filtr`, `tekst --fragment`), dopiero potem ewentualnie internet po orzecznictwo.
+   Pomylenie procedury (np. art. 37 k.p.k. w sprawie cywilnej zamiast art. 44¹ k.p.c.) to typowy
+   skutek zaczynania od wyszukiwarki — portale rankują pod hasła, nie pod rodzaj sprawy.
+4. **Delegując research subagentowi**, wpisz do jego promptu: „treść polskich przepisów pobieraj
+   wyłącznie przez `scripts/eli.py` (skill prawo-pl-eli); internet tylko do orzecznictwa i doktryny".
 
 ## Narzędzie
 
@@ -56,12 +75,34 @@ Sygnaturę można podać w wielu formach: `DU 2000 1037`, `DU/2024/18`, `"Dz.U. 
 - każda komenda przyjmuje `--json` (surowa odpowiedź API do dalszego przetwarzania).
 
 Narzędzie samo ostrzega: `tekst` na akcie, który ma tekst jednolity, każe cytować z najnowszego t.j.;
-na tekście jednolitym wypisuje „Nowelizacje po tekście jednolitym". Nie ignoruj tych ostrzeżeń.
+na tekście jednolitym wypisuje „Nowelizacje po tekście jednolitym". Gdy `text.html` świeżego t.j. jest
+jeszcze puste w API, narzędzie automatycznie czyta poprzedni t.j. i każe nałożyć zmiany pomiędzy nimi.
+Nie ignoruj tych ostrzeżeń.
+
+### Akty bazowe głównych kodeksów (pomiń `szukaj`)
+
+Sygnatury aktów bazowych są niezmienne — dla poniższych zaczynaj od razu od `tj <sygnatura>`,
+potem `tekst <t.j.> --fragment "art. N"` (dwie komendy zamiast trzech):
+
+| Akt | Sygnatura bazowa |
+|---|---|
+| Konstytucja RP (tekst wprost, bez `tj`) | `DU 1997 483` |
+| Kodeks cywilny (k.c.) | `DU 1964 93` |
+| Kodeks postępowania cywilnego (k.p.c.) | `DU 1964 296` |
+| Kodeks rodzinny i opiekuńczy (k.r.o.) | `DU 1964 59` |
+| Kodeks karny (k.k.) | `DU 1997 553` |
+| Kodeks postępowania karnego (k.p.k.) | `DU 1997 555` |
+| Kodeks wykroczeń (k.w.) | `DU 1971 114` |
+| Kodeks postępowania administracyjnego (k.p.a.) | `DU 1960 168` |
+| Kodeks pracy (k.p.) | `DU 1974 141` |
+| Kodeks spółek handlowych (k.s.h.) | `DU 2000 1037` |
+| Ordynacja podatkowa | `DU 1997 926` |
 
 ## Zasady (ważne — dlaczego)
 
 1. **Najpierw znajdź właściwy akt, potem cytuj.** Typowy przepływ: `szukaj` → ustal sygnaturę → `tj`
-   (aktualny tekst jednolity) → `tekst <t.j.> --fragment "art. N"`. Cytowanie starej wersji to częsty błąd.
+   (aktualny tekst jednolity) → `tekst <t.j.> --fragment "art. N"`. Dla kodeksów z tabeli wyżej pomiń
+   `szukaj` i zacznij od `tj`. Cytowanie starej wersji to częsty błąd.
 2. **Sprawdź NOWELIZACJE i ich WEJŚCIE W ŻYCIE** (najczęstsze źródło błędu). `meta` pokazuje datę wejścia
    w życie, `odniesienia` — zmiany; „Nowelizacje po tekście jednolitym" oznacza, że nawet t.j. bywa już
    nieaktualny. Zanim powiesz „przepis brzmi…":
