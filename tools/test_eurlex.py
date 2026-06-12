@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Offline unit tests for eurlex.py pure functions (no network). Run: python3 tools/test_eurlex.py"""
+import importlib.util
+import pathlib
+import unittest
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+_spec = importlib.util.spec_from_file_location(
+    "eurlex", ROOT / "plugins/prawo-eu-eurlex/skills/prawo-eu-eurlex/scripts/eurlex.py")
+eurlex = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(eurlex)
+
+
+class TestCelexNorm(unittest.TestCase):
+    def test_formy_celex(self):
+        cases = [
+            (["32016R0679"], "32016R0679"),
+            (["celex:32016R0679"], "32016R0679"),
+            (["CELEX: 32024R1689"], "32024R1689"),
+            (["02016R0679-20160504"], "02016R0679-20160504"),
+            (["32016R0679R(02)"], "32016R0679R(02)"),
+            (["12012E/TXT"], "12012E/TXT"),
+            (["12012P/TXT"], "12012P/TXT"),
+            (["12012E016"], "12012E016"),
+            (["32002L0058"], "32002L0058"),
+        ]
+        for sig, want in cases:
+            self.assertEqual(eurlex.celex_norm(sig), want, f"celex: {sig}")
+
+    def test_formy_eli(self):
+        cases = [
+            (["reg/2016/679"], "32016R0679"),
+            (["http://data.europa.eu/eli/reg/2016/679/oj"], "32016R0679"),
+            (["dir/2022/2555"], "32022L2555"),
+            (["dec/2010/87"], "32010D0087"),
+        ]
+        for sig, want in cases:
+            self.assertEqual(eurlex.celex_norm(sig), want, f"eli: {sig}")
+
+    def test_bledny_celex_konczy_program(self):
+        with self.assertRaises(SystemExit):
+            eurlex.celex_norm(["zupełnie błędny identyfikator"])
+        with self.assertRaises(SystemExit):
+            eurlex.celex_norm(["Dz.U. 2024 poz. 18"])  # sygnatura polska → to skill prawo-pl-eli
+
+
+class TestLang(unittest.TestCase):
+    def test_mapowanie(self):
+        self.assertEqual(eurlex._lang("pl"), "POL")
+        self.assertEqual(eurlex._lang("pol"), "POL")
+        self.assertEqual(eurlex._lang("en"), "ENG")
+        self.assertEqual(eurlex._lang(None), "POL")
+        self.assertEqual(eurlex._lang("HUN"), "HUN")  # kod 3-literowy spoza mapy przechodzi
+
+    def test_nieznany_konczy_program(self):
+        with self.assertRaises(SystemExit):
+            eurlex._lang("xx")
+
+
+class TestHtmlToText(unittest.TestCase):
+    def test_normalizes_nbsp(self):
+        self.assertEqual(eurlex.html_to_text("<p>Artykuł\xa028</p>"), "Artykuł 28")
+
+    def test_strips_script(self):
+        t = eurlex.html_to_text("<p>A</p><script>var x=1;</script><p>B</p>")
+        self.assertIn("A", t)
+        self.assertNotIn("var x", t)
+
+
+class TestFragmenty(unittest.TestCase):
+    TXT = ("ROZDZIAŁ I\n\nArtykuł 1\nPrzedmiot.\n\n"
+           "Artykuł 2\n1. Zakres; odesłanie do art. 1 i Artykuł 28 nie na początku linii.\n\n"
+           "Artykuł 28\nPodmiot przetwarzający.\n\n"
+           "Artykuł 281\nPrzepis o dłuższym numerze.\n")
+
+    def _frag(self, fraza):
+        spans = eurlex._fragmenty(self.TXT, fraza)
+        return [self.TXT[s:e] for s, e in spans]
+
+    def test_artykul_po_naglowku_nie_po_odeslaniu(self):
+        frags = self._frag("art. 28")
+        self.assertEqual(len(frags), 1)
+        self.assertIn("Podmiot przetwarzający", frags[0])
+        self.assertNotIn("Zakres", frags[0])
+
+    def test_artykul_nie_lapie_dluzszego_numeru(self):
+        frags = self._frag("artykuł 2")
+        self.assertEqual(len(frags), 1)
+        self.assertIn("Zakres", frags[0])
+        self.assertNotIn("dłuższym", frags[0])
+
+    def test_fraza_pelnotekstowa(self):
+        frags = self._frag("podmiot przetwarzający")
+        self.assertEqual(len(frags), 1)
+        self.assertTrue(frags[0].startswith("Artykuł 28"))
+
+    def test_brak_trafien(self):
+        self.assertEqual(eurlex._fragmenty(self.TXT, "nie ma takiej frazy"), [])
+
+
+class TestKonsolidacje(unittest.TestCase):
+    """_konsolidacje buduje prefiks i filtruje wyniki SPARQL (podmieniamy _sparql)."""
+
+    def _z_fake_sparql(self, rows, celex):
+        zapytania = []
+
+        def fake_sparql(q, soft=False):
+            zapytania.append(q)
+            return rows
+        orig = eurlex._sparql
+        eurlex._sparql = fake_sparql
+        try:
+            return eurlex._konsolidacje(celex), zapytania
+        finally:
+            eurlex._sparql = orig
+
+    def test_prefiks_z_aktu_bazowego(self):
+        rows = [{"celex": {"value": "02016R0679-20160504"}}]
+        wynik, zapytania = self._z_fake_sparql(rows, "32016R0679")
+        self.assertEqual(wynik, ["02016R0679-20160504"])
+        self.assertIn('"02016R0679-"', zapytania[0])
+
+    def test_prefiks_z_wersji_skonsolidowanej(self):
+        _, zapytania = self._z_fake_sparql([], "02006L0112-20240101")
+        self.assertIn('"02006L0112-"', zapytania[0])
+
+    def test_odfiltrowuje_celexy_bez_daty(self):
+        rows = [{"celex": {"value": "02016R0679-20160504"}},
+                {"celex": {"value": "02016R0679(01)"}}]
+        wynik, _ = self._z_fake_sparql(rows, "32016R0679")
+        self.assertEqual(wynik, ["02016R0679-20160504"])
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

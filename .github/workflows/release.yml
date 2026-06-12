@@ -17,8 +17,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Validate plugin manifests + SKILL.md (Claude + Codex)
         run: python3 tools/validate.py
-      - name: Unit tests (eli.py, offline)
-        run: python3 tools/test_eli.py
+      - name: Unit tests (offline, all engines)
+        run: |
+          for t in tools/test_*.py; do python3 "$t"; done
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -26,13 +27,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build plugin package (zip)
+      - name: Build plugin packages (one zip per plugin)
         run: |
-          ZIP="prawo-pl-eli-${GITHUB_REF_NAME}.zip"
-          ( cd plugins/prawo-pl-eli && zip -r "$GITHUB_WORKSPACE/$ZIP" . -x '**/.DS_Store' )
-          echo "ZIP=$ZIP" >> "$GITHUB_ENV"
-      - name: Create GitHub Release with the package
+          for dir in plugins/*/; do
+            name=$(basename "$dir")
+            ( cd "$dir" && zip -r "$GITHUB_WORKSPACE/${name}-${GITHUB_REF_NAME}.zip" . -x '**/.DS_Store' )
+          done
+      - name: Create GitHub Release with the packages
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ env.ZIP }}
+          files: "*-${{ github.ref_name }}.zip"
           generate_release_notes: true
