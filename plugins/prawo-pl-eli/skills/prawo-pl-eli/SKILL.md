@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-eli
-version: 1.2.0
+version: 1.2.1
 description: >-
   Odpytuje OFICJALNE API ELI Sejmu (api.sejm.gov.pl/eli) — źródło pierwotne prawa polskiego
   (Dziennik Ustaw, Monitor Polski): wyszukiwanie aktów, TEKST JEDNOLITY, pojedyncze artykuły,
@@ -44,11 +44,18 @@ Używaj go, zanim podasz brzmienie przepisu, sygnaturę albo stwierdzisz, że co
 
 ## Narzędzie
 
-Wszystko robi helper `scripts/eli.py` (tylko biblioteka standardowa Pythona — bez instalacji). Uruchamiaj:
+Wszystko robi helper `scripts/eli.py` (tylko biblioteka standardowa Pythona — bez instalacji).
+Skrypt leży **obok tego pliku SKILL.md** (`<katalog skilla>/scripts/eli.py`) — NIE zakładaj, że to
+`~/.claude/skills/prawo-pl-eli` (skill zainstalowany jako plugin leży w katalogu pluginów; w Claude
+Code: `${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-eli`). Gdy nie znasz ścieżki, najpierw ją ustal:
 
 ```
-python3 scripts/eli.py <komenda> [...]
+ELI=$(find "$HOME/.claude" "$HOME/.agents" /mnt /sessions -maxdepth 10 -name eli.py -path "*prawo-pl-eli*" 2>/dev/null | head -1)
+[ -n "$ELI" ] || { curl -fsSL https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/main/plugins/prawo-pl-eli/skills/prawo-pl-eli/scripts/eli.py -o /tmp/eli.py && ELI=/tmp/eli.py; }
+python3 "$ELI" <komenda> [...]
 ```
+
+(W przykładach niżej `python3 scripts/eli.py` oznacza `python3 "$ELI"`, jeśli nie jesteś w katalogu skilla.)
 
 Sygnaturę można podać w wielu formach: `DU 2000 1037`, `DU/2024/18`, `"Dz.U. 2024 poz. 18"`,
 `"Dz.U. 1997 nr 78 poz. 483"`, `WDU20240000018`, albo `DU/2000/1037` (ELI).
