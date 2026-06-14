@@ -14,7 +14,7 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Validate plugin manifests + SKILL.md (Claude + Codex)
         run: python3 tools/validate.py
       - name: Unit tests (offline, all engines)
@@ -26,7 +26,7 @@ jobs:
     needs: validate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Build plugin packages (one zip per plugin)
         run: |
           for dir in plugins/*/; do
@@ -34,7 +34,7 @@ jobs:
             ( cd "$dir" && zip -r "$GITHUB_WORKSPACE/${name}-${GITHUB_REF_NAME}.zip" . -x '**/.DS_Store' )
           done
       - name: Create GitHub Release with the packages
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: "*-${{ github.ref_name }}.zip"
           generate_release_notes: true
