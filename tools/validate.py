@@ -15,6 +15,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 PLUGINS = [
     ("prawo-pl-eli", "eli.py"),
     ("prawo-eu-eurlex", "eurlex.py"),
+    ("prawo-pl-saos", "saos.py"),
 ]
 errors = []
 versions = {}  # source file -> declared version (all must match: lockstep)

@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-eli
-version: 1.3.0
+version: 1.4.0
 description: >-
   Odpytuje OFICJALNE API ELI Sejmu (api.sejm.gov.pl/eli) — źródło pierwotne prawa polskiego
   (Dziennik Ustaw, Monitor Polski): wyszukiwanie aktów, TEKST JEDNOLITY, pojedyncze artykuły,
@@ -132,7 +132,8 @@ potem `tekst <t.j.> --fragment "art. N"` (dwie komendy zamiast trzech):
 
 - **prawa UE** (rozporządzenia, dyrektywy — użyj skilla **prawo-eu-eurlex**, EUR-Lex/CELLAR),
   **dzienników wojewódzkich i resortowych**,
-- **orzecznictwa sądów** (SN/NSA/TSUE; w Dz.U. są tylko wyroki TK i to jako pozycje dziennika),
+- **orzecznictwa sądów** (SN/TK/sądy powszechne/KIO → użyj skilla **prawo-pl-saos**, API SAOS;
+  sądy administracyjne NSA/WSA → CBOSA; TSUE → **prawo-eu-eurlex**; w Dz.U. są tylko wyroki TK i to jako pozycje dziennika),
 - **projektów ustaw** w toku procesu legislacyjnego (to inne API Sejmu),
 - treści umów stron, KRS, ksiąg wieczystych.
 Jeśli zagadnienie wymaga tych źródeł — powiedz to wprost, nie udawaj, że ELI je pokryje.
