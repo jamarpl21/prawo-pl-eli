@@ -72,6 +72,14 @@ class TestFragmenty(unittest.TestCase):
         self.assertIn("Dwudziesty pierwszy", frags[0])
         self.assertNotIn("indeksem", frags[0])  # "Art. 211." to inny artykuł
 
+    def test_artykul_z_indeksem_gornym(self):
+        # "art. 21(1)" (= art. 21 ze zn. 1) trafia w "Art. 211." (indeks górny po
+        # konwersji HTML→tekst jest sklejony z numerem), a NIE w "Art. 21."
+        frags = self._frag("art. 21(1)")
+        self.assertEqual(len(frags), 1)
+        self.assertIn("indeksem", frags[0])
+        self.assertNotIn("Dwudziesty pierwszy", frags[0])
+
     def test_fraza_pelnotekstowa_docieta_do_artykulu(self):
         frags = self._frag("o którym mowa")
         self.assertEqual(len(frags), 1)
