@@ -121,9 +121,16 @@ def _fragmenty(txt, fraza, maks=8):
     inna fraza działa jak wyszukiwanie pełnotekstowe (bez rozróżniania wielkości liter).
     """
     bounds = [m.start() for m in re.finditer(_GRANICE, txt)]
-    m = re.match(r"(?i)^art\.?\s*(\d+[a-z]*)\.?$", fraza.strip())
+    m = re.match(r"(?i)^art\.?\s*(\d+)(?:\((\w+)\))?([a-z]*)\.?$", fraza.strip())
     if m:
-        hits = [h.start() for h in re.finditer(rf"(?m)^Art\.\s*{m.group(1)}\.", txt)]
+        # Artykuł z indeksem górnym (np. "art. 730(1)", "art. 505(29a)") w tekście po
+        # konwersji HTML→tekst jest sklejony: "Art. 730¹." renderuje się jako "Art. 7301.".
+        # Łączymy numer z indeksem i dopuszczamy opcjonalną spację, zachowując zgodność
+        # wstecz dla "art. 299" oraz "art. 1a"/"art. 168e".
+        base, tail = m.group(1), (m.group(2) or "") + (m.group(3) or "")
+        pat = (rf"(?m)^Art\.\s*{re.escape(base)}\s*{re.escape(tail)}\."
+               if tail else rf"(?m)^Art\.\s*{re.escape(base)}\.")
+        hits = [h.start() for h in re.finditer(pat, txt)]
     else:
         low, f = txt.lower(), fraza.lower()
         hits, p = [], low.find(f)
