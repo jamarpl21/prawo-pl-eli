@@ -19,7 +19,7 @@ Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
 import sys, json, re, time, argparse, urllib.request, urllib.parse, urllib.error
 from html.parser import HTMLParser
 
-__version__ = "1.4.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "1.4.1"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://api.sejm.gov.pl/eli"
 
 

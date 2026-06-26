@@ -1,6 +1,6 @@
 {
   "name": "prawo-pl-eli",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Polskie prawo z oficjalnego API ELI Sejmu (Dz.U./Monitor Polski) do każdego pytania z prawa polskiego oraz pracy nad umowami i pismami procesowymi: wyszukiwanie aktów, pojedyncze artykuły, tekst jednolity, nowelizacje i podstawa prawna. Read-only.",
   "author": {
     "name": "Krzysztof Gibek"

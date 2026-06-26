@@ -1,6 +1,6 @@
 ---
 name: prawo-eu-eurlex
-version: 1.4.0
+version: 1.4.1
 description: >-
   Odpytuje OFICJALNE repozytorium prawa UE — CELLAR/EUR-Lex Urzędu Publikacji (SPARQL + REST,
   bez klucza): wyszukiwanie aktów, pełny tekst PO POLSKU i w 23 innych językach, WERSJE
