@@ -89,6 +89,11 @@ class _Stripper(HTMLParser):
             self.skip += 1
         if tag in ("p", "br", "div", "tr", "li", "h1", "h2", "h3", "h4"):
             self.out.append("\n")
+        # Indeks górny artykułu (np. "Art. 21<sup>1</sup>.") rozdzielamy spacją, żeby
+        # "Art. 21 1." było odróżnialne od "Art. 211." — inaczej art. 21¹ i art. 211
+        # sklejają się do tego samego napisu i _fragmenty zwraca oba (znany bug).
+        if tag == "sup":
+            self.out.append(" ")
 
     def handle_endtag(self, tag):
         if tag in ("script", "style") and self.skip:
@@ -113,6 +118,10 @@ def html_to_text(html):
 # granice jednostek redakcyjnych w tekście po konwersji (nagłówki na początku linii)
 _GRANICE = r"(?m)^(Art\.\s*\d|Tytuł\s|TYTUŁ\s|Dział\s|DZIAŁ\s|Rozdział\s|Oddział\s|Księga\s|KSIĘGA\s|Załącznik)"
 
+# unicodowe indeksy górne (art. 21¹) — do rozpoznania w zapytaniu i przełożenia na cyfry ASCII
+_SUPS = "¹²³⁴⁵⁶⁷⁸⁹⁰"
+_SUP = str.maketrans(_SUPS, "1234567890")
+
 
 def _fragmenty(txt, fraza, maks=8):
     """Spany (start, end) fragmentów z frazą, docięte do granic jednostek redakcyjnych.
@@ -121,15 +130,25 @@ def _fragmenty(txt, fraza, maks=8):
     inna fraza działa jak wyszukiwanie pełnotekstowe (bez rozróżniania wielkości liter).
     """
     bounds = [m.start() for m in re.finditer(_GRANICE, txt)]
-    m = re.match(r"(?i)^art\.?\s*(\d+)(?:\((\w+)\))?([a-z]*)\.?$", fraza.strip())
+    # Baza + opcjonalny INDEKS GÓRNY (art. 21¹: unicode "21¹", nawiasowy "21(1)"/"21[1]"/"21^1")
+    # + opcjonalny SUFIKS LITEROWY (art. 1a, art. 168e). Rozróżnienie jest istotne, bo w tekście
+    # indeks górny ma spację ("Art. 21 1." — patrz _Stripper), a sufiks literowy jest sklejony
+    # ("Art. 1a."); dlatego indeks matchujemy z \s+, a literę z \s*.
+    m = re.match(
+        r"(?i)^art\.?\s*(\d+)"                                  # (1) baza
+        r"(?:[\(\[\^]\s*(\d+[a-z]?)\s*[\)\]]?|([" + _SUPS + r"]+))?"  # (2) nawiasowy | (3) unicode indeks
+        r"([a-z]*)\.?$",                                        # (4) sufiks literowy
+        fraza.strip())
     if m:
-        # Artykuł z indeksem górnym (np. "art. 730(1)", "art. 505(29a)") w tekście po
-        # konwersji HTML→tekst jest sklejony: "Art. 730¹." renderuje się jako "Art. 7301.".
-        # Łączymy numer z indeksem i dopuszczamy opcjonalną spację, zachowując zgodność
-        # wstecz dla "art. 299" oraz "art. 1a"/"art. 168e".
-        base, tail = m.group(1), (m.group(2) or "") + (m.group(3) or "")
-        pat = (rf"(?m)^Art\.\s*{re.escape(base)}\s*{re.escape(tail)}\."
-               if tail else rf"(?m)^Art\.\s*{re.escape(base)}\.")
+        base = m.group(1)
+        idx = m.group(2) or (m.group(3).translate(_SUP) if m.group(3) else "")
+        letter = m.group(4) or ""
+        if idx:                       # indeks górny → w tekście rozdzielony spacją
+            pat = rf"(?m)^Art\.\s*{re.escape(base)}\s+{re.escape(idx)}{re.escape(letter)}\."
+        elif letter:                  # sufiks literowy → sklejony z numerem
+            pat = rf"(?m)^Art\.\s*{re.escape(base)}\s*{re.escape(letter)}\."
+        else:
+            pat = rf"(?m)^Art\.\s*{re.escape(base)}\."
         hits = [h.start() for h in re.finditer(pat, txt)]
     else:
         low, f = txt.lower(), fraza.lower()

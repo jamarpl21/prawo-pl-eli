@@ -48,12 +48,21 @@ class TestHtmlToText(unittest.TestCase):
         t = eli.html_to_text("<div><p>A</p><p></p><p></p><p>B</p></div>")
         self.assertNotIn("\n\n\n", t)
 
+    def test_superscript_gets_space(self):
+        # Indeks górny w <sup> musi zostać rozdzielony spacją, żeby art. 21¹
+        # ("Art. 21 1.") był odróżnialny od art. 211 ("Art. 211.").
+        self.assertEqual(eli.html_to_text("<p>Art.\xa021<sup>1</sup>.</p>"), "Art. 21 1.")
+        self.assertEqual(eli.html_to_text("<p>Art.\xa0211.</p>"), "Art. 211.")
+
 
 class TestFragmenty(unittest.TestCase):
+    # Tekst po konwersji HTML→tekst: art. 21¹ (indeks górny w <sup>) renderuje się
+    # jako "Art. 21 1." (patrz _Stripper), a art. 211 jako "Art. 211." — odróżnialne.
     TXT = ("Tytuł I\n\nArt. 1.\nPierwszy przepis.\n\n"
            "Art. 2.\n§ 1. Drugi przepis o spółce.\n§ 2. Odesłanie, o którym mowa w art. 1.\n\n"
            "Art. 21.\nDwudziesty pierwszy przepis.\n\n"
-           "Art. 211.\nPrzepis z indeksem (art. 21 ze zn. 1).\n")
+           "Art. 21 1.\nPrzepis z indeksem górnym (art. 21 ze zn. 1).\n\n"
+           "Art. 211.\nDwieście jedenasty przepis.\n")
 
     def _frag(self, fraza):
         spans = eli._fragmenty(self.TXT, fraza)
@@ -70,15 +79,25 @@ class TestFragmenty(unittest.TestCase):
         frags = self._frag("art. 21")
         self.assertEqual(len(frags), 1)
         self.assertIn("Dwudziesty pierwszy", frags[0])
-        self.assertNotIn("indeksem", frags[0])  # "Art. 211." to inny artykuł
+        self.assertNotIn("indeksem górnym", frags[0])  # "Art. 21 1." to inny artykuł
+        self.assertNotIn("Dwieście", frags[0])          # "Art. 211." to inny artykuł
 
     def test_artykul_z_indeksem_gornym(self):
-        # "art. 21(1)" (= art. 21 ze zn. 1) trafia w "Art. 211." (indeks górny po
-        # konwersji HTML→tekst jest sklejony z numerem), a NIE w "Art. 21."
-        frags = self._frag("art. 21(1)")
+        # "art. 21(1)" oraz "art. 21¹" trafiają w "Art. 21 1." (indeks górny),
+        # a NIE w "Art. 21." ani "Art. 211.".
+        for fraza in ("art. 21(1)", "art. 21¹"):
+            frags = self._frag(fraza)
+            self.assertEqual(len(frags), 1, fraza)
+            self.assertIn("indeksem górnym", frags[0], fraza)
+            self.assertNotIn("Dwudziesty pierwszy", frags[0], fraza)
+            self.assertNotIn("Dwieście", frags[0], fraza)
+
+    def test_rozroznia_indeks_gorny_od_pelnego_numeru(self):
+        # "art. 211" trafia TYLKO w art. 211, nie w art. 21¹ (to był bug).
+        frags = self._frag("art. 211")
         self.assertEqual(len(frags), 1)
-        self.assertIn("indeksem", frags[0])
-        self.assertNotIn("Dwudziesty pierwszy", frags[0])
+        self.assertIn("Dwieście jedenasty", frags[0])
+        self.assertNotIn("indeksem górnym", frags[0])
 
     def test_fraza_pelnotekstowa_docieta_do_artykulu(self):
         frags = self._frag("o którym mowa")
