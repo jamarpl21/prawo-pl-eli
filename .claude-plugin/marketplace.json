@@ -9,7 +9,7 @@
       "name": "prawo-pl-eli",
       "source": "./plugins/prawo-pl-eli",
       "description": "Polskie prawo z oficjalnego API ELI Sejmu (Dz.U./M.P.) do każdego pytania z prawa polskiego oraz pracy nad umowami i pismami procesowymi: akty, pojedyncze artykuły, tekst jednolity, nowelizacje, podstawa prawna.",
-      "version": "1.4.1",
+      "version": "1.4.2",
       "author": {
         "name": "Krzysztof Gibek"
       }
@@ -18,7 +18,7 @@
       "name": "prawo-eu-eurlex",
       "source": "./plugins/prawo-eu-eurlex",
       "description": "Prawo UE z oficjalnego repozytorium CELLAR/EUR-Lex (CELEX, bez klucza) do każdego pytania o prawo unijne: rozporządzenia, dyrektywy, wersje skonsolidowane, pojedyncze artykuły po polsku, nowelizacje, podstawa prawna.",
-      "version": "1.4.1",
+      "version": "1.4.2",
       "author": {
         "name": "Krzysztof Gibek"
       }
@@ -27,7 +27,7 @@
       "name": "prawo-pl-saos",
       "source": "./plugins/prawo-pl-saos",
       "description": "Polskie orzecznictwo z publicznego API SAOS (saos.org.pl): wyroki, postanowienia i uchwały SN, TK, sądów powszechnych i KIO. Wyszukiwanie po frazie, sygnaturze, sądzie, sędzim, powołanym przepisie i dacie; pełne uzasadnienia, powołane przepisy i orzeczenia.",
-      "version": "1.4.1",
+      "version": "1.4.2",
       "author": {
         "name": "Krzysztof Gibek"
       }

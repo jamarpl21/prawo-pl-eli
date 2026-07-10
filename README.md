@@ -118,9 +118,9 @@ Każdy tag `v*` publikuje po jednym zipie na plugin w GitHub Releases
 (`prawo-pl-eli-<wersja>.zip`, `prawo-eu-eurlex-<wersja>.zip`, `prawo-pl-saos-<wersja>.zip`):
 
 ```bash
-claude --plugin-dir ./prawo-pl-saos-v1.4.1.zip
+claude --plugin-dir ./prawo-pl-saos-v1.4.2.zip
 # albo zdalnie, bez pobierania:
-claude --plugin-url https://github.com/jamarpl21/prawo-pl-eli/releases/download/v1.4.1/prawo-pl-saos-v1.4.1.zip
+claude --plugin-url https://github.com/jamarpl21/prawo-pl-eli/releases/download/v1.4.2/prawo-pl-saos-v1.4.2.zip
 ```
 
 ## Użycie jako samodzielne CLI (bez żadnego LLM-a)
@@ -221,7 +221,7 @@ tools/test_eli.py, test_eurlex.py, test_saos.py  # testy jednostkowe silników, 
 
 ## Wersjonowanie
 
-Wszystkie pluginy są wersjonowane **razem (lockstep)** — jedna wersja (obecnie **1.4.1**) zadeklarowana
+Wszystkie pluginy są wersjonowane **razem (lockstep)** — jedna wersja (obecnie **1.4.2**) zadeklarowana
 we wszystkich miejscach, identyczna; `tools/validate.py` wymusza to w CI:
 
 - `plugins/<plugin>/.claude-plugin/plugin.json` i `.codex-plugin/plugin.json` (pole `version`) — wszystkie pluginy,
