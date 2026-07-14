@@ -170,9 +170,9 @@ Każdy tag `v*` publikuje po jednym zipie na plugin w GitHub Releases
 `prawo-pl-saos-<wersja>.zip`, `prawo-pl-cbosa-<wersja>.zip`, `prawo-pl-uodo-<wersja>.zip`):
 
 ```bash
-claude --plugin-dir ./prawo-pl-saos-v1.5.0.zip
+claude --plugin-dir ./prawo-pl-saos-v1.5.1.zip
 # albo zdalnie, bez pobierania:
-claude --plugin-url https://github.com/jamarpl21/prawo-pl-eli/releases/download/v1.5.0/prawo-pl-saos-v1.5.0.zip
+claude --plugin-url https://github.com/jamarpl21/prawo-pl-eli/releases/download/v1.5.1/prawo-pl-saos-v1.5.1.zip
 ```
 
 ## Użycie jako samodzielne CLI (bez żadnego LLM-a)
@@ -327,7 +327,7 @@ tools/test_*.py                          # testy jednostkowe silników, offline 
 
 ## Wersjonowanie
 
-Wszystkie pluginy są wersjonowane **razem (lockstep)** — jedna wersja (obecnie **1.5.0**) zadeklarowana
+Wszystkie pluginy są wersjonowane **razem (lockstep)** — jedna wersja (obecnie **1.5.1**) zadeklarowana
 we wszystkich miejscach, identyczna; `tools/validate.py` wymusza to w CI:
 
 - `plugins/<plugin>/.claude-plugin/plugin.json` i `.codex-plugin/plugin.json` (pole `version`) — wszystkie pluginy,

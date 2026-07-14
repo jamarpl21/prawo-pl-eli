@@ -21,7 +21,7 @@ Globalnie: --json  (zrzut sparsowanych danych jako JSON zamiast podsumowania)
 import sys, json, re, time, argparse, ssl, html as html_mod
 import urllib.request, urllib.parse, urllib.error, http.cookiejar
 
-__version__ = "1.5.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "1.5.1"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://orzeczenia.nsa.gov.pl"
 
 # Miasta WSA (klucz bez diakrytyków) → końcówka pełnej nazwy z formularza CBOSA.
@@ -269,9 +269,14 @@ def cmd_szukaj(a):
     if a.json:
         print(json.dumps({"total": total, "strona": strona, "wyniki": pozycje},
                          ensure_ascii=False, indent=2)); return
+    if total is None and not pozycje:
+        # strona bez licznika „Znaleziono N" = strona błędu/przeciążenia, NIE zweryfikowane zero
+        sys.exit("BŁĄD: CBOSA zwróciło stronę bez listy wyników (serwer przeciążony albo strona "
+                 "błędu) — to NIE oznacza braku orzeczeń. Spróbuj ponownie za chwilę; zapytania "
+                 "z zakresem dat bywają najcięższe (możesz zawęzić frazą i filtrować daty z listy).")
     if total == 0 or not pozycje:
-        sys.exit("Brak wyników. Uwaga: wyszukiwarka CBOSA wymaga dokładnych wartości — "
-                 "spróbuj prostszej frazy, bez --sad, albo sprawdź sygnaturę/symbol.")
+        sys.exit("Brak wyników (zweryfikowane zero). Uwaga: wyszukiwarka CBOSA wymaga dokładnych "
+                 "wartości — spróbuj prostszej frazy, bez --sad, albo sprawdź sygnaturę/symbol.")
     _drukuj_liste(total, pozycje, strona)
 
 
@@ -326,6 +331,9 @@ def cmd_sygnatura(a):
     total, pozycje = _szukaj(form)
     if a.json:
         print(json.dumps({"total": total, "wyniki": pozycje}, ensure_ascii=False, indent=2)); return
+    if total is None and not pozycje:
+        sys.exit("BŁĄD: CBOSA zwróciło stronę bez listy wyników (serwer przeciążony albo strona "
+                 "błędu) — to NIE oznacza braku orzeczeń. Spróbuj ponownie za chwilę.")
     glowne = [p for p in pozycje if not p["powiazane"]]
     if not glowne:
         sys.exit(f"Nie znaleziono orzeczenia o sygnaturze {sig!r} w CBOSA.\n"

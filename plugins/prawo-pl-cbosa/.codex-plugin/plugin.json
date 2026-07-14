@@ -1,6 +1,6 @@
 {
   "name": "prawo-pl-cbosa",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "Orzecznictwo polskich sądów administracyjnych z CBOSA (orzeczenia.nsa.gov.pl): NSA + 16 WSA. Wyszukiwanie po frazie, sygnaturze, sądzie, symbolu sprawy, sędzim i dacie; pełne sentencje i uzasadnienia, powołane przepisy. Read-only (CBOSA nie ma API — publiczne strony HTML z throttlingiem).",
   "author": {
     "name": "Krzysztof Gibek"

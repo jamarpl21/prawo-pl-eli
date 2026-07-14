@@ -19,7 +19,7 @@ Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
 """
 import sys, json, re, time, argparse, urllib.request, urllib.parse, urllib.error
 
-__version__ = "1.5.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "1.5.1"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://orzeczenia.uodo.gov.pl/api"
 POLA = "id,refid,refname,title,dates,kind"  # domyślne pola listy wyników
 

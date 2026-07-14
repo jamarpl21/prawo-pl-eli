@@ -21,7 +21,7 @@ Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
 import sys, json, re, time, argparse, urllib.request, urllib.parse, urllib.error
 from html.parser import HTMLParser
 
-__version__ = "1.5.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "1.5.1"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 
 # kod → (województwo, host, publisher ELI). Kody = sufiks publishera (POL_WOJ_XX).
 WOJEWODZTWA = {

@@ -6,7 +6,7 @@
   "plugins": [
     {
       "name": "prawo-pl-eli",
-      "version": "1.5.0",
+      "version": "1.5.1",
       "source": {
         "source": "local",
         "path": "./plugins/prawo-pl-eli"
@@ -15,7 +15,7 @@
     },
     {
       "name": "prawo-pl-edzienniki",
-      "version": "1.5.0",
+      "version": "1.5.1",
       "source": {
         "source": "local",
         "path": "./plugins/prawo-pl-edzienniki"
@@ -24,7 +24,7 @@
     },
     {
       "name": "prawo-eu-eurlex",
-      "version": "1.5.0",
+      "version": "1.5.1",
       "source": {
         "source": "local",
         "path": "./plugins/prawo-eu-eurlex"
@@ -33,7 +33,7 @@
     },
     {
       "name": "prawo-pl-saos",
-      "version": "1.5.0",
+      "version": "1.5.1",
       "source": {
         "source": "local",
         "path": "./plugins/prawo-pl-saos"
@@ -42,7 +42,7 @@
     },
     {
       "name": "prawo-pl-cbosa",
-      "version": "1.5.0",
+      "version": "1.5.1",
       "source": {
         "source": "local",
         "path": "./plugins/prawo-pl-cbosa"
@@ -51,7 +51,7 @@
     },
     {
       "name": "prawo-pl-uodo",
-      "version": "1.5.0",
+      "version": "1.5.1",
       "source": {
         "source": "local",
         "path": "./plugins/prawo-pl-uodo"
