@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-saos
-version: 1.4.2
+version: 1.5.0
 description: >-
   Odpytuje PUBLICZNE API SAOS (saos.org.pl) — bazę polskiego ORZECZNICTWA: wyroki, postanowienia
   i uchwały Sądu Najwyższego (SN), Trybunału Konstytucyjnego (TK), sądów powszechnych (SA/SO/SR)
@@ -10,7 +10,8 @@ description: >-
   podstawy w judykaturze). Treść przepisu bierz z ELI (skill prawo-pl-eli), tu szukasz JAK go stosują.
   Filtruj po sądzie, sygnaturze, sędzim, powołanym przepisie i dacie; zwraca pełne uzasadnienia,
   powołane przepisy i powołane orzeczenia. UWAGA: SAOS to baza WTÓRNA (agregat) — sądy administracyjne
-  (NSA/WSA) są w niej praktycznie nieobecne (dla nich: CBOSA). Polish case-law from the public SAOS API.
+  (NSA/WSA) są w niej praktycznie nieobecne (dla nich: skill prawo-pl-cbosa). Polish case-law from the
+  public SAOS API.
 ---
 
 # Polskie orzecznictwo z publicznego API SAOS
@@ -72,7 +73,7 @@ Typowy przepływ: `szukaj` (zawęź `--sad`/`--przepis`/`--haslo`) → wybierz I
    i pewności zweryfikuj w portalu właściwego sądu (link „Źródło oryginalne" w `orzeczenie`). Zawsze podawaj
    **sygnaturę + sąd + datę** (np. „wyrok SN z 9.04.2010, III CSK 203/09").
 2. **Brak sądów administracyjnych.** NSA/WSA są w SAOS praktycznie nieobecne (`--sad admin` zwykle zwraca 0).
-   Orzecznictwo administracyjne szukaj w **CBOSA** (`https://orzeczenia.nsa.gov.pl`) — brak API, ręcznie.
+   Orzecznictwo administracyjne pobieraj skillem **prawo-pl-cbosa** (baza CBOSA, `scripts/cbosa.py`).
 3. **Świeżość bywa opóźniona.** Najnowsze orzeczenia mogą jeszcze nie być w bazie — przy sprawie na konkretną
    datę zaznacz „wg SAOS na dzień X — do potwierdzenia" i sprawdź portal sądu.
 4. **Nie myl orzeczenia z przepisem.** Po znalezieniu orzeczenia, brzmienie powołanego przepisu i jego
@@ -83,7 +84,8 @@ Typowy przepływ: `szukaj` (zawęź `--sad`/`--przepis`/`--haslo`) → wybierz I
 
 - **treści przepisów** (ustawy/kodeksy → skill **prawo-pl-eli**, ELI Sejmu),
 - **prawa UE i orzecznictwa TSUE** (→ skill **prawo-eu-eurlex**, EUR-Lex/CELLAR),
-- **sądów administracyjnych** (NSA/WSA — w SAOS ich nie ma; użyj CBOSA, ręcznie),
+- **sądów administracyjnych** (NSA/WSA — w SAOS ich nie ma; → skill **prawo-pl-cbosa**),
+- **decyzji Prezesa UODO** (→ skill **prawo-pl-uodo**),
 - pism stron, akt sprawy, KRS, ksiąg wieczystych.
 Jeśli zagadnienie wymaga tych źródeł — powiedz to wprost, nie udawaj, że SAOS je pokryje.
 

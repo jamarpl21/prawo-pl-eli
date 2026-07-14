@@ -1,20 +1,24 @@
-# gibek-skills: prawo-pl-eli + prawo-eu-eurlex + prawo-pl-saos
+# gibek-skills: prawo polskie i unijne + orzecznictwo (6 skilli)
 
 [![CI](https://github.com/jamarpl21/prawo-pl-eli/actions/workflows/release.yml/badge.svg)](https://github.com/jamarpl21/prawo-pl-eli/actions/workflows/release.yml)
 [![Release](https://img.shields.io/github/v/release/jamarpl21/prawo-pl-eli)](https://github.com/jamarpl21/prawo-pl-eli/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 **Prawo polskie i unijne oraz orzecznictwo z OFICJALNYCH źródeł — zamiast cytowania z pamięci.**
-*Cross-tool agent skills (Claude Code + OpenAI Codex) reading Polish primary law from the official
-Sejm ELI API, EU law from the Publications Office CELLAR/EUR-Lex, and Polish case-law from the SAOS API.*
+*Cross-tool agent skills (Claude Code + OpenAI Codex): Polish primary law (Sejm ELI API), local law
+(voivodeship journals), EU law (CELLAR/EUR-Lex), Polish case-law (SAOS), administrative courts
+case-law (CBOSA) and Polish DPA decisions (UODO).*
 
-Repo zawiera trzy bliźniacze pluginy/skille (wspólny marketplace `gibek-skills`, wersjonowane razem):
+Repo zawiera sześć bliźniaczych pluginów/skilli (wspólny marketplace `gibek-skills`, wersjonowane razem):
 
 | Plugin / skill | Źródło | Zakres |
 |---|---|---|
 | **prawo-pl-eli** | [API ELI Sejmu](https://api.sejm.gov.pl/eli) | prawo polskie: Dz.U./M.P., teksty jednolite, kodeksy |
+| **prawo-pl-edzienniki** | API ELI 16 dzienników wojewódzkich (np. [edzienniki.duw.pl](https://edzienniki.duw.pl)) | prawo miejscowe: uchwały gmin/powiatów/sejmików, akty wojewody |
 | **prawo-eu-eurlex** | [CELLAR/EUR-Lex](https://publications.europa.eu/webapi/rdf/sparql) | prawo UE: rozporządzenia, dyrektywy, wersje skonsolidowane (CELEX) |
 | **prawo-pl-saos** | [API SAOS](https://www.saos.org.pl/api) | polskie orzecznictwo: SN, TK, sądy powszechne, KIO |
+| **prawo-pl-cbosa** | [CBOSA](https://orzeczenia.nsa.gov.pl) (brak API — scraping) | orzecznictwo sądów administracyjnych: NSA + 16 WSA |
+| **prawo-pl-uodo** | [API Portalu Orzeczeń UODO](https://orzeczenia.uodo.gov.pl/api-doc/) | decyzje Prezesa UODO (RODO): kary, upomnienia, nakazy |
 
 ## prawo-pl-eli
 
@@ -31,6 +35,18 @@ potrafi podać brzmienie sprzed kilku zmian. Ten skill sięga do **źródła pie
 
 Pomyślany jako wsparcie pracy nad **umowami i pismami procesowymi** (tworzenie i analiza) — wszędzie tam,
 gdzie trzeba odwołać się do przepisów i procedur prawa polskiego.
+
+## prawo-pl-edzienniki
+
+Ten sam wzorzec dla **prawa miejscowego**: uchwały rad gmin/powiatów/sejmików (podatki i opłaty
+lokalne, plany miejscowe MPZP, statuty, organizacja szkół), rozporządzenia i zarządzenia wojewody.
+Tych aktów nie ma w Dz.U./M.P. — publikuje je 16 **wojewódzkich dzienników urzędowych**, każdy
+z własnym API zgodnym z ELI. Silnik `edzienniki.py` zna tabelę hostów i pozwala:
+
+- listować dzienniki i roczniki: `dzienniki --woj DS`,
+- szukać aktów po tytule (nazwa gminy, przedmiot uchwały): `szukaj --woj DS "plan zagospodarowania" --rok 2026`
+  (API dzienników ignoruje filtry serwerowe — silnik pobiera rocznik i filtruje lokalnie),
+- pobrać metadane i treść: `akt DS 2026 3299`, `tekst DS 2026 3299 --fragment "§ 2"`, `--pdf plan.pdf`.
 
 ## prawo-eu-eurlex
 
@@ -64,16 +80,45 @@ Trzeci skill domyka komplet: **orzecznictwo** (judykatura). Silnik `saos.py` odp
 Podział ról: **treść przepisu → prawo-pl-eli (ELI)**, **jak sądy go stosują → prawo-pl-saos (SAOS)**.
 Most między nimi: ustal akt w ELI, potem `szukaj --przepis "<akt>"` w SAOS. **Uwaga:** SAOS to baza
 **wtórna** (agregat) — sądy administracyjne (NSA/WSA) są w niej praktycznie nieobecne (dla nich:
-[CBOSA](https://orzeczenia.nsa.gov.pl), bez API), a do dosłownego cytatu warto zajrzeć do portalu sądu.
+**prawo-pl-cbosa** niżej), a do dosłownego cytatu warto zajrzeć do portalu sądu.
+
+## prawo-pl-cbosa
+
+Czwarty skill wypełnia największą lukę: **orzecznictwo sądów administracyjnych** (NSA + 16 WSA) —
+podatki, skargi na decyzje organów, interpretacje, k.p.a., prawo budowlane. Źródłem jest **CBOSA**
+([orzeczenia.nsa.gov.pl](https://orzeczenia.nsa.gov.pl), ~2,4 mln orzeczeń od 2004 r.). CBOSA **nie ma
+oficjalnego API**, więc silnik `cbosa.py` czyta publiczne strony HTML (read-only, z throttlingiem
+≥0,5 s i awaryjną obsługą niekompletnego łańcucha SSL) — i pozwala:
+
+- szukać po frazie, **sygnaturze**, sądzie, **symbolu sprawy**, sędzim i dacie:
+  `szukaj "odpowiedzialność członków zarządu" --sad NSA --od 2024-01-01`,
+- pobrać **pełne orzeczenie** (sentencja + uzasadnienie + powołane przepisy): `orzeczenie 8889489BE0`,
+- skakać między instancjami po **sygnaturach powiązanych** (WSA ↔ NSA tej samej sprawy),
+- wyciąć fragment długiego uzasadnienia: `orzeczenie <doc_id> --fragment "art. 116"`.
+
+## prawo-pl-uodo
+
+Piąty skill: **decyzje Prezesa UODO** (kary za naruszenia RODO, upomnienia, nakazy) z **oficjalnego
+API** Portalu Orzeczeń UODO ([orzeczenia.uodo.gov.pl](https://orzeczenia.uodo.gov.pl), od 2025 r.,
+bez klucza). Silnik `uodo.py` pozwala:
+
+- przeglądać najnowsze decyzje: `najnowsze --limit 10`,
+- szukać pełnotekstowo (regex, bez rozróżniania wielkości liter): `szukaj "biometr"`,
+  po tytule i dacie publikacji: `szukaj --tytul "kara" --od 2026-01-01`,
+- pobrać **pełną treść decyzji** po sygnaturze: `decyzja DKN.5131.9.2025 --fragment "art. 33"`.
+
+Komplet RODO: treść rozporządzenia → **prawo-eu-eurlex**, decyzje organu → **prawo-pl-uodo**,
+sądowa kontrola decyzji (WSA/NSA) → **prawo-pl-cbosa**.
 
 Wszystkie skille są w otwartym standardzie **[Agent Skills](https://agentskills.io)** (`SKILL.md`), więc działają w
-**Claude Code** i **OpenAI Codex**. Silniki (`scripts/eli.py`, `scripts/eurlex.py`, `scripts/saos.py`) to
-czysty Python (tylko stdlib), wszystko **read-only**.
+**Claude Code** i **OpenAI Codex**. Silniki (`scripts/eli.py`, `scripts/edzienniki.py`, `scripts/eurlex.py`,
+`scripts/saos.py`, `scripts/cbosa.py`, `scripts/uodo.py`) to czysty Python (tylko stdlib), wszystko **read-only**.
 
 ## Wymagania
 
 - Python 3.8+ (tylko stdlib; brak `pip install`)
-- dostęp do internetu (`api.sejm.gov.pl`, `publications.europa.eu`, `www.saos.org.pl`)
+- dostęp do internetu (`api.sejm.gov.pl`, hosty e-dzienników wojewódzkich, `publications.europa.eu`,
+  `www.saos.org.pl`, `orzeczenia.nsa.gov.pl`, `orzeczenia.uodo.gov.pl`)
 
 ## Instalacja
 
@@ -82,8 +127,11 @@ czysty Python (tylko stdlib), wszystko **read-only**.
 ```
 /plugin marketplace add jamarpl21/prawo-pl-eli
 /plugin install prawo-pl-eli@gibek-skills
+/plugin install prawo-pl-edzienniki@gibek-skills
 /plugin install prawo-eu-eurlex@gibek-skills
 /plugin install prawo-pl-saos@gibek-skills
+/plugin install prawo-pl-cbosa@gibek-skills
+/plugin install prawo-pl-uodo@gibek-skills
 ```
 
 Aktualizacje: `/plugin marketplace update`.
@@ -93,8 +141,11 @@ Aktualizacje: `/plugin marketplace update`.
 ```
 codex plugin marketplace add jamarpl21/prawo-pl-eli
 codex plugin add prawo-pl-eli@gibek-skills
+codex plugin add prawo-pl-edzienniki@gibek-skills
 codex plugin add prawo-eu-eurlex@gibek-skills
 codex plugin add prawo-pl-saos@gibek-skills
+codex plugin add prawo-pl-cbosa@gibek-skills
+codex plugin add prawo-pl-uodo@gibek-skills
 ```
 
 Aktualizacje: `codex plugin marketplace upgrade`.
@@ -105,7 +156,7 @@ Sklonuj repo i podlinkuj sam katalog skilla (otwarty standard Agent Skills):
 
 ```bash
 git clone https://github.com/jamarpl21/prawo-pl-eli
-for s in prawo-pl-eli prawo-eu-eurlex prawo-pl-saos; do
+for s in prawo-pl-eli prawo-pl-edzienniki prawo-eu-eurlex prawo-pl-saos prawo-pl-cbosa prawo-pl-uodo; do
   SKILL="$PWD/prawo-pl-eli/plugins/$s/skills/$s"
   ln -s "$SKILL" ~/.claude/skills/$s    # Claude Code
   ln -s "$SKILL" ~/.agents/skills/$s    # OpenAI Codex
@@ -115,20 +166,24 @@ done
 ### Paczka ZIP (offline / pojedyncza sesja)
 
 Każdy tag `v*` publikuje po jednym zipie na plugin w GitHub Releases
-(`prawo-pl-eli-<wersja>.zip`, `prawo-eu-eurlex-<wersja>.zip`, `prawo-pl-saos-<wersja>.zip`):
+(`prawo-pl-eli-<wersja>.zip`, `prawo-pl-edzienniki-<wersja>.zip`, `prawo-eu-eurlex-<wersja>.zip`,
+`prawo-pl-saos-<wersja>.zip`, `prawo-pl-cbosa-<wersja>.zip`, `prawo-pl-uodo-<wersja>.zip`):
 
 ```bash
-claude --plugin-dir ./prawo-pl-saos-v1.4.2.zip
+claude --plugin-dir ./prawo-pl-saos-v1.5.0.zip
 # albo zdalnie, bez pobierania:
-claude --plugin-url https://github.com/jamarpl21/prawo-pl-eli/releases/download/v1.4.2/prawo-pl-saos-v1.4.2.zip
+claude --plugin-url https://github.com/jamarpl21/prawo-pl-eli/releases/download/v1.5.0/prawo-pl-saos-v1.5.0.zip
 ```
 
 ## Użycie jako samodzielne CLI (bez żadnego LLM-a)
 
 ```bash
 cd plugins/prawo-pl-eli/skills/prawo-pl-eli && python3 scripts/eli.py <komenda> [...]
+cd plugins/prawo-pl-edzienniki/skills/prawo-pl-edzienniki && python3 scripts/edzienniki.py <komenda> [...]
 cd plugins/prawo-eu-eurlex/skills/prawo-eu-eurlex && python3 scripts/eurlex.py <komenda> [...]
 cd plugins/prawo-pl-saos/skills/prawo-pl-saos && python3 scripts/saos.py <komenda> [...]
+cd plugins/prawo-pl-cbosa/skills/prawo-pl-cbosa && python3 scripts/cbosa.py <komenda> [...]
+cd plugins/prawo-pl-uodo/skills/prawo-pl-uodo && python3 scripts/uodo.py <komenda> [...]
 ```
 
 ### eli.py (prawo polskie)
@@ -147,6 +202,19 @@ jednolity / są nowelizacje po t.j.).
 
 Każda komenda przyjmuje `--json` (surowa odpowiedź API). Sygnaturę można podać w wielu formach:
 `DU 2000 1037`, `DU/2024/18`, `"Dz.U. 2024 poz. 18"`, `WDU20240000018`, albo `DU/2000/1037` (ELI).
+
+### edzienniki.py (prawo miejscowe — dzienniki wojewódzkie)
+
+| Komenda | Opis | Przykład |
+|---|---|---|
+| `dzienniki` | lista 16 dzienników; z `--woj` roczniki i liczba aktów | `dzienniki --woj DS` |
+| `szukaj` | akty województwa po frazie z tytułu (filtr lokalny) | `szukaj --woj DS "plan zagospodarowania" --rok 2026` |
+| `akt` | metadane aktu (typ, organ, status, linki PDF/HTML) | `akt DS 2026 3299` |
+| `tekst` | treść aktu; `--fragment` wycina okna; `--pdf` zapisuje urzędowy PDF | `tekst DS 2026 3299 --fragment "§ 2"` |
+
+Kody województw = sufiks publishera ELI (`DS`=dolnośląskie, `MZ`=mazowieckie, `SL`=śląskie…);
+można też podać nazwę (`--woj lodzkie`). API dzienników ignoruje filtry serwerowe — silnik pobiera
+rocznik i filtruje tytuły lokalnie.
 
 ### eurlex.py (prawo UE)
 
@@ -167,7 +235,30 @@ Każda komenda przyjmuje `--json` (surowa odpowiedź API). Sygnaturę można pod
 | `sygnatura` | szybkie odszukanie po numerze sprawy | `sygnatura III CSK 203/09` |
 
 `--sad`: `SN | TK | powszechne | admin | KIO`. SAOS to baza **wtórna** — `--sad admin` zwykle zwraca 0
-(orzecznictwo administracyjne: [CBOSA](https://orzeczenia.nsa.gov.pl), bez API). Każda komenda przyjmuje `--json`.
+(orzecznictwo administracyjne: skill **prawo-pl-cbosa** niżej). Każda komenda przyjmuje `--json`.
+
+### cbosa.py (orzecznictwo sądów administracyjnych — NSA/WSA)
+
+| Komenda | Opis | Przykład |
+|---|---|---|
+| `szukaj` | orzeczenia po frazie/sądzie/sygnaturze/symbolu/sędzim/dacie | `szukaj "odpowiedzialność członków zarządu" --sad NSA --od 2024-01-01` |
+| `orzeczenie` | pełne orzeczenie po doc_id (metadane, sentencja, uzasadnienie, powołane przepisy); `--fragment` | `orzeczenie 8889489BE0 --fragment "art. 116"` |
+| `sygnatura` | szybkie odszukanie po sygnaturze | `sygnatura II FSK 2870/18` |
+
+`--sad`: `NSA` albo `"WSA <miasto>"` (16 miast). CBOSA nie ma API — silnik czyta publiczne strony
+HTML z throttlingiem ≥0,5 s (zmiana układu stron może wymagać aktualizacji). Wielkość strony
+wyników: stałe 10 (`--strona N`).
+
+### uodo.py (decyzje Prezesa UODO — RODO)
+
+| Komenda | Opis | Przykład |
+|---|---|---|
+| `najnowsze` | ostatnio opublikowane dokumenty | `najnowsze --limit 10` |
+| `szukaj` | pełnotekstowo (regex) / po tytule / dacie publikacji | `szukaj "biometr" --od 2026-01-01` |
+| `decyzja` | pełna treść decyzji po sygnaturze albo URN; `--fragment` | `decyzja DKN.5131.9.2025 --fragment "art. 33"` |
+
+API stosuje jeden warunek filtrujący na zapytanie (fraza ALBO tytuł); zaawansowane filtry:
+`--warunek "indeks:operator:wartość"`.
 
 ### Przykładowe przepływy
 
@@ -195,20 +286,35 @@ python3 scripts/saos.py szukaj "odpowiedzialność członka zarządu" \
 python3 scripts/saos.py orzeczenie <id>                                 # → teza + powołane przepisy/orzeczenia
 ```
 
+> „jak NSA podchodzi do odpowiedzialności członka zarządu za zaległości podatkowe (art. 116 o.p.)?"
+
+```bash
+python3 scripts/cbosa.py szukaj "odpowiedzialność członka zarządu" \
+        --sad NSA --od 2024-01-01                                       # → lista wyroków NSA z doc_id
+python3 scripts/cbosa.py orzeczenie <doc_id> --fragment "art. 116"      # → uzasadnienie wokół przepisu
+```
+
+> „czy UODO karał za brak zgłoszenia naruszenia i jak to uzasadnia?"
+
+```bash
+python3 scripts/uodo.py szukaj "art. 33"                                # → decyzje z sygnaturami
+python3 scripts/uodo.py decyzja <sygnatura> --fragment "art. 33"        # → argumentacja organu
+```
+
 ## Struktura
 
 ```
-.claude-plugin/marketplace.json          # marketplace dla Claude Code (trzy pluginy)
+.claude-plugin/marketplace.json          # marketplace dla Claude Code (pięć pluginów)
 .agents/plugins/marketplace.json         # marketplace dla Codex (Claude czyta .claude-plugin/)
-plugins/<plugin>/                        # prawo-pl-eli | prawo-eu-eurlex | prawo-pl-saos — identyczny układ
+plugins/<plugin>/                        # prawo-pl-eli | prawo-pl-edzienniki | prawo-eu-eurlex | prawo-pl-saos | prawo-pl-cbosa | prawo-pl-uodo
 ├── .claude-plugin/plugin.json           # manifest pluginu — Claude
 ├── .codex-plugin/plugin.json            # manifest pluginu — Codex ("skills": "./skills/")
 └── skills/<plugin>/                      # Agent Skills — WSPÓLNE dla obu narzędzi
     ├── SKILL.md
-    ├── scripts/eli.py | eurlex.py | saos.py   # silnik (stdlib, read-only)
+    ├── scripts/<silnik>.py               # eli.py | edzienniki.py | eurlex.py | saos.py | cbosa.py | uodo.py
     └── references/api.md                 # referencja endpointów źródła
 tools/validate.py                        # walidator manifestów wszystkich pluginów (używany w CI)
-tools/test_eli.py, test_eurlex.py, test_saos.py  # testy jednostkowe silników, offline (używane w CI)
+tools/test_*.py                          # testy jednostkowe silników, offline (używane w CI)
 .github/workflows/release.yml            # GitHub Actions: walidacja + testy + ZIP-y release na tagu v*
 ```
 
@@ -221,13 +327,13 @@ tools/test_eli.py, test_eurlex.py, test_saos.py  # testy jednostkowe silników, 
 
 ## Wersjonowanie
 
-Wszystkie pluginy są wersjonowane **razem (lockstep)** — jedna wersja (obecnie **1.4.2**) zadeklarowana
+Wszystkie pluginy są wersjonowane **razem (lockstep)** — jedna wersja (obecnie **1.5.0**) zadeklarowana
 we wszystkich miejscach, identyczna; `tools/validate.py` wymusza to w CI:
 
 - `plugins/<plugin>/.claude-plugin/plugin.json` i `.codex-plugin/plugin.json` (pole `version`) — wszystkie pluginy,
 - wpisy wszystkich pluginów w obu marketplace'ach (`.claude-plugin/marketplace.json`, `.agents/plugins/marketplace.json`),
 - frontmattery `SKILL.md` (pole `version`),
-- `scripts/eli.py`, `scripts/eurlex.py` i `scripts/saos.py` (`__version__`; CLI: `--version`).
+- silniki: `eli.py`, `edzienniki.py`, `eurlex.py`, `saos.py`, `cbosa.py`, `uodo.py` (`__version__`; CLI: `--version`).
 
 Wydanie nowej wersji: bump `version` we wszystkich powyższych → `python3 tools/validate.py &&
 for t in tools/test_*.py; do python3 $t; done` → `git tag v1.x.y` → `git push --tags`.
@@ -242,9 +348,14 @@ for t in tools/test_*.py; do python3 $t; done` → `git tag v1.x.y` → `git pus
   konkretną datę zweryfikuj dodatkowo (np. `dziennikustaw.gov.pl`, proces legislacyjny).
 - **Wersja skonsolidowana EUR-Lex ma charakter dokumentacyjny** (nie jest tekstem autentycznym) —
   w piśmie urzędowym wskaż akt bazowy + akty zmieniające.
-- **SAOS to baza wtórna (agregat orzeczeń jawnych)** — nie zawiera sądów administracyjnych (NSA/WSA → CBOSA),
-  świeżość bywa opóźniona, a do dosłownego cytatu zweryfikuj orzeczenie w portalu właściwego sądu.
-- Projekt nieoficjalny; korzysta z publicznych API Kancelarii Sejmu, Urzędu Publikacji UE i SAOS (ICM UW / Fundacja ePaństwo).
+- **SAOS to baza wtórna (agregat orzeczeń jawnych)** — nie zawiera sądów administracyjnych (NSA/WSA →
+  prawo-pl-cbosa), świeżość bywa opóźniona, a do dosłownego cytatu zweryfikuj orzeczenie w portalu właściwego sądu.
+- **CBOSA nie ma API** — skill prawo-pl-cbosa czyta publiczne strony HTML (scraping, read-only, z throttlingiem);
+  zmiana układu stron może chwilowo zepsuć parsowanie. Baza ma charakter informacyjno-edukacyjny (anonimizacja).
+- **Portal orzeczeń UODO jest młody (2025)** — starsze decyzje pojawiają się sukcesywnie; brak decyzji
+  w portalu ≠ jej nieistnienie. Sprawdzaj status (prawomocna/nieprawomocna).
+- Projekt nieoficjalny; korzysta z publicznych API/stron Kancelarii Sejmu, urzędów wojewódzkich (e-dzienniki),
+  Urzędu Publikacji UE, SAOS (ICM UW / Fundacja ePaństwo), NSA (CBOSA) i UODO.
 
 ## Licencja
 

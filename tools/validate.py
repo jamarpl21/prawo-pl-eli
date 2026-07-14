@@ -12,10 +12,13 @@ import py_compile
 import pathlib
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-PLUGINS = [
-    ("prawo-pl-eli", "eli.py"),
-    ("prawo-eu-eurlex", "eurlex.py"),
-    ("prawo-pl-saos", "saos.py"),
+PLUGINS = [  # (plugin, [engines]) — plugin może mieć kilka silników (np. eli.py + edzienniki.py)
+    ("prawo-pl-eli", ["eli.py"]),
+    ("prawo-pl-edzienniki", ["edzienniki.py"]),
+    ("prawo-eu-eurlex", ["eurlex.py"]),
+    ("prawo-pl-saos", ["saos.py"]),
+    ("prawo-pl-cbosa", ["cbosa.py"]),
+    ("prawo-pl-uodo", ["uodo.py"]),
 ]
 errors = []
 versions = {}  # source file -> declared version (all must match: lockstep)
@@ -33,7 +36,7 @@ def load_json(rel):
         return None
 
 
-for plugin, engine_name in PLUGINS:
+for plugin, engine_names in PLUGINS:
     # Plugin manifests (Claude + Codex)
     for rel in (f"plugins/{plugin}/.claude-plugin/plugin.json", f"plugins/{plugin}/.codex-plugin/plugin.json"):
         d = load_json(rel)
@@ -70,12 +73,13 @@ for plugin, engine_name in PLUGINS:
                 if len(desc) > 1024:
                     errors.append(f"{skill_rel}: description too long ({len(desc)} > 1024 chars)")
 
-    # Engine compiles
-    engine_rel = f"plugins/{plugin}/skills/{plugin}/scripts/{engine_name}"
-    engine = ROOT / engine_rel
-    if not engine.exists():
-        errors.append(f"{engine_rel}: missing")
-    else:
+    # Engines compile
+    for engine_name in engine_names:
+        engine_rel = f"plugins/{plugin}/skills/{plugin}/scripts/{engine_name}"
+        engine = ROOT / engine_rel
+        if not engine.exists():
+            errors.append(f"{engine_rel}: missing")
+            continue
         try:
             py_compile.compile(str(engine), doraise=True)
         except py_compile.PyCompileError as e:

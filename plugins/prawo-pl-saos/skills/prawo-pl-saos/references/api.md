@@ -58,7 +58,7 @@ Helper `_court_label()` w `saos.py` obsługuje oba kształty.
 - **Most z ELI:** najpierw ustal akt/artykuł w ELI (skill prawo-pl-eli), potem `--przepis "<nazwa aktu>"`
   lub `lawJournalEntryCode` zawęża do orzeczeń powołujących ten przepis.
 - `textContent` w wynikach to fragment z `<em>…</em>` wokół trafienia; helper czyści HTML do tekstu.
-- **Sądy administracyjne**: `courtType=ADMINISTRATIVE` zwykle zwraca `totalResults: 0` — użyj CBOSA
-  (`https://orzeczenia.nsa.gov.pl`, brak API).
+- **Sądy administracyjne**: `courtType=ADMINISTRATIVE` zwykle zwraca `totalResults: 0` — użyj skilla
+  **prawo-pl-cbosa** (baza CBOSA, `https://orzeczenia.nsa.gov.pl`).
 - Do dosłownego cytatu w piśmie/sądzie korzystaj z `source.judgmentUrl` (oryginał), bo SAOS to agregat.
 - Licencja danych: orzeczenia jawne, udostępniane publicznie; przy reużyciu podawaj źródło (SAOS) i sygnaturę.

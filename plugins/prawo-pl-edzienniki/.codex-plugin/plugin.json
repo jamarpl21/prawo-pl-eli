@@ -1,0 +1,18 @@
+{
+  "name": "prawo-pl-edzienniki",
+  "version": "1.5.0",
+  "description": "Prawo miejscowe z API ELI 16 wojewódzkich dzienników urzędowych: uchwały rad gmin/powiatów/sejmików, rozporządzenia wojewody, plany miejscowe, podatki lokalne. Wyszukiwanie po tytule i roczniku, metadane, pełna treść i urzędowy PDF. Read-only, bez klucza.",
+  "author": {
+    "name": "Krzysztof Gibek"
+  },
+  "homepage": "https://github.com/jamarpl21/prawo-pl-eli",
+  "repository": "https://github.com/jamarpl21/prawo-pl-eli",
+  "license": "MIT",
+  "keywords": ["prawo", "polish-law", "prawo-miejscowe", "local-law", "dzienniki-wojewodzkie", "eli", "gmina", "legal"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Prawo PL — prawo miejscowe (e-Dzienniki)",
+    "shortDescription": "Prawo miejscowe z 16 wojewódzkich dzienników urzędowych (API ELI).",
+    "category": "Productivity"
+  }
+}

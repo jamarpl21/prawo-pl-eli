@@ -7,9 +7,9 @@ Operacje WYŁĄCZNIE read-only (GET).
 
 SAOS to baza WTÓRNA orzecznictwa polskiego (agregat orzeczeń jawnych): Sąd Najwyższy (SN),
 Trybunał Konstytucyjny (TK), sądy powszechne (SA/SO/SR) i Krajowa Izba Odwoławcza (KIO).
-Sądy administracyjne (NSA/WSA) są w SAOS praktycznie nieobecne — dla nich zob. CBOSA
-(https://orzeczenia.nsa.gov.pl, brak API). Treść przepisów bierz z ELI (skill prawo-pl-eli),
-nie z SAOS — tu szukasz, JAK sądy stosują przepisy.
+Sądy administracyjne (NSA/WSA) są w SAOS praktycznie nieobecne — dla nich użyj skilla
+prawo-pl-cbosa (baza CBOSA, https://orzeczenia.nsa.gov.pl). Treść przepisów bierz z ELI
+(skill prawo-pl-eli), nie z SAOS — tu szukasz, JAK sądy stosują przepisy.
 
 Komendy:
   szukaj ["<fraza>"] [--sad SN|TK|powszechne|admin|KIO] [--sygnatura S] [--przepis P]
@@ -22,7 +22,7 @@ Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
 import sys, json, re, time, argparse, urllib.request, urllib.parse, urllib.error
 from html.parser import HTMLParser
 
-__version__ = "1.4.2"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "1.5.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://www.saos.org.pl/api"
 
 # Aliasy typów sądów (courtType w API SAOS)
@@ -253,7 +253,7 @@ def cmd_szukaj(a):
     print(f"Znaleziono: {total}  (pokazuję {len(items)}, strona {params['pageNumber']}, po {params['pageSize']})\n")
     if ct == "ADMINISTRATIVE":
         print("UWAGA: sądy administracyjne (NSA/WSA) są w SAOS praktycznie nieobecne — orzecznictwo "
-              "administracyjne sprawdź w CBOSA: https://orzeczenia.nsa.gov.pl (brak API, ręcznie).\n")
+              "administracyjne pobieraj skillem prawo-pl-cbosa (scripts/cbosa.py, baza CBOSA).\n")
     for it in items:
         _wiersz(it)
     if items:
@@ -338,8 +338,8 @@ def cmd_sygnatura(a):
     total = (d.get("info") or {}).get("totalResults", 0) if isinstance(d, dict) else 0
     if not items:
         sys.exit(f"Nie znaleziono orzeczenia o sygnaturze {sig!r} w SAOS.\n"
-                 "SAOS to baza wtórna (nie ma wszystkiego) — sprawdź też portal właściwego sądu "
-                 "albo CBOSA dla sądów administracyjnych (https://orzeczenia.nsa.gov.pl).")
+                 "SAOS to baza wtórna (nie ma wszystkiego) — sprawdź też portal właściwego sądu; "
+                 "sygnatury sądów administracyjnych (NSA/WSA) szukaj skillem prawo-pl-cbosa.")
     print(f"Sygnatura {sig!r}: dopasowań {total}\n")
     for it in items:
         cn = _case_numbers(it)
