@@ -146,7 +146,7 @@ Bez terminala — przez URL w ustawieniach aplikacji:
 
 Uwaga: skille odpytują publiczne API — piaskownica zwykłego czatu może nie mieć dostępu
 do tych hostów; pełną funkcjonalność dają **Cowork** i **Claude Code**. Wizualna instrukcja
-krok po kroku (z makietami UI, także wariant ZIP dla pojedynczego skilla):
+krok po kroku (z makietami UI, obejmuje też aplikację ChatGPT Desktop):
 [docs/instalacja-claude-desktop.html](docs/instalacja-claude-desktop.html).
 
 ### OpenAI Codex

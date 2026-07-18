@@ -172,26 +172,6 @@
   .mock-btn.done { background: var(--ok-soft); color: var(--ok); }
   .mock-note { padding: 10px 18px 14px; color: var(--muted); font-size: 12.5px; }
 
-  /* File trees */
-  .tree-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 16px 0 4px; }
-  @media (max-width: 640px) { .tree-pair { grid-template-columns: 1fr; } }
-  .tree {
-    border: 1px solid var(--line); border-radius: 10px; background: var(--card);
-    padding: 14px 16px; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-    font-size: 12.5px; line-height: 1.8; overflow-x: auto;
-  }
-  .tree .hd {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
-    display: inline-block; padding: 2px 9px; border-radius: 999px; margin-bottom: 10px;
-  }
-  .tree.good .hd { background: var(--ok-soft); color: var(--ok); }
-  .tree.bad .hd { background: var(--bad-soft); color: var(--bad); }
-  .tree .dim { color: var(--muted); }
-  .tree .mark { font-weight: 700; }
-  .tree.good .mark { color: var(--ok); }
-  .tree.bad .mark { color: var(--bad); }
-
   /* Chat mockup */
   .chat { padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; }
   .bubble { max-width: 85%; padding: 10px 14px; border-radius: 14px; font-size: 13.5px; line-height: 1.5; }
@@ -238,9 +218,9 @@
   <h1>Skille prawnicze w Claude&nbsp;Desktop i&nbsp;ChatGPT&nbsp;Desktop</h1>
   <p class="lede">Jak zainstalować otwarte skille prawnicze z repozytorium
   <strong>jamarpl21/prawo-pl-eli</strong> w aplikacjach desktopowych (Mac/Windows):
-  <strong>Claude Desktop</strong> i <strong>ChatGPT Desktop</strong>. Bez terminala —
-  wystarczy <strong>wkleić adres repozytorium</strong> w ustawieniach aplikacji.
-  Wszystkie sześć skilli instaluje się w ~2 minuty.</p>
+  <strong>Claude Desktop</strong> i <strong>ChatGPT Desktop</strong>. Bez terminala
+  i bez pobierania plików — wystarczy <strong>wkleić adres repozytorium</strong>
+  w ustawieniach aplikacji. Wszystkie sześć skilli instaluje się w ~2 minuty.</p>
 
   <div class="skill-badges">
     <span class="badge">prawo-pl-eli</span>
@@ -251,9 +231,9 @@
     <span class="badge">prawo-pl-uodo</span>
   </div>
 
-  <h2>Część A — instalacja przez URL (zalecana)</h2>
+  <h2>Claude Desktop</h2>
   <p class="h2-sub">Repozytorium jest gotowym marketplace'em pluginów — aplikacja pobierze
-  z niego skille sama. Nie ściągasz plików, nie pakujesz ZIP-ów.</p>
+  z niego skille sama.</p>
 
   <div class="steps">
   <div class="step">
@@ -365,65 +345,8 @@
     <strong>Cowork</strong> (wykonywanie na Twoim komputerze).</p>
   </div>
 
-  <h2>Część B — wariant ZIP (pojedynczy skill lub własna kopia)</h2>
-  <p class="h2-sub">Alternatywa, gdy chcesz wgrać jeden skill ręcznie albo zmodyfikowaną
-  własną kopię. Trzy kroki:</p>
-
-  <div class="steps">
-  <div class="step">
-    <div class="step-no">1</div>
-    <div>
-      <h3>Pobierz repozytorium</h3>
-      <p>Na <a href="https://github.com/jamarpl21/prawo-pl-eli">github.com/jamarpl21/prawo-pl-eli</a>
-      kliknij <kbd class="ui">Code</kbd><span class="path-sep">→</span><kbd class="ui">Download ZIP</kbd>
-      i rozpakuj. Każdy skill to folder w <code>plugins/&lt;nazwa&gt;/skills/&lt;nazwa&gt;/</code>
-      z plikiem <code>SKILL.md</code> w środku.</p>
-    </div>
-  </div>
-
-  <div class="step">
-    <div class="step-no">2</div>
-    <div>
-      <h3>Spakuj skill do ZIP — folder w środku, nie same pliki</h3>
-      <p>Najczęstszy błąd: ZIP musi zawierać <strong>folder skilla</strong>, a nie luźne
-      pliki. Zaznacz cały folder (np. <code>prawo-pl-saos</code>) i dopiero jego spakuj.</p>
-      <div class="tree-pair">
-        <div class="tree good">
-          <span class="hd">✓ Dobrze</span><br>
-          prawo-pl-saos.zip<br>
-          <span class="dim">└─</span> <span class="mark">prawo-pl-saos/</span><br>
-          <span class="dim">&nbsp;&nbsp;&nbsp;├─</span> SKILL.md<br>
-          <span class="dim">&nbsp;&nbsp;&nbsp;├─</span> scripts/<br>
-          <span class="dim">&nbsp;&nbsp;&nbsp;└─</span> references/
-        </div>
-        <div class="tree bad">
-          <span class="hd">✗ Źle — instalacja się nie uda</span><br>
-          prawo-pl-saos.zip<br>
-          <span class="dim">├─</span> <span class="mark">SKILL.md</span> <span class="dim">← pliki luzem</span><br>
-          <span class="dim">├─</span> scripts/<br>
-          <span class="dim">└─</span> references/
-        </div>
-      </div>
-      <pre><code><span class="c"># macOS/Linux — z katalogu repozytorium:</span>
-cd plugins/prawo-pl-saos/skills
-zip -r prawo-pl-saos.zip prawo-pl-saos</code></pre>
-    </div>
-  </div>
-
-  <div class="step">
-    <div class="step-no">3</div>
-    <div>
-      <h3>Wgraj ZIP w ustawieniach</h3>
-      <p><kbd class="ui">Settings</kbd><span class="path-sep">→</span><kbd class="ui">Customize</kbd><span class="path-sep">→</span><kbd class="ui">Skills</kbd><span class="path-sep">→</span><kbd class="ui">+</kbd><span class="path-sep">→</span><kbd class="ui">Upload a skill</kbd>,
-      wskaż ZIP i po wgraniu upewnij się, że przełącznik przy skillu jest włączony.
-      Uwaga: tak wgrany skill nie aktualizuje się sam — po nowej wersji w repozytorium
-      usuń go i wgraj świeży ZIP.</p>
-    </div>
-  </div>
-  </div>
-
-  <h2>Część C — aplikacja ChatGPT Desktop (tryby Work i Codex)</h2>
-  <p class="h2-sub">Skille działają też w zunifikowanej aplikacji ChatGPT (Mac/Windows,
+  <h2>ChatGPT Desktop (tryby Work i Codex)</h2>
+  <p class="h2-sub">Skille działają tak samo w zunifikowanej aplikacji ChatGPT (Mac/Windows,
   od 9 lipca 2026, z wbudowanym Codexem) — są w otwartym standardzie Agent Skills,
   wspólnym dla obu ekosystemów.</p>
 
@@ -482,7 +405,8 @@ zip -r prawo-pl-saos.zip prawo-pl-saos</code></pre>
     <div>
       <h3>Zacznij nową sesję</h3>
       <p>Skille z pluginów stają się aktywne dopiero w <strong>nowej sesji</strong> —
-      rozpocznij nową rozmowę/zadanie i zadaj pytanie testowe, jak w części A.</p>
+      rozpocznij nową rozmowę/zadanie i zadaj pytanie testowe, jak w teście
+      dla Claude powyżej.</p>
     </div>
   </div>
   </div>
@@ -498,29 +422,24 @@ zip -r prawo-pl-saos.zip prawo-pl-saos</code></pre>
     </tr>
     <tr>
       <td>Nie widać sekcji Skills/Plugins</td>
-      <td>Wykonywanie kodu jest wyłączone (część A, krok 1) albo — w Team/Enterprise —
+      <td>Wykonywanie kodu jest wyłączone (Claude Desktop, krok 1) albo — w Team/Enterprise —
       administrator nie włączył skilli dla organizacji.</td>
-    </tr>
-    <tr>
-      <td>Błąd przy wgrywaniu ZIP</td>
-      <td>W archiwum są luźne pliki zamiast folderu skilla — spakuj ponownie wg części B,
-      krok 2.</td>
     </tr>
     <tr>
       <td>Skill się nie uruchamia</td>
       <td>Sprawdź, czy plugin/skill jest włączony w <kbd class="ui">Customize</kbd>.
       Zadaj pytanie bliżej tematu skilla (np. z sygnaturą orzeczenia lub nazwą ustawy) —
-      Claude dobiera skill po jego opisie.</td>
+      asystent dobiera skill po jego opisie.</td>
     </tr>
     <tr>
       <td>Skill działa, ale nie pobiera danych</td>
       <td>Piaskownica czatu nie ma dostępu do API — użyj Cowork
-      (ramka w części A).</td>
+      (ramka wyżej).</td>
     </tr>
     <tr>
       <td>ChatGPT: plugin widać, skille nieaktywne</td>
       <td>Skille z pluginów ładują się dopiero w nowej sesji — zamknij bieżącą rozmowę
-      i zacznij nową (część C, krok 3).</td>
+      i zacznij nową (ChatGPT Desktop, krok 3).</td>
     </tr>
   </table>
   </div>
