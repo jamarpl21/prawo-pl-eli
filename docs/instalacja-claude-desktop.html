@@ -1,0 +1,487 @@
+<title>Instalacja skilli prawniczych w Claude Desktop</title>
+<style>
+  :root {
+    --paper: #F6F5F1;
+    --ink: #24262C;
+    --muted: #6B6F79;
+    --line: #DEDCD4;
+    --card: #FFFFFF;
+    --accent: #A93B4A;
+    --accent-soft: #F3E4E6;
+    --code-bg: #26272E;
+    --code-ink: #E9E7DF;
+    --code-accent: #E9A0AC;
+    --ok: #3E7C4F;
+    --ok-soft: #E4EEE6;
+    --bad: #A93B3B;
+    --bad-soft: #F3E3E3;
+    --shadow: 0 1px 2px rgba(30,30,40,.06), 0 6px 24px rgba(30,30,40,.07);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #17181D;
+      --ink: #E8E6E0;
+      --muted: #9B9EA8;
+      --line: #33353D;
+      --card: #1F2127;
+      --accent: #D97A88;
+      --accent-soft: #3A272B;
+      --code-bg: #101115;
+      --code-ink: #D9D7CF;
+      --code-accent: #E9A0AC;
+      --ok: #7FB98E;
+      --ok-soft: #22302A;
+      --bad: #D98A8A;
+      --bad-soft: #362426;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 6px 24px rgba(0,0,0,.25);
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #17181D; --ink: #E8E6E0; --muted: #9B9EA8; --line: #33353D;
+    --card: #1F2127; --accent: #D97A88; --accent-soft: #3A272B;
+    --code-bg: #101115; --code-ink: #D9D7CF; --code-accent: #E9A0AC;
+    --ok: #7FB98E; --ok-soft: #22302A; --bad: #D98A8A; --bad-soft: #362426;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 6px 24px rgba(0,0,0,.25);
+  }
+  :root[data-theme="light"] {
+    --paper: #F6F5F1; --ink: #24262C; --muted: #6B6F79; --line: #DEDCD4;
+    --card: #FFFFFF; --accent: #A93B4A; --accent-soft: #F3E4E6;
+    --code-bg: #26272E; --code-ink: #E9E7DF; --code-accent: #E9A0AC;
+    --ok: #3E7C4F; --ok-soft: #E4EEE6; --bad: #A93B3B; --bad-soft: #F3E3E3;
+    --shadow: 0 1px 2px rgba(30,30,40,.06), 0 6px 24px rgba(30,30,40,.07);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 56px 24px 80px; }
+
+  .eyebrow {
+    font-size: 12px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--accent); font-weight: 600; margin: 0 0 14px;
+  }
+  h1 {
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: clamp(30px, 5vw, 42px);
+    line-height: 1.15; font-weight: 500; letter-spacing: -.01em;
+    margin: 0 0 16px; text-wrap: balance;
+  }
+  .lede { font-size: 18px; color: var(--muted); max-width: 62ch; margin: 0 0 28px; }
+  .lede strong { color: var(--ink); font-weight: 600; }
+
+  .skill-badges { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 8px; }
+  .badge {
+    font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12.5px; padding: 5px 11px; border: 1px solid var(--line);
+    border-radius: 999px; background: var(--card); color: var(--ink);
+  }
+
+  h2 {
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 26px; font-weight: 500; line-height: 1.25;
+    margin: 64px 0 6px; text-wrap: balance;
+  }
+  .h2-sub { color: var(--muted); margin: 0 0 28px; max-width: 62ch; }
+
+  /* Steps */
+  .step { display: grid; grid-template-columns: 56px 1fr; gap: 0 20px; margin: 0 0 44px; }
+  .step-no {
+    font-family: Georgia, serif; font-size: 30px; color: var(--accent);
+    line-height: 1; padding-top: 2px; font-variant-numeric: tabular-nums;
+  }
+  .step-no::after {
+    content: ""; display: block; width: 1px; height: calc(100% - 40px);
+    min-height: 24px; background: var(--line); margin: 14px auto 0;
+  }
+  .steps .step:last-child .step-no::after { display: none; }
+  .step h3 { font-size: 19px; font-weight: 650; margin: 0 0 8px; line-height: 1.3; }
+  .step p { margin: 0 0 12px; max-width: 64ch; }
+  .step p:last-child { margin-bottom: 0; }
+
+  kbd.ui {
+    font-family: inherit; font-size: 14px; font-weight: 600;
+    background: var(--accent-soft); color: var(--accent);
+    padding: 1px 8px; border-radius: 6px; white-space: nowrap;
+  }
+  .path-sep { color: var(--muted); margin: 0 2px; }
+
+  code {
+    font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: .88em; background: var(--accent-soft); color: var(--ink);
+    padding: 1px 6px; border-radius: 5px;
+  }
+  pre {
+    background: var(--code-bg); color: var(--code-ink);
+    border-radius: 10px; padding: 16px 18px; overflow-x: auto;
+    font-size: 13.5px; line-height: 1.65; margin: 14px 0;
+  }
+  pre code { background: none; color: inherit; padding: 0; font-size: inherit; }
+  pre .c { color: #8B8F9C; }
+  pre .a { color: var(--code-accent); }
+
+  /* Faux-UI mockups */
+  .mock {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    box-shadow: var(--shadow); margin: 16px 0 4px; overflow: hidden;
+    font-size: 14px;
+  }
+  .mock-bar {
+    display: flex; align-items: center; gap: 6px;
+    padding: 10px 14px; border-bottom: 1px solid var(--line);
+  }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--line); }
+  .mock-title { margin-left: 8px; font-size: 12.5px; color: var(--muted); font-weight: 500; }
+  .mock-body { padding: 6px 0; }
+  .mock-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    padding: 12px 18px;
+  }
+  .mock-row + .mock-row { border-top: 1px solid var(--line); }
+  .mock-row .lbl { font-weight: 600; }
+  .mock-row .sub { display: block; font-weight: 400; font-size: 12.5px; color: var(--muted); margin-top: 1px; }
+  .mock-input {
+    flex: 1; display: flex; align-items: center; gap: 10px;
+    border: 1px solid var(--line); border-radius: 8px;
+    background: var(--paper); padding: 8px 12px;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 13px;
+    overflow: hidden; white-space: nowrap;
+  }
+  .toggle {
+    flex: none; width: 40px; height: 23px; border-radius: 999px;
+    background: var(--line); position: relative;
+  }
+  .toggle::after {
+    content: ""; position: absolute; top: 2.5px; left: 3px;
+    width: 18px; height: 18px; border-radius: 50%; background: var(--card);
+    box-shadow: 0 1px 2px rgba(0,0,0,.2);
+  }
+  .toggle.on { background: var(--ok); }
+  .toggle.on::after { left: auto; right: 3px; }
+  .mock-btn {
+    flex: none; display: inline-block; padding: 6px 14px; border-radius: 8px;
+    background: var(--accent); color: #fff; font-weight: 600; font-size: 13px;
+  }
+  .mock-btn.ghost { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+  .mock-btn.done { background: var(--ok-soft); color: var(--ok); }
+  .mock-note { padding: 10px 18px 14px; color: var(--muted); font-size: 12.5px; }
+
+  /* File trees */
+  .tree-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 16px 0 4px; }
+  @media (max-width: 640px) { .tree-pair { grid-template-columns: 1fr; } }
+  .tree {
+    border: 1px solid var(--line); border-radius: 10px; background: var(--card);
+    padding: 14px 16px; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12.5px; line-height: 1.8; overflow-x: auto;
+  }
+  .tree .hd {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+    display: inline-block; padding: 2px 9px; border-radius: 999px; margin-bottom: 10px;
+  }
+  .tree.good .hd { background: var(--ok-soft); color: var(--ok); }
+  .tree.bad .hd { background: var(--bad-soft); color: var(--bad); }
+  .tree .dim { color: var(--muted); }
+  .tree .mark { font-weight: 700; }
+  .tree.good .mark { color: var(--ok); }
+  .tree.bad .mark { color: var(--bad); }
+
+  /* Chat mockup */
+  .chat { padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; }
+  .bubble { max-width: 85%; padding: 10px 14px; border-radius: 14px; font-size: 13.5px; line-height: 1.5; }
+  .bubble.user { align-self: flex-end; background: var(--accent-soft); border-bottom-right-radius: 4px; }
+  .bubble.claude { align-self: flex-start; background: var(--paper); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; color: var(--muted); border: 1px solid var(--line);
+    border-radius: 999px; padding: 3px 10px; align-self: flex-start;
+  }
+  .chip b { color: var(--ink); font-weight: 600; font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; }
+
+  /* Callouts */
+  .note {
+    border: 1px solid var(--line); border-radius: 10px; background: var(--card);
+    padding: 16px 18px; margin: 28px 0; max-width: 72ch;
+  }
+  .note b.t {
+    display: block; margin-bottom: 6px; color: var(--accent);
+    font-size: 12px; letter-spacing: .08em; text-transform: uppercase;
+  }
+  .note p { margin: 0 0 8px; } .note p:last-child { margin: 0; }
+
+  table { border-collapse: collapse; width: 100%; font-size: 14px; margin: 14px 0; }
+  .tbl-wrap { overflow-x: auto; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 12px; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  td code { white-space: nowrap; }
+
+  footer {
+    margin-top: 72px; padding-top: 20px; border-top: 1px solid var(--line);
+    color: var(--muted); font-size: 13.5px;
+  }
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+  @media (max-width: 560px) {
+    .step { grid-template-columns: 36px 1fr; gap: 0 12px; }
+    .step-no { font-size: 24px; }
+  }
+</style>
+
+<div class="wrap">
+  <p class="eyebrow">gibek-skills · instrukcja instalacji</p>
+  <h1>Skille prawnicze w aplikacji Claude&nbsp;Desktop</h1>
+  <p class="lede">Jak zainstalować otwarte skille prawnicze z repozytorium
+  <strong>jamarpl21/prawo-pl-eli</strong> w aplikacji desktopowej Claude (Mac/Windows).
+  Główna metoda: <strong>wklejenie adresu repozytorium</strong> — bez pobierania
+  i pakowania czegokolwiek. Wszystkie sześć skilli instaluje się w ~2 minuty.</p>
+
+  <div class="skill-badges">
+    <span class="badge">prawo-pl-eli</span>
+    <span class="badge">prawo-pl-edzienniki</span>
+    <span class="badge">prawo-eu-eurlex</span>
+    <span class="badge">prawo-pl-saos</span>
+    <span class="badge">prawo-pl-cbosa</span>
+    <span class="badge">prawo-pl-uodo</span>
+  </div>
+
+  <h2>Część A — instalacja przez URL (zalecana)</h2>
+  <p class="h2-sub">Repozytorium jest gotowym marketplace'em pluginów — aplikacja pobierze
+  z niego skille sama. Nie ściągasz plików, nie pakujesz ZIP-ów.</p>
+
+  <div class="steps">
+  <div class="step">
+    <div class="step-no">1</div>
+    <div>
+      <h3>Włącz wykonywanie kodu</h3>
+      <p>Skille wymagają aktywnej funkcji wykonywania kodu. Otwórz
+      <kbd class="ui">Settings</kbd><span class="path-sep">→</span><kbd class="ui">Capabilities</kbd>
+      i włącz <kbd class="ui">Code execution</kbd>. W planach Team/Enterprise tę funkcję
+      musi najpierw włączyć administrator organizacji.</p>
+      <div class="mock" role="img" aria-label="Makieta ustawień: przełącznik Code execution włączony">
+        <div class="mock-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          <span class="mock-title">Settings → Capabilities</span></div>
+        <div class="mock-body">
+          <div class="mock-row">
+            <span class="lbl">Code execution
+              <span class="sub">Pozwala Claude uruchamiać kod — wymagane przez skille</span></span>
+            <span class="toggle on" aria-hidden="true"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-no">2</div>
+    <div>
+      <h3>Dodaj repozytorium jako plugin</h3>
+      <p>Otwórz <kbd class="ui">Settings</kbd><span class="path-sep">→</span><kbd class="ui">Customize</kbd><span class="path-sep">→</span><kbd class="ui">Plugins</kbd>,
+      kliknij <kbd class="ui">+&nbsp;Add plugin</kbd> i wklej adres repozytorium —
+      wystarczy krótka forma:</p>
+      <pre><code><span class="a">jamarpl21/prawo-pl-eli</span>
+<span class="c"># zadziała też pełny adres:
+# https://github.com/jamarpl21/prawo-pl-eli</span></code></pre>
+      <p>Zatwierdź przyciskiem <kbd class="ui">Sync</kbd> — aplikacja wczyta katalog
+      marketplace'u <code>gibek-skills</code>.</p>
+      <div class="mock" role="img" aria-label="Makieta dodawania pluginu: pole z adresem repozytorium i przycisk Sync">
+        <div class="mock-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          <span class="mock-title">Settings → Customize → Plugins → Add plugin</span></div>
+        <div class="mock-body">
+          <div class="mock-row">
+            <span class="mock-input">jamarpl21/prawo-pl-eli</span>
+            <span class="mock-btn">Sync</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-no">3</div>
+    <div>
+      <h3>Wybierz skille i zainstaluj</h3>
+      <p>Z wczytanego katalogu wybierz pluginy, które chcesz mieć, i kliknij
+      <kbd class="ui">Install</kbd> przy każdym. Możesz zainstalować wszystkie sześć
+      albo tylko te potrzebne — np. samo <code>prawo-pl-eli</code> (ustawy) i
+      <code>prawo-pl-saos</code> (orzecznictwo).</p>
+      <div class="mock" role="img" aria-label="Makieta katalogu pluginów z przyciskami Install">
+        <div class="mock-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          <span class="mock-title">gibek-skills · 6 pluginów</span></div>
+        <div class="mock-body">
+          <div class="mock-row">
+            <span class="lbl">prawo-pl-eli
+              <span class="sub">Polskie akty prawne z API ELI Sejmu (Dz.U./M.P.)</span></span>
+            <span class="mock-btn done">✓ Installed</span>
+          </div>
+          <div class="mock-row">
+            <span class="lbl">prawo-pl-saos
+              <span class="sub">Orzecznictwo: SN, TK, sądy powszechne, KIO (API SAOS)</span></span>
+            <span class="mock-btn done">✓ Installed</span>
+          </div>
+          <div class="mock-row">
+            <span class="lbl">prawo-pl-cbosa
+              <span class="sub">Orzecznictwo sądów administracyjnych: NSA i 16 WSA</span></span>
+            <span class="mock-btn ghost">Install</span>
+          </div>
+        </div>
+        <div class="mock-note">Włącz auto-aktualizacje marketplace'u, a nowe wersje skilli
+        będą pobierane same.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-no">4</div>
+    <div>
+      <h3>Przetestuj — skill uruchomi się sam</h3>
+      <p>Skilli nie wywołuje się ręcznie: Claude sam sięga po właściwy, gdy pytanie pasuje
+      do jego opisu. Zadaj pytanie testowe i sprawdź, czy w odpowiedzi pojawia się
+      informacja o użyciu skilla.</p>
+      <div class="mock" role="img" aria-label="Makieta czatu: pytanie o orzecznictwo i odpowiedź z użytym skillem">
+        <div class="mock-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          <span class="mock-title">Nowa rozmowa</span></div>
+        <div class="chat">
+          <div class="bubble user">Znajdź aktualne orzeczenia SN o zadośćuczynieniu za naruszenie dóbr osobistych</div>
+          <span class="chip">⚙ Używam skilla <b>prawo-pl-saos</b></span>
+          <div class="bubble claude">Przeszukałem bazę SAOS. Najnowsze orzeczenia Sądu Najwyższego w tej materii to…</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  </div>
+
+  <div class="note">
+    <b class="t">Ograniczenie: dostęp do internetu</b>
+    <p>Skille z tego repozytorium odpytują publiczne API (Sejm, SAOS, EUR-Lex…). W zwykłym
+    czacie Claude wykonuje kod w piaskownicy, która może nie mieć dostępu do tych serwerów —
+    wtedy skill się załaduje, ale nie pobierze danych. Pełną funkcjonalność dają
+    <strong>Cowork</strong> (wykonywanie na Twoim komputerze) oraz <strong>Claude Code</strong>
+    (część C poniżej).</p>
+  </div>
+
+  <h2>Część B — wariant ZIP (pojedynczy skill, praca offline)</h2>
+  <p class="h2-sub">Alternatywa, gdy chcesz wgrać jeden skill ręcznie albo zmodyfikowaną
+  własną kopię. Trzy kroki:</p>
+
+  <div class="steps">
+  <div class="step">
+    <div class="step-no">1</div>
+    <div>
+      <h3>Pobierz repozytorium</h3>
+      <p>Na <a href="https://github.com/jamarpl21/prawo-pl-eli">github.com/jamarpl21/prawo-pl-eli</a>
+      kliknij <kbd class="ui">Code</kbd><span class="path-sep">→</span><kbd class="ui">Download ZIP</kbd>
+      i rozpakuj. Każdy skill to folder w <code>plugins/&lt;nazwa&gt;/skills/&lt;nazwa&gt;/</code>
+      z plikiem <code>SKILL.md</code> w środku.</p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-no">2</div>
+    <div>
+      <h3>Spakuj skill do ZIP — folder w środku, nie same pliki</h3>
+      <p>Najczęstszy błąd: ZIP musi zawierać <strong>folder skilla</strong>, a nie luźne
+      pliki. Zaznacz cały folder (np. <code>prawo-pl-saos</code>) i dopiero jego spakuj.</p>
+      <div class="tree-pair">
+        <div class="tree good">
+          <span class="hd">✓ Dobrze</span><br>
+          prawo-pl-saos.zip<br>
+          <span class="dim">└─</span> <span class="mark">prawo-pl-saos/</span><br>
+          <span class="dim">&nbsp;&nbsp;&nbsp;├─</span> SKILL.md<br>
+          <span class="dim">&nbsp;&nbsp;&nbsp;├─</span> scripts/<br>
+          <span class="dim">&nbsp;&nbsp;&nbsp;└─</span> references/
+        </div>
+        <div class="tree bad">
+          <span class="hd">✗ Źle — instalacja się nie uda</span><br>
+          prawo-pl-saos.zip<br>
+          <span class="dim">├─</span> <span class="mark">SKILL.md</span> <span class="dim">← pliki luzem</span><br>
+          <span class="dim">├─</span> scripts/<br>
+          <span class="dim">└─</span> references/
+        </div>
+      </div>
+      <pre><code><span class="c"># macOS/Linux — z katalogu repozytorium:</span>
+cd plugins/prawo-pl-saos/skills
+zip -r prawo-pl-saos.zip prawo-pl-saos</code></pre>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-no">3</div>
+    <div>
+      <h3>Wgraj ZIP w ustawieniach</h3>
+      <p><kbd class="ui">Settings</kbd><span class="path-sep">→</span><kbd class="ui">Customize</kbd><span class="path-sep">→</span><kbd class="ui">Skills</kbd><span class="path-sep">→</span><kbd class="ui">+</kbd><span class="path-sep">→</span><kbd class="ui">Upload a skill</kbd>,
+      wskaż ZIP i po wgraniu upewnij się, że przełącznik przy skillu jest włączony.
+      Uwaga: tak wgrany skill nie aktualizuje się sam — po nowej wersji w repozytorium
+      usuń go i wgraj świeży ZIP.</p>
+    </div>
+  </div>
+  </div>
+
+  <h2>Część C — Claude Code (aplikacja desktopowa i terminal)</h2>
+  <p class="h2-sub">W Claude Code repozytorium podłącza się tym samym adresem,
+  poleceniami w oknie rozmowy:</p>
+
+  <pre><code><span class="c"># 1. Dodaj marketplace (jednorazowo):</span>
+<span class="a">/plugin marketplace add jamarpl21/prawo-pl-eli</span>
+
+<span class="c"># 2. Zainstaluj wybrane skille:</span>
+<span class="a">/plugin install prawo-pl-eli@gibek-skills</span>
+<span class="a">/plugin install prawo-pl-edzienniki@gibek-skills</span>
+<span class="a">/plugin install prawo-eu-eurlex@gibek-skills</span>
+<span class="a">/plugin install prawo-pl-saos@gibek-skills</span>
+<span class="a">/plugin install prawo-pl-cbosa@gibek-skills</span>
+<span class="a">/plugin install prawo-pl-uodo@gibek-skills</span>
+
+<span class="c"># Aktualizacje w przyszłości:</span>
+<span class="a">/plugin marketplace update</span></code></pre>
+
+  <p>Zamiast poleceń możesz też wpisać samo <code>/plugin</code> — otworzy się menedżer
+  z zakładkami <kbd class="ui">Discover</kbd>, <kbd class="ui">Installed</kbd> i
+  <kbd class="ui">Marketplaces</kbd>, w którym wszystko wyklikasz.</p>
+
+  <h2>Rozwiązywanie problemów</h2>
+  <div class="tbl-wrap">
+  <table>
+    <tr><th>Objaw</th><th>Przyczyna i rozwiązanie</th></tr>
+    <tr>
+      <td>Sync nie znajduje pluginów</td>
+      <td>Sprawdź adres — poprawna forma to <code>jamarpl21/prawo-pl-eli</code> (bez
+      dodatkowych ścieżek). Repozytorium musi być dostępne publicznie — jest.</td>
+    </tr>
+    <tr>
+      <td>Nie widać sekcji Skills/Plugins</td>
+      <td>Wykonywanie kodu jest wyłączone (część A, krok 1) albo — w Team/Enterprise —
+      administrator nie włączył skilli dla organizacji.</td>
+    </tr>
+    <tr>
+      <td>Błąd przy wgrywaniu ZIP</td>
+      <td>W archiwum są luźne pliki zamiast folderu skilla — spakuj ponownie wg części B,
+      krok 2.</td>
+    </tr>
+    <tr>
+      <td>Skill się nie uruchamia</td>
+      <td>Sprawdź, czy plugin/skill jest włączony w <kbd class="ui">Customize</kbd>.
+      Zadaj pytanie bliżej tematu skilla (np. z sygnaturą orzeczenia lub nazwą ustawy) —
+      Claude dobiera skill po jego opisie.</td>
+    </tr>
+    <tr>
+      <td>Skill działa, ale nie pobiera danych</td>
+      <td>Piaskownica czatu nie ma dostępu do API — użyj Cowork albo Claude Code
+      (ramka w części A).</td>
+    </tr>
+  </table>
+  </div>
+
+  <footer>
+    <p>Źródło skilli: <a href="https://github.com/jamarpl21/prawo-pl-eli">github.com/jamarpl21/prawo-pl-eli</a>
+    (licencja MIT) · Ścieżki instalacji wg oficjalnej dokumentacji:
+    <a href="https://support.claude.com/en/articles/12512180-use-skills-in-claude">Use skills in Claude</a>,
+    <a href="https://support.claude.com/en/articles/14328846-browse-skills-connectors-and-plugins-in-one-directory">Browse skills, connectors and plugins</a>
+    oraz <a href="https://code.claude.com/docs/en/plugins.md">Claude Code — Plugins</a> · stan: lipiec 2026.</p>
+  </footer>
+</div>

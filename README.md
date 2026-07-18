@@ -136,6 +136,19 @@ Wszystkie skille są w otwartym standardzie **[Agent Skills](https://agentskills
 
 Aktualizacje: `/plugin marketplace update`.
 
+### Claude Desktop (aplikacja)
+
+Bez terminala — przez URL w ustawieniach aplikacji:
+
+1. **Settings → Capabilities** → włącz **Code execution** (wymagane przez skille).
+2. **Settings → Customize → Plugins → + Add plugin** → wklej `jamarpl21/prawo-pl-eli` → **Sync**.
+3. Kliknij **Install** przy wybranych skillach; włącz auto-aktualizacje marketplace'u.
+
+Uwaga: skille odpytują publiczne API — piaskownica zwykłego czatu może nie mieć dostępu
+do tych hostów; pełną funkcjonalność dają **Cowork** i **Claude Code**. Wizualna instrukcja
+krok po kroku (z makietami UI, także wariant ZIP dla pojedynczego skilla):
+[docs/instalacja-claude-desktop.html](docs/instalacja-claude-desktop.html).
+
 ### OpenAI Codex
 
 ```
