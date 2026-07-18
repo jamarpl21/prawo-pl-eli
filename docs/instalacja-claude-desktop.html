@@ -1,4 +1,4 @@
-<title>Instalacja skilli prawniczych w Claude Desktop</title>
+<title>Skille prawnicze w Claude Desktop i ChatGPT Desktop</title>
 <style>
   :root {
     --paper: #F6F5F1;
@@ -235,13 +235,12 @@
 
 <div class="wrap">
   <p class="eyebrow">gibek-skills · instrukcja instalacji</p>
-  <h1>Skille prawnicze w aplikacji Claude&nbsp;Desktop</h1>
+  <h1>Skille prawnicze w Claude&nbsp;Desktop i&nbsp;ChatGPT&nbsp;Desktop</h1>
   <p class="lede">Jak zainstalować otwarte skille prawnicze z repozytorium
-  <strong>jamarpl21/prawo-pl-eli</strong> w aplikacji desktopowej Claude (Mac/Windows).
-  Główna metoda: <strong>wklejenie adresu repozytorium</strong> — bez pobierania
-  i pakowania czegokolwiek. Wszystkie sześć skilli instaluje się w ~2 minuty.
-  Na końcu: te same skille w <strong>Claude Code</strong> (część C)
-  i w aplikacji <strong>ChatGPT Desktop</strong> (część D).</p>
+  <strong>jamarpl21/prawo-pl-eli</strong> w aplikacjach desktopowych (Mac/Windows):
+  <strong>Claude Desktop</strong> i <strong>ChatGPT Desktop</strong>. Bez terminala —
+  wystarczy <strong>wkleić adres repozytorium</strong> w ustawieniach aplikacji.
+  Wszystkie sześć skilli instaluje się w ~2 minuty.</p>
 
   <div class="skill-badges">
     <span class="badge">prawo-pl-eli</span>
@@ -362,9 +361,8 @@
     <b class="t">Ograniczenie: dostęp do internetu</b>
     <p>Skille z tego repozytorium odpytują publiczne API (Sejm, SAOS, EUR-Lex…). W zwykłym
     czacie Claude wykonuje kod w piaskownicy, która może nie mieć dostępu do tych serwerów —
-    wtedy skill się załaduje, ale nie pobierze danych. Pełną funkcjonalność dają
-    <strong>Cowork</strong> (wykonywanie na Twoim komputerze) oraz <strong>Claude Code</strong>
-    (część C poniżej).</p>
+    wtedy skill się załaduje, ale nie pobierze danych. Pełną funkcjonalność daje
+    <strong>Cowork</strong> (wykonywanie na Twoim komputerze).</p>
   </div>
 
   <h2>Część B — wariant ZIP (pojedynczy skill lub własna kopia)</h2>
@@ -424,29 +422,7 @@ zip -r prawo-pl-saos.zip prawo-pl-saos</code></pre>
   </div>
   </div>
 
-  <h2>Część C — Claude Code (aplikacja desktopowa i terminal)</h2>
-  <p class="h2-sub">W Claude Code repozytorium podłącza się tym samym adresem,
-  poleceniami w oknie rozmowy:</p>
-
-  <pre><code><span class="c"># 1. Dodaj marketplace (jednorazowo):</span>
-<span class="a">/plugin marketplace add jamarpl21/prawo-pl-eli</span>
-
-<span class="c"># 2. Zainstaluj wybrane skille:</span>
-<span class="a">/plugin install prawo-pl-eli@gibek-skills</span>
-<span class="a">/plugin install prawo-pl-edzienniki@gibek-skills</span>
-<span class="a">/plugin install prawo-eu-eurlex@gibek-skills</span>
-<span class="a">/plugin install prawo-pl-saos@gibek-skills</span>
-<span class="a">/plugin install prawo-pl-cbosa@gibek-skills</span>
-<span class="a">/plugin install prawo-pl-uodo@gibek-skills</span>
-
-<span class="c"># Aktualizacje w przyszłości:</span>
-<span class="a">/plugin marketplace update</span></code></pre>
-
-  <p>Zamiast poleceń możesz też wpisać samo <code>/plugin</code> — otworzy się menedżer
-  z zakładkami <kbd class="ui">Discover</kbd>, <kbd class="ui">Installed</kbd> i
-  <kbd class="ui">Marketplaces</kbd>, w którym wszystko wyklikasz.</p>
-
-  <h2>Część D — aplikacja ChatGPT Desktop (tryby Work i Codex)</h2>
+  <h2>Część C — aplikacja ChatGPT Desktop (tryby Work i Codex)</h2>
   <p class="h2-sub">Skille działają też w zunifikowanej aplikacji ChatGPT (Mac/Windows,
   od 9 lipca 2026, z wbudowanym Codexem) — są w otwartym standardzie Agent Skills,
   wspólnym dla obu ekosystemów.</p>
@@ -455,22 +431,33 @@ zip -r prawo-pl-saos.zip prawo-pl-saos</code></pre>
   <div class="step">
     <div class="step-no">1</div>
     <div>
-      <h3>Dodaj marketplace przez CLI Codexa</h3>
-      <p>W terminalu (jednorazowo):</p>
-      <pre><code><span class="a">codex plugin marketplace add jamarpl21/prawo-pl-eli</span>
-<span class="a">codex plugin add prawo-pl-eli@gibek-skills</span>
-<span class="c"># analogicznie pozostałe: prawo-pl-edzienniki, prawo-eu-eurlex,
-# prawo-pl-saos, prawo-pl-cbosa, prawo-pl-uodo</span></code></pre>
+      <h3>Dodaj marketplace w zarządzaniu pluginami</h3>
+      <p>W aplikacji ChatGPT otwórz zarządzanie pluginami
+      (<kbd class="ui">Settings</kbd><span class="path-sep">→</span><kbd class="ui">Plugins</kbd>)
+      i dodaj marketplace, podając adres repozytorium:</p>
+      <pre><code><span class="a">jamarpl21/prawo-pl-eli</span></code></pre>
+      <div class="mock" role="img" aria-label="Makieta dodawania marketplace'u w ustawieniach pluginów ChatGPT">
+        <div class="mock-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          <span class="mock-title">ChatGPT → Settings → Plugins</span></div>
+        <div class="mock-body">
+          <div class="mock-row">
+            <span class="mock-input">jamarpl21/prawo-pl-eli</span>
+            <span class="mock-btn">Add</span>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
   <div class="step">
     <div class="step-no">2</div>
     <div>
-      <h3>Znajdź pluginy w aplikacji</h3>
-      <p>W aplikacji ChatGPT przełącz się na tryb <kbd class="ui">Work</kbd> albo
+      <h3>Zainstaluj pluginy z zakładki Personal</h3>
+      <p>Przełącz się na tryb <kbd class="ui">Work</kbd> albo
       <kbd class="ui">Codex</kbd> i otwórz panel <kbd class="ui">Plugins</kbd>.
-      Pluginy zainstalowane przez CLI znajdziesz w zakładce <kbd class="ui">Personal</kbd>.</p>
+      Marketplace <code>gibek-skills</code> znajdziesz w zakładce
+      <kbd class="ui">Personal</kbd> — kliknij <kbd class="ui">Install</kbd>
+      przy wybranych skillach.</p>
       <div class="mock" role="img" aria-label="Makieta panelu Plugins w aplikacji ChatGPT z zakładką Personal">
         <div class="mock-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>
           <span class="mock-title">ChatGPT → Codex → Plugins → Personal</span></div>
@@ -527,13 +514,13 @@ zip -r prawo-pl-saos.zip prawo-pl-saos</code></pre>
     </tr>
     <tr>
       <td>Skill działa, ale nie pobiera danych</td>
-      <td>Piaskownica czatu nie ma dostępu do API — użyj Cowork albo Claude Code
+      <td>Piaskownica czatu nie ma dostępu do API — użyj Cowork
       (ramka w części A).</td>
     </tr>
     <tr>
       <td>ChatGPT: plugin widać, skille nieaktywne</td>
       <td>Skille z pluginów ładują się dopiero w nowej sesji — zamknij bieżącą rozmowę
-      i zacznij nową (część D, krok 3).</td>
+      i zacznij nową (część C, krok 3).</td>
     </tr>
   </table>
   </div>
@@ -543,7 +530,6 @@ zip -r prawo-pl-saos.zip prawo-pl-saos</code></pre>
     (licencja MIT) · Ścieżki instalacji wg oficjalnej dokumentacji:
     <a href="https://support.claude.com/en/articles/12512180-use-skills-in-claude">Use skills in Claude</a>,
     <a href="https://support.claude.com/en/articles/14328846-browse-skills-connectors-and-plugins-in-one-directory">Browse skills, connectors and plugins</a>
-    <a href="https://code.claude.com/docs/en/plugins.md">Claude Code — Plugins</a>
     oraz <a href="https://learn.chatgpt.com/docs/plugins">ChatGPT Learn — Plugins</a>
     i <a href="https://learn.chatgpt.com/docs/build-skills">Build skills</a> · stan: lipiec 2026.</p>
   </footer>
