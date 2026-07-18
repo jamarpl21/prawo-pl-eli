@@ -163,6 +163,10 @@ codex plugin add prawo-pl-uodo@gibek-skills
 
 Aktualizacje: `codex plugin marketplace upgrade`.
 
+Pluginy zainstalowane przez CLI są widoczne także w aplikacji **ChatGPT Desktop**
+(od 9.07.2026, z wbudowanym Codexem): tryb **Work** lub **Codex** → panel **Plugins** →
+zakładka **Personal**. Skille aktywują się dopiero w nowej sesji.
+
 ### Ręcznie / dev (oba narzędzia)
 
 Sklonuj repo i podlinkuj sam katalog skilla (otwarty standard Agent Skills):

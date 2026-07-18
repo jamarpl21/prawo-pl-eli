@@ -239,7 +239,9 @@
   <p class="lede">Jak zainstalować otwarte skille prawnicze z repozytorium
   <strong>jamarpl21/prawo-pl-eli</strong> w aplikacji desktopowej Claude (Mac/Windows).
   Główna metoda: <strong>wklejenie adresu repozytorium</strong> — bez pobierania
-  i pakowania czegokolwiek. Wszystkie sześć skilli instaluje się w ~2 minuty.</p>
+  i pakowania czegokolwiek. Wszystkie sześć skilli instaluje się w ~2 minuty.
+  Na końcu: te same skille w <strong>Claude Code</strong> (część C)
+  i w aplikacji <strong>ChatGPT Desktop</strong> (część D).</p>
 
   <div class="skill-badges">
     <span class="badge">prawo-pl-eli</span>
@@ -444,6 +446,60 @@ zip -r prawo-pl-saos.zip prawo-pl-saos</code></pre>
   z zakładkami <kbd class="ui">Discover</kbd>, <kbd class="ui">Installed</kbd> i
   <kbd class="ui">Marketplaces</kbd>, w którym wszystko wyklikasz.</p>
 
+  <h2>Część D — aplikacja ChatGPT Desktop (tryby Work i Codex)</h2>
+  <p class="h2-sub">Skille działają też w zunifikowanej aplikacji ChatGPT (Mac/Windows,
+  od 9 lipca 2026, z wbudowanym Codexem) — są w otwartym standardzie Agent Skills,
+  wspólnym dla obu ekosystemów.</p>
+
+  <div class="steps">
+  <div class="step">
+    <div class="step-no">1</div>
+    <div>
+      <h3>Dodaj marketplace przez CLI Codexa</h3>
+      <p>W terminalu (jednorazowo):</p>
+      <pre><code><span class="a">codex plugin marketplace add jamarpl21/prawo-pl-eli</span>
+<span class="a">codex plugin add prawo-pl-eli@gibek-skills</span>
+<span class="c"># analogicznie pozostałe: prawo-pl-edzienniki, prawo-eu-eurlex,
+# prawo-pl-saos, prawo-pl-cbosa, prawo-pl-uodo</span></code></pre>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-no">2</div>
+    <div>
+      <h3>Znajdź pluginy w aplikacji</h3>
+      <p>W aplikacji ChatGPT przełącz się na tryb <kbd class="ui">Work</kbd> albo
+      <kbd class="ui">Codex</kbd> i otwórz panel <kbd class="ui">Plugins</kbd>.
+      Pluginy zainstalowane przez CLI znajdziesz w zakładce <kbd class="ui">Personal</kbd>.</p>
+      <div class="mock" role="img" aria-label="Makieta panelu Plugins w aplikacji ChatGPT z zakładką Personal">
+        <div class="mock-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          <span class="mock-title">ChatGPT → Codex → Plugins → Personal</span></div>
+        <div class="mock-body">
+          <div class="mock-row">
+            <span class="lbl">prawo-pl-eli
+              <span class="sub">gibek-skills · Polskie akty prawne z API ELI Sejmu</span></span>
+            <span class="mock-btn done">✓ Installed</span>
+          </div>
+          <div class="mock-row">
+            <span class="lbl">prawo-pl-saos
+              <span class="sub">gibek-skills · Orzecznictwo: SN, TK, sądy powszechne, KIO</span></span>
+            <span class="mock-btn done">✓ Installed</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-no">3</div>
+    <div>
+      <h3>Zacznij nową sesję</h3>
+      <p>Skille z pluginów stają się aktywne dopiero w <strong>nowej sesji</strong> —
+      rozpocznij nową rozmowę/zadanie i zadaj pytanie testowe, jak w części A.</p>
+    </div>
+  </div>
+  </div>
+
   <h2>Rozwiązywanie problemów</h2>
   <div class="tbl-wrap">
   <table>
@@ -474,6 +530,11 @@ zip -r prawo-pl-saos.zip prawo-pl-saos</code></pre>
       <td>Piaskownica czatu nie ma dostępu do API — użyj Cowork albo Claude Code
       (ramka w części A).</td>
     </tr>
+    <tr>
+      <td>ChatGPT: plugin widać, skille nieaktywne</td>
+      <td>Skille z pluginów ładują się dopiero w nowej sesji — zamknij bieżącą rozmowę
+      i zacznij nową (część D, krok 3).</td>
+    </tr>
   </table>
   </div>
 
@@ -482,6 +543,8 @@ zip -r prawo-pl-saos.zip prawo-pl-saos</code></pre>
     (licencja MIT) · Ścieżki instalacji wg oficjalnej dokumentacji:
     <a href="https://support.claude.com/en/articles/12512180-use-skills-in-claude">Use skills in Claude</a>,
     <a href="https://support.claude.com/en/articles/14328846-browse-skills-connectors-and-plugins-in-one-directory">Browse skills, connectors and plugins</a>
-    oraz <a href="https://code.claude.com/docs/en/plugins.md">Claude Code — Plugins</a> · stan: lipiec 2026.</p>
+    <a href="https://code.claude.com/docs/en/plugins.md">Claude Code — Plugins</a>
+    oraz <a href="https://learn.chatgpt.com/docs/plugins">ChatGPT Learn — Plugins</a>
+    i <a href="https://learn.chatgpt.com/docs/build-skills">Build skills</a> · stan: lipiec 2026.</p>
   </footer>
 </div>
