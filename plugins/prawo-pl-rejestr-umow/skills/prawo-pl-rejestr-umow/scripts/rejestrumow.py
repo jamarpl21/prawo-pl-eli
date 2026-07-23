@@ -24,7 +24,7 @@ Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
 """
 import sys, json, re, time, argparse, urllib.request, urllib.parse, urllib.error
 
-__version__ = "1.6.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "1.6.1"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://rejestrumow.gov.pl/api-dp/v1"
 
 SORTY = ["unitNameAsc", "unitNameDesc", "unitVoivodeshipAsc", "unitVoivodeshipDesc",

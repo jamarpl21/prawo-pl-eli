@@ -1,6 +1,6 @@
 {
   "name": "prawo-pl-edzienniki",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "description": "Prawo miejscowe z API ELI 16 wojewódzkich dzienników urzędowych: uchwały rad gmin/powiatów/sejmików, rozporządzenia wojewody, plany miejscowe, podatki lokalne. Wyszukiwanie po tytule i roczniku, metadane, pełna treść i urzędowy PDF. Read-only, bez klucza.",
   "author": {
     "name": "Krzysztof Gibek"

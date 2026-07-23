@@ -91,6 +91,36 @@ class TestHtmlToText(unittest.TestCase):
         self.assertEqual(edz.html_to_text("<p>art.\xa05</p>"), "art. 5")
 
 
+class TestStronicuj(unittest.TestCase):
+    # regresja BUG 2026-07-23 (PM/Rumia): paginacja MUSI działać na liście przefiltrowanych
+    # trafień i strony 1..N muszą pokrywać cały policzony zbiór (bez fałszywych negatywów)
+    def test_strony_pokrywaja_caly_zbior(self):
+        trafienia = list(range(43))  # 43 trafienia jak w zgłoszeniu
+        _, _, strony = edz._stronicuj(trafienia, 10, 1)
+        self.assertEqual(strony, 5)
+        zebrane = []
+        for s in range(1, strony + 1):
+            okno, start, _ = edz._stronicuj(trafienia, 10, s)
+            self.assertEqual(start, (s - 1) * 10)
+            zebrane.extend(okno)
+        self.assertEqual(zebrane, trafienia)
+
+    def test_okno_rowne_limitowi(self):
+        okno, start, strony = edz._stronicuj(list(range(43)), 50, 1)
+        self.assertEqual((len(okno), start, strony), (43, 0, 1))
+
+    def test_ostatnia_strona_czesciowa(self):
+        okno, _, _ = edz._stronicuj(list(range(43)), 10, 5)
+        self.assertEqual(okno, [40, 41, 42])
+
+    def test_strona_poza_zakresem_pusta(self):
+        okno, _, strony = edz._stronicuj(list(range(43)), 10, 6)
+        self.assertEqual((okno, strony), ([], 5))
+
+    def test_pusty_zbior(self):
+        self.assertEqual(edz._stronicuj([], 10, 1), ([], 0, 1))
+
+
 class TestFragmenty(unittest.TestCase):
     def test_okno_wokol_frazy(self):
         txt = ("X" * 50) + "PLAN" + ("Y" * 50)

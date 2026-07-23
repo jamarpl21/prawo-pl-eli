@@ -65,7 +65,9 @@ validFrom repealDate expirationDate legalStatusDate inForce releasedBy[] keyword
 ## Mapowanie komend `edzienniki.py`
 
 `dzienniki [--woj W]`→`/acts`; `szukaj --woj W [FRAZA] [--rok R]`→`/acts/{pub}/{rok}?limit=100000`
-+ filtr lokalny (bez `--rok`: do 3 najnowszych roczników); `akt W R P`→`/acts/{pub}/{r}/{p}`;
++ filtr lokalny (bez `--rok`: do 3 najnowszych roczników); `--limit`/`--strona` stronicują
+listę PRZEFILTROWANYCH trafień (strony 1..N pokrywają wszystkie policzone trafienia, stopka
+podaje zakres i N); `akt W R P`→`/acts/{pub}/{r}/{p}`;
 `tekst W R P [--fragment F] [--pdf PLIK]`→`…/text.html` (tekst) / `…/text.pdf` (plik).
 
 ## Wskazówki

@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-edzienniki
-version: 1.6.0
+version: 1.6.1
 description: >-
   Odpytuje API ELI 16 WOJEWÓDZKICH DZIENNIKÓW URZĘDOWYCH — PRAWO MIEJSCOWE: uchwały rad gmin,
   powiatów i sejmików województw, rozporządzenia i zarządzenia wojewody, akty prawa miejscowego.
@@ -60,6 +60,10 @@ python3 "$EDZ" <komenda> [...]
   Filtr jest LOKALNY (API dzienników ignoruje filtry serwerowe — silnik pobiera rocznik i sam
   filtruje; bez rozróżniania diakrytyków). Bez `--rok`: do 3 najnowszych roczników. W tytule
   uchwał zwykle jest nazwa organu — szukaj po nazwie gminy: `szukaj --woj MP "Kraków"`.
+  UWAGA: wynik to JEDNA strona (domyślnie 10 NAJNOWSZYCH pozycji z trafień) — gdy nagłówek
+  liczy więcej trafień, obejrzyj resztę przez `--strona 2..N` albo `--limit <liczba trafień>`.
+  „Nie ma w pierwszej dziesiątce" NIE znaczy „akt nie istnieje" — przed wnioskiem o braku
+  aktu przejrzyj WSZYSTKIE trafienia (najprościej: `--limit` ≥ liczba trafień z nagłówka).
 - **akt** — metadane (typ, organ, daty, status, hasła, linki PDF/HTML):
   `python3 scripts/edzienniki.py akt DS 2026 3299`
 - **tekst** — treść aktu; `--fragment` wycina okna wokół frazy; `--pdf` zapisuje urzędowy PDF:

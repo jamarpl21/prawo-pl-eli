@@ -13,7 +13,7 @@ i rozporządzeń krajowych zawsze stamtąd.
 
 Komendy:
   dzienniki [--woj W]                 lista dzienników / roczniki i liczba aktów województwa
-  szukaj --woj W ["<fraza tytułu>"] [--rok RRRR] [--limit N] [--offset N]
+  szukaj --woj W ["<fraza tytułu>"] [--rok RRRR] [--limit N] [--strona N]
   akt <woj> <rok> <poz>               metadane aktu (+ linki do PDF/HTML)
   tekst <woj> <rok> <poz> [--fragment "<fraza>"] [--pdf ŚCIEŻKA]
 Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
@@ -21,7 +21,7 @@ Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
 import sys, json, re, time, argparse, urllib.request, urllib.parse, urllib.error
 from html.parser import HTMLParser
 
-__version__ = "1.6.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "1.6.1"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 
 # kod → (województwo, host, publisher ELI). Kody = sufiks publishera (POL_WOJ_XX).
 WOJEWODZTWA = {
@@ -169,6 +169,14 @@ def _fragmenty(txt, fraza, maks=6, okno=600):
     return spans
 
 
+def _stronicuj(trafienia, limit, strona):
+    """Okno paginacji na liście PRZEFILTROWANYCH trafień (nigdy na surowej odpowiedzi API):
+    → (wycinek, indeks startu, liczba stron). Gwarantuje, że strony 1..N pokrywają cały zbiór."""
+    strony = max(1, -(-len(trafienia) // limit))
+    start = (strona - 1) * limit
+    return trafienia[start:start + limit], start, strony
+
+
 def _roczniki(host, publisher):
     """GET /acts → wpis publishera: lista lat + liczba aktów."""
     d = _get(host, "/acts")
@@ -205,6 +213,8 @@ def cmd_dzienniki(a):
 
 def cmd_szukaj(a):
     kod, nazwa, host, pub = _woj(a.woj)
+    if a.limit < 1 or a.strona < 1:
+        sys.exit("--limit i --strona muszą być ≥ 1.")
     if a.rok:
         lata = [a.rok]
     else:
@@ -224,20 +234,27 @@ def cmd_szukaj(a):
         trafione = [it for it in items if not fraza or fraza in _ascii(it.get("title") or "")]
         total_info[rok] = f"{len(trafione)}/{d.get('totalcount', len(items))}"
         zebrane.extend(sorted(trafione, key=lambda it: it.get("pos") or 0, reverse=True))
-        if len(zebrane) >= a.limit:
+        # bez frazy trafienia = cały rocznik — dalsze roczniki pobieramy tylko, gdy okno strony
+        # tego wymaga; Z frazą pobieramy wszystkie żądane roczniki, by licznik trafień był pełny
+        if not fraza and len(zebrane) >= a.strona * a.limit:
             break
+    okno, start, strony = _stronicuj(zebrane, a.limit, a.strona)
     if a.json:
         print(json.dumps({"wojewodztwo": nazwa, "publisher": pub, "lata": lata,
-                          "total": total_info, "items": zebrane[:a.limit]},
+                          "total": total_info, "trafien": len(zebrane), "strona": a.strona,
+                          "stron": strony, "items": okno},
                          ensure_ascii=False, indent=2)); return
     if not zebrane:
         sys.exit(f"Brak wyników w {nazwa} ({', '.join(map(str, lata))}). Filtr frazy działa po "
                  "TYTULE aktu (podłańcuch, bez diakrytyków) — spróbuj krótszej frazy albo innego "
                  "roku (--rok).")
+    if not okno:
+        sys.exit(f"Strona {a.strona} poza zakresem: {len(zebrane)} trafień = {strony} "
+                 f"stron(y) przy --limit {a.limit}.")
     laty = f"{lata[-1]}–{lata[0]}" if len(lata) > 1 else str(lata[0])
     print(f"Województwo {nazwa}, roczniki {laty} "
           f"(trafienia/akty wg lat: {', '.join(f'{r}: {t}' for r, t in total_info.items())})\n")
-    for it in zebrane[:a.limit]:
+    for it in okno:
         adres = it.get("displayaddress") or f"{pub} {it.get('year')} poz. {it.get('pos')}"
         tytul = re.sub(r"\s+", " ", it.get("title") or "").strip()
         status = it.get("status") or ""
@@ -246,10 +263,12 @@ def cmd_szukaj(a):
         if status:
             print(f"    status: {status}  · ogłoszono: {_data(it.get('announcementdate')) or '?'}")
         print()
-    if zebrane:
-        pierwsze = zebrane[0]
-        print(f"Metadane/tekst: akt {kod} {pierwsze.get('year')} {pierwsze.get('pos')}  "
-              f"/ tekst {kod} {pierwsze.get('year')} {pierwsze.get('pos')}")
+    if strony > 1:
+        print(f"Pokazano {start + 1}–{start + len(okno)} z {len(zebrane)} trafień — reszta: "
+              f"--strona <1..{strony}> (po {a.limit} na stronę) albo --limit {len(zebrane)}.")
+    pierwsze = okno[0]
+    print(f"Metadane/tekst: akt {kod} {pierwsze.get('year')} {pierwsze.get('pos')}  "
+          f"/ tekst {kod} {pierwsze.get('year')} {pierwsze.get('pos')}")
 
 
 def cmd_akt(a):
@@ -334,7 +353,9 @@ def main():
                    help="fraza z TYTUŁU aktu (podłańcuch, bez rozróżniania diakrytyków)")
     s.add_argument("--woj", required=True, help="kod (DS) albo nazwa województwa")
     s.add_argument("--rok", type=int, help="rocznik (bez --rok: do 3 najnowszych roczników)")
-    s.add_argument("--limit", type=int, default=10, help="ile wyników pokazać")
+    s.add_argument("--limit", type=int, default=10, help="ile trafień pokazać na stronę")
+    s.add_argument("--strona", type=int, default=1,
+                   help="strona przefiltrowanych trafień (1..N — N podaje stopka wyniku)")
     s.set_defaults(func=cmd_szukaj)
 
     ak = sub.add_parser("akt")
