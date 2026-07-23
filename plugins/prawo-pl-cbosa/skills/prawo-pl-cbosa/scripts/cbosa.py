@@ -21,7 +21,7 @@ Globalnie: --json  (zrzut sparsowanych danych jako JSON zamiast podsumowania)
 import sys, json, re, time, argparse, ssl, html as html_mod
 import urllib.request, urllib.parse, urllib.error, http.cookiejar
 
-__version__ = "1.5.1"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "1.6.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://orzeczenia.nsa.gov.pl"
 
 # Miasta WSA (klucz bez diakrytyków) → końcówka pełnej nazwy z formularza CBOSA.

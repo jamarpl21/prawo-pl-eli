@@ -1,4 +1,4 @@
-# gibek-skills: prawo polskie i unijne + orzecznictwo (6 skilli)
+# gibek-skills: prawo polskie i unijne + orzecznictwo (7 skilli)
 
 [![CI](https://github.com/jamarpl21/prawo-pl-eli/actions/workflows/release.yml/badge.svg)](https://github.com/jamarpl21/prawo-pl-eli/actions/workflows/release.yml)
 [![Release](https://img.shields.io/github/v/release/jamarpl21/prawo-pl-eli)](https://github.com/jamarpl21/prawo-pl-eli/releases/latest)
@@ -7,9 +7,10 @@
 **Prawo polskie i unijne oraz orzecznictwo z OFICJALNYCH źródeł — zamiast cytowania z pamięci.**
 *Cross-tool agent skills (Claude Code + OpenAI Codex): Polish primary law (Sejm ELI API), local law
 (voivodeship journals), EU law (CELLAR/EUR-Lex), Polish case-law (SAOS), administrative courts
-case-law (CBOSA) and Polish DPA decisions (UODO).*
+case-law (CBOSA), Polish DPA decisions (UODO) and the public contracts register of Polish public
+finance sector entities (Centralny Rejestr Umów).*
 
-Repo zawiera sześć bliźniaczych pluginów/skilli (wspólny marketplace `gibek-skills`, wersjonowane razem):
+Repo zawiera siedem bliźniaczych pluginów/skilli (wspólny marketplace `gibek-skills`, wersjonowane razem):
 
 | Plugin / skill | Źródło | Zakres |
 |---|---|---|
@@ -19,6 +20,7 @@ Repo zawiera sześć bliźniaczych pluginów/skilli (wspólny marketplace `gibek
 | **prawo-pl-saos** | [API SAOS](https://www.saos.org.pl/api) | polskie orzecznictwo: SN, TK, sądy powszechne, KIO |
 | **prawo-pl-cbosa** | [CBOSA](https://orzeczenia.nsa.gov.pl) (brak API — scraping) | orzecznictwo sądów administracyjnych: NSA + 16 WSA |
 | **prawo-pl-uodo** | [API Portalu Orzeczeń UODO](https://orzeczenia.uodo.gov.pl/api-doc/) | decyzje Prezesa UODO (RODO): kary, upomnienia, nakazy |
+| **prawo-pl-rejestr-umow** | [API Centralnego Rejestru Umów](https://rejestrumow.gov.pl) | umowy jednostek sektora finansów publicznych (JSFP) od 1.07.2026 |
 
 ## prawo-pl-eli
 
@@ -110,15 +112,33 @@ bez klucza). Silnik `uodo.py` pozwala:
 Komplet RODO: treść rozporządzenia → **prawo-eu-eurlex**, decyzje organu → **prawo-pl-uodo**,
 sądowa kontrola decyzji (WSA/NSA) → **prawo-pl-cbosa**.
 
+## prawo-pl-rejestr-umow
+
+Szósty skill wychodzi poza przepisy i orzecznictwo — do **praktyki wydatkowej sektora publicznego**:
+**Centralny Rejestr Umów JSFP** ([rejestrumow.gov.pl](https://rejestrumow.gov.pl), jawny rejestr
+z art. 34a ustawy o finansach publicznych, uruchomiony 1.07.2026, publiczne API bez klucza).
+Umowy zawierane przez urzędy, gminy, szpitale, uczelnie czy sądy — z danymi stron (NIP/REGON,
+adresy), przedmiotem, wartością i zmianami. Silnik `rejestrumow.py` pozwala:
+
+- przeglądać najnowsze umowy: `najnowsze --limit 10`,
+- szukać po przedmiocie, stronach i lokalizacji: `szukaj "remont drogi" --woj dolnośląskie --sort priceDesc`,
+  `szukaj --jsfp "urząd gminy" --wartosc-od 100000`, `szukaj --wykonawca-nip <NIP>`,
+- pobrać **pełne szczegóły umowy** (strony z adresami, wartość słownie, aneksy, wyłączenia
+  jawności): `umowa <idUmowy>`.
+
+Rejestr pokazuje **zawarte umowy** (nie przetargi — te są w BZP/TED) i obejmuje wyłącznie umowy
+od 1.07.2026; podstawa prawna (art. 34a–34b u.f.p.) → **prawo-pl-eli**.
+
 Wszystkie skille są w otwartym standardzie **[Agent Skills](https://agentskills.io)** (`SKILL.md`), więc działają w
 **Claude Code** i **OpenAI Codex**. Silniki (`scripts/eli.py`, `scripts/edzienniki.py`, `scripts/eurlex.py`,
-`scripts/saos.py`, `scripts/cbosa.py`, `scripts/uodo.py`) to czysty Python (tylko stdlib), wszystko **read-only**.
+`scripts/saos.py`, `scripts/cbosa.py`, `scripts/uodo.py`, `scripts/rejestrumow.py`) to czysty Python
+(tylko stdlib), wszystko **read-only**.
 
 ## Wymagania
 
 - Python 3.8+ (tylko stdlib; brak `pip install`)
 - dostęp do internetu (`api.sejm.gov.pl`, hosty e-dzienników wojewódzkich, `publications.europa.eu`,
-  `www.saos.org.pl`, `orzeczenia.nsa.gov.pl`, `orzeczenia.uodo.gov.pl`)
+  `www.saos.org.pl`, `orzeczenia.nsa.gov.pl`, `orzeczenia.uodo.gov.pl`, `rejestrumow.gov.pl`)
 
 ## Instalacja
 
@@ -132,6 +152,7 @@ Wszystkie skille są w otwartym standardzie **[Agent Skills](https://agentskills
 /plugin install prawo-pl-saos@gibek-skills
 /plugin install prawo-pl-cbosa@gibek-skills
 /plugin install prawo-pl-uodo@gibek-skills
+/plugin install prawo-pl-rejestr-umow@gibek-skills
 ```
 
 Aktualizacje: `/plugin marketplace update`.
@@ -159,6 +180,7 @@ codex plugin add prawo-eu-eurlex@gibek-skills
 codex plugin add prawo-pl-saos@gibek-skills
 codex plugin add prawo-pl-cbosa@gibek-skills
 codex plugin add prawo-pl-uodo@gibek-skills
+codex plugin add prawo-pl-rejestr-umow@gibek-skills
 ```
 
 Aktualizacje: `codex plugin marketplace upgrade`.
@@ -173,7 +195,7 @@ Sklonuj repo i podlinkuj sam katalog skilla (otwarty standard Agent Skills):
 
 ```bash
 git clone https://github.com/jamarpl21/prawo-pl-eli
-for s in prawo-pl-eli prawo-pl-edzienniki prawo-eu-eurlex prawo-pl-saos prawo-pl-cbosa prawo-pl-uodo; do
+for s in prawo-pl-eli prawo-pl-edzienniki prawo-eu-eurlex prawo-pl-saos prawo-pl-cbosa prawo-pl-uodo prawo-pl-rejestr-umow; do
   SKILL="$PWD/prawo-pl-eli/plugins/$s/skills/$s"
   ln -s "$SKILL" ~/.claude/skills/$s    # Claude Code
   ln -s "$SKILL" ~/.agents/skills/$s    # OpenAI Codex
@@ -184,12 +206,13 @@ done
 
 Każdy tag `v*` publikuje po jednym zipie na plugin w GitHub Releases
 (`prawo-pl-eli-<wersja>.zip`, `prawo-pl-edzienniki-<wersja>.zip`, `prawo-eu-eurlex-<wersja>.zip`,
-`prawo-pl-saos-<wersja>.zip`, `prawo-pl-cbosa-<wersja>.zip`, `prawo-pl-uodo-<wersja>.zip`):
+`prawo-pl-saos-<wersja>.zip`, `prawo-pl-cbosa-<wersja>.zip`, `prawo-pl-uodo-<wersja>.zip`,
+`prawo-pl-rejestr-umow-<wersja>.zip`):
 
 ```bash
-claude --plugin-dir ./prawo-pl-saos-v1.5.1.zip
+claude --plugin-dir ./prawo-pl-saos-v1.6.0.zip
 # albo zdalnie, bez pobierania:
-claude --plugin-url https://github.com/jamarpl21/prawo-pl-eli/releases/download/v1.5.1/prawo-pl-saos-v1.5.1.zip
+claude --plugin-url https://github.com/jamarpl21/prawo-pl-eli/releases/download/v1.6.0/prawo-pl-saos-v1.6.0.zip
 ```
 
 ## Użycie jako samodzielne CLI (bez żadnego LLM-a)
@@ -201,6 +224,7 @@ cd plugins/prawo-eu-eurlex/skills/prawo-eu-eurlex && python3 scripts/eurlex.py <
 cd plugins/prawo-pl-saos/skills/prawo-pl-saos && python3 scripts/saos.py <komenda> [...]
 cd plugins/prawo-pl-cbosa/skills/prawo-pl-cbosa && python3 scripts/cbosa.py <komenda> [...]
 cd plugins/prawo-pl-uodo/skills/prawo-pl-uodo && python3 scripts/uodo.py <komenda> [...]
+cd plugins/prawo-pl-rejestr-umow/skills/prawo-pl-rejestr-umow && python3 scripts/rejestrumow.py <komenda> [...]
 ```
 
 ### eli.py (prawo polskie)
@@ -277,6 +301,19 @@ wyników: stałe 10 (`--strona N`).
 API stosuje jeden warunek filtrujący na zapytanie (fraza ALBO tytuł); zaawansowane filtry:
 `--warunek "indeks:operator:wartość"`.
 
+### rejestrumow.py (umowy sektora finansów publicznych)
+
+| Komenda | Opis | Przykład |
+|---|---|---|
+| `najnowsze` | ostatnio opublikowane umowy | `najnowsze --limit 10` |
+| `szukaj` | po przedmiocie / stronach (nazwa, REGON, NIP) / lokalizacji JSFP / dacie / wartości | `szukaj "remont drogi" --woj dolnośląskie --sort priceDesc` |
+| `umowa` | pełne szczegóły umowy po idUmowy (strony z adresami, aneksy, wyłączenia jawności) | `umowa 958e7d59-057b-4eb4-8f55-e664638f393a` |
+| `slownik` | słowniki API (kody rodzajów zmian, stron, wyłączeń) | `slownik rodzaje_zmian_umowy` |
+
+Filtry można łączyć (AND): fraza dotyczy przedmiotu umowy, `--jsfp/--regon/--nip` zamawiającego,
+`--wykonawca(-nip/-regon)` drugiej strony, `--od/--do` daty zawarcia, `--wartosc-od/-do` kwoty;
+surowe body: `--zapytanie '<json>'`. Okno wyszukiwania: 10 000 wyników (zawężaj datami), strona maks. 50.
+
 ### Przykładowe przepływy
 
 > „co dokładnie mówi art. 299 § 1 Kodeksu spółek handlowych i czy to aktualne?"
@@ -318,17 +355,25 @@ python3 scripts/uodo.py szukaj "art. 33"                                # → de
 python3 scripts/uodo.py decyzja <sygnatura> --fragment "art. 33"        # → argumentacja organu
 ```
 
+> „na co gmina wydaje ostatnio najwięcej i kto jest wykonawcą?"
+
+```bash
+python3 scripts/rejestrumow.py szukaj --jsfp "gmina legnickie pole" \
+        --sort priceDesc --limit 5                                      # → największe umowy z idUmowy
+python3 scripts/rejestrumow.py umowa <idUmowy>                          # → wykonawca (NIP/REGON), wartość, aneksy
+```
+
 ## Struktura
 
 ```
-.claude-plugin/marketplace.json          # marketplace dla Claude Code (pięć pluginów)
+.claude-plugin/marketplace.json          # marketplace dla Claude Code (siedem pluginów)
 .agents/plugins/marketplace.json         # marketplace dla Codex (Claude czyta .claude-plugin/)
-plugins/<plugin>/                        # prawo-pl-eli | prawo-pl-edzienniki | prawo-eu-eurlex | prawo-pl-saos | prawo-pl-cbosa | prawo-pl-uodo
+plugins/<plugin>/                        # prawo-pl-eli | prawo-pl-edzienniki | prawo-eu-eurlex | prawo-pl-saos | prawo-pl-cbosa | prawo-pl-uodo | prawo-pl-rejestr-umow
 ├── .claude-plugin/plugin.json           # manifest pluginu — Claude
 ├── .codex-plugin/plugin.json            # manifest pluginu — Codex ("skills": "./skills/")
 └── skills/<plugin>/                      # Agent Skills — WSPÓLNE dla obu narzędzi
     ├── SKILL.md
-    ├── scripts/<silnik>.py               # eli.py | edzienniki.py | eurlex.py | saos.py | cbosa.py | uodo.py
+    ├── scripts/<silnik>.py               # eli.py | edzienniki.py | eurlex.py | saos.py | cbosa.py | uodo.py | rejestrumow.py
     └── references/api.md                 # referencja endpointów źródła
 tools/validate.py                        # walidator manifestów wszystkich pluginów (używany w CI)
 tools/test_*.py                          # testy jednostkowe silników, offline (używane w CI)
@@ -344,13 +389,13 @@ tools/test_*.py                          # testy jednostkowe silników, offline 
 
 ## Wersjonowanie
 
-Wszystkie pluginy są wersjonowane **razem (lockstep)** — jedna wersja (obecnie **1.5.1**) zadeklarowana
+Wszystkie pluginy są wersjonowane **razem (lockstep)** — jedna wersja (obecnie **1.6.0**) zadeklarowana
 we wszystkich miejscach, identyczna; `tools/validate.py` wymusza to w CI:
 
 - `plugins/<plugin>/.claude-plugin/plugin.json` i `.codex-plugin/plugin.json` (pole `version`) — wszystkie pluginy,
 - wpisy wszystkich pluginów w obu marketplace'ach (`.claude-plugin/marketplace.json`, `.agents/plugins/marketplace.json`),
 - frontmattery `SKILL.md` (pole `version`),
-- silniki: `eli.py`, `edzienniki.py`, `eurlex.py`, `saos.py`, `cbosa.py`, `uodo.py` (`__version__`; CLI: `--version`).
+- silniki: `eli.py`, `edzienniki.py`, `eurlex.py`, `saos.py`, `cbosa.py`, `uodo.py`, `rejestrumow.py` (`__version__`; CLI: `--version`).
 
 Wydanie nowej wersji: bump `version` we wszystkich powyższych → `python3 tools/validate.py &&
 for t in tools/test_*.py; do python3 $t; done` → `git tag v1.x.y` → `git push --tags`.
@@ -371,8 +416,12 @@ for t in tools/test_*.py; do python3 $t; done` → `git tag v1.x.y` → `git pus
   zmiana układu stron może chwilowo zepsuć parsowanie. Baza ma charakter informacyjno-edukacyjny (anonimizacja).
 - **Portal orzeczeń UODO jest młody (2025)** — starsze decyzje pojawiają się sukcesywnie; brak decyzji
   w portalu ≠ jej nieistnienie. Sprawdzaj status (prawomocna/nieprawomocna).
+- **Centralny Rejestr Umów obejmuje tylko umowy zawarte od 1.07.2026** — wcześniejszych i poniżej
+  ustawowego progu tam nie ma; dane wpisują ręcznie kierownicy JSFP (literówki, skróty nazw — szukaj
+  po NIP/REGON), a brak umowy w rejestrze ≠ jej nieistnienie.
 - Projekt nieoficjalny; korzysta z publicznych API/stron Kancelarii Sejmu, urzędów wojewódzkich (e-dzienniki),
-  Urzędu Publikacji UE, SAOS (ICM UW / Fundacja ePaństwo), NSA (CBOSA) i UODO.
+  Urzędu Publikacji UE, SAOS (ICM UW / Fundacja ePaństwo), NSA (CBOSA), UODO i Ministerstwa Finansów
+  (Centralny Rejestr Umów).
 
 ## Licencja
 

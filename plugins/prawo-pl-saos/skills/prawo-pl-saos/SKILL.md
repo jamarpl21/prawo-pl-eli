@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-saos
-version: 1.5.1
+version: 1.6.0
 description: >-
   Odpytuje PUBLICZNE API SAOS (saos.org.pl) — bazę polskiego ORZECZNICTWA: wyroki, postanowienia
   i uchwały Sądu Najwyższego (SN), Trybunału Konstytucyjnego (TK), sądów powszechnych (SA/SO/SR)

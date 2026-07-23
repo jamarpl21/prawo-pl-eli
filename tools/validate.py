@@ -19,6 +19,7 @@ PLUGINS = [  # (plugin, [engines]) — plugin może mieć kilka silników (np. e
     ("prawo-pl-saos", ["saos.py"]),
     ("prawo-pl-cbosa", ["cbosa.py"]),
     ("prawo-pl-uodo", ["uodo.py"]),
+    ("prawo-pl-rejestr-umow", ["rejestrumow.py"]),
 ]
 errors = []
 versions = {}  # source file -> declared version (all must match: lockstep)
