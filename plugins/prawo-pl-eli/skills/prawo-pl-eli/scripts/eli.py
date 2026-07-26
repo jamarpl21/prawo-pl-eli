@@ -19,7 +19,7 @@ Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
 import sys, json, re, time, argparse, urllib.request, urllib.parse, urllib.error
 from html.parser import HTMLParser
 
-__version__ = "1.6.1"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "1.6.2"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://api.sejm.gov.pl/eli"
 
 
@@ -94,6 +94,14 @@ class _Stripper(HTMLParser):
         # sklejają się do tego samego napisu i _fragmenty zwraca oba (znany bug).
         if tag == "sup":
             self.out.append(" ")
+        # Treść przypisu (dymek przy odsyłaczu) API wstawia INLINE, w środku przepisu:
+        # „Art. 66c 6)Dodany przez art. 3…" albo „…wyrażą na to zgodę. 20)Zdanie trzecie dodane…".
+        # Bez oznaczenia nie da się odróżnić normy od komentarza redakcyjnego, więc przypis
+        # wychodzi do własnej linii z etykietą. Etykieta (a nie samo „\n") jest konieczna:
+        # 7 przypisów w k.p.c. zaczyna się od „Art. 598…"/„Tytuł działu…" i na początku linii
+        # udawałoby nagłówek jednostki (_GRANICE), tnąc fragment w losowym miejscu.
+        if tag == "span" and "tooltip-text" in dict(attrs).get("class", ""):
+            self.out.append("\n[przypis] ")
 
     def handle_endtag(self, tag):
         if tag in ("script", "style") and self.skip:
@@ -122,14 +130,32 @@ _GRANICE = r"(?m)^(Art\.\s*\d|Tytuł\s|TYTUŁ\s|Dział\s|DZIAŁ\s|Rozdział\s|Od
 _SUPS = "¹²³⁴⁵⁶⁷⁸⁹⁰"
 _SUP = str.maketrans(_SUPS, "1234567890")
 
+# Warianty myślnika (w tekstach ELI trafia się m.in. U+2012) — ujednolicane WYŁĄCZNIE na potrzeby
+# porównania, znak w znak, żeby nie przesunąć pozycji względem oryginału.
+_MYSLNIKI = str.maketrans("‐‑‒–—―−", "-------")
 
-def _fragmenty(txt, fraza, maks=8):
-    """Spany (start, end) fragmentów z frazą, docięte do granic jednostek redakcyjnych.
 
-    Fraza w formie "art. 299" trafia w NAGŁÓWEK artykułu (nie w odesłania w treści);
-    inna fraza działa jak wyszukiwanie pełnotekstowe (bez rozróżniania wielkości liter).
+def _norm(s):
+    """Postać do porównywania fraz: bez rozróżniania wielkości liter i wariantów myślnika."""
+    return s.translate(_MYSLNIKI).lower()
+
+
+# Koniec oznaczenia artykułu w nagłówku: albo kropka ("Art. 66."), albo ODSYŁACZ DO PRZYPISU
+# sklejony z numerem ("Art. 66c 6)Dodany przez art. 3 pkt 2 ustawy…" — kropka artykułu jest
+# dopiero za treścią przypisu). Przypis nowelizacyjny ma w tekście jednolitym KAŻDY niedawno
+# dodany lub zmieniony przepis, więc wymaganie samej kropki dawało fałszywy negatyw dokładnie
+# tam, gdzie prawo jest najświeższe. Rozróżnienie od indeksu górnego („Art. 60 1." = art. 60¹)
+# trzyma się nawiasu: przypis to CYFRY + „)", indeks górny — cyfry + kropka albo litera.
+# Spacja przed przypisem jest OBOWIĄZKOWA (odsyłacz siedzi w <sup>, a _Stripper zawsze go
+# odspacjowuje) — bez tego „art. 669¹" łapało też „Art. 669 101)", czyli art. 669 z przypisem 101.
+_KONIEC_ART = r"(?:\.|\s+\d+\))"
+
+
+def _hity_naglowka(txt, fraza):
+    """Pozycje NAGŁÓWKÓW artykułu wskazanego frazą ("art. 299", "art. 21¹", "art. 66c").
+
+    Pusta lista = fraza nie jest oznaczeniem artykułu ALBO tego artykułu nie ma w akcie.
     """
-    bounds = [m.start() for m in re.finditer(_GRANICE, txt)]
     # Baza + opcjonalny INDEKS GÓRNY (art. 21¹: unicode "21¹", nawiasowy "21(1)"/"21[1]"/"21^1")
     # + opcjonalny SUFIKS LITEROWY (art. 1a, art. 168e). Rozróżnienie jest istotne, bo w tekście
     # indeks górny ma spację ("Art. 21 1." — patrz _Stripper), a sufiks literowy jest sklejony
@@ -139,19 +165,43 @@ def _fragmenty(txt, fraza, maks=8):
         r"(?:[\(\[\^]\s*(\d+[a-z]?)\s*[\)\]]?|([" + _SUPS + r"]+))?"  # (2) nawiasowy | (3) unicode indeks
         r"([a-z]*)\.?$",                                        # (4) sufiks literowy
         fraza.strip())
-    if m:
-        base = m.group(1)
-        idx = m.group(2) or (m.group(3).translate(_SUP) if m.group(3) else "")
-        letter = m.group(4) or ""
-        if idx:                       # indeks górny → w tekście rozdzielony spacją
-            pat = rf"(?m)^Art\.\s*{re.escape(base)}\s+{re.escape(idx)}{re.escape(letter)}\."
-        elif letter:                  # sufiks literowy → sklejony z numerem
-            pat = rf"(?m)^Art\.\s*{re.escape(base)}\s*{re.escape(letter)}\."
-        else:
-            pat = rf"(?m)^Art\.\s*{re.escape(base)}\."
-        hits = [h.start() for h in re.finditer(pat, txt)]
+    if not m:
+        return []
+    base = m.group(1)
+    idx = m.group(2) or (m.group(3).translate(_SUP) if m.group(3) else "")
+    letter = m.group(4) or ""
+    # "art. 130(1a)" → indeks "1" + litera "a"; w tekście i one bywają rozdzielone
+    # („Art. 130 1 a."), więc literę doklejamy z \s*, nie na sztywno.
+    mi = re.match(r"(\d+)([a-z]*)$", idx)
+    if mi:
+        idx, letter = mi.group(1), letter or mi.group(2)
+    if idx:                       # indeks górny → w tekście rozdzielony spacją
+        pat = rf"(?m)^Art\.\s*{re.escape(base)}\s+{re.escape(idx)}\s*{re.escape(letter)}{_KONIEC_ART}"
+    elif letter:                  # sufiks literowy → sklejony z numerem
+        pat = rf"(?m)^Art\.\s*{re.escape(base)}\s*{re.escape(letter)}{_KONIEC_ART}"
     else:
-        low, f = txt.lower(), fraza.lower()
+        pat = rf"(?m)^Art\.\s*{re.escape(base)}{_KONIEC_ART}"
+    return [h.start() for h in re.finditer(pat, txt)]
+
+
+def _fragmenty(txt, fraza, maks=8):
+    """Spany (start, end) fragmentów z frazą, docięte do granic jednostek redakcyjnych.
+
+    Fraza w formie "art. 299" trafia w NAGŁÓWEK artykułu (nie w odesłania w treści);
+    inna fraza działa jak wyszukiwanie pełnotekstowe (bez rozróżniania wielkości liter).
+    Gdy nagłówka nie ma, fraza jest ponawiana pełnotekstowo — lepiej pokazać odesłanie
+    niż odpowiedzieć „nie znaleziono" na przepis, który w akcie jest.
+    """
+    bounds = [m.start() for m in re.finditer(_GRANICE, txt)]
+    hits = _hity_naglowka(txt, fraza)
+    if not hits:
+        # Szukamy po kopii znormalizowanej ZNAK W ZNAK (myślniki → "-"), żeby pozycje zgadzały się
+        # z oryginałem — dzięki temu wycinamy dosłowny tekst aktu, a nie jego przerobioną wersję.
+        low, f = _norm(txt), _norm(fraza).strip()
+        if len(low) != len(txt):        # awaryjnie (np. znaki zmieniające długość przy lower())
+            low, f = txt, fraza.strip()
+        if not f:
+            return []
         hits, p = [], low.find(f)
         while p != -1:
             hits.append(p)
@@ -356,8 +406,15 @@ def cmd_tekst(a):
     if a.fragment:
         spans = _fragmenty(txt, a.fragment)
         if not spans:
-            sys.exit(f"Nie znaleziono frazy {a.fragment!r} w tekście aktu ({len(txt)} znaków). "
-                     "Spróbuj inną frazą albo bez --fragment.")
+            goly = re.sub(r"(?i)^art\.?\s*", "", a.fragment.strip()) or "N"
+            sys.exit(f"Nie znaleziono frazy {a.fragment!r} w tekście aktu ({len(txt)} znaków).\n"
+                     "UWAGA: to NIE dowodzi, że przepisu nie ma — zanim tak napiszesz, sprawdź samym "
+                     f"numerem (--fragment \"{goly}\"), słowem kluczowym z treści "
+                     "albo pobierz pełny tekst bez --fragment.")
+        # tryb nagłówkowy zawiódł → poniżej trafienia pełnotekstowe, więc mogą to być ODESŁANIA
+        if re.match(r"(?i)^art\.?\s*\d", a.fragment.strip()) and not _hity_naglowka(txt, a.fragment):
+            print(f"UWAGA: nie znalazłem NAGŁÓWKA {a.fragment!r} w tym akcie — poniżej trafienia "
+                  "pełnotekstowe; sprawdź, czy to sam przepis, czy tylko odesłanie do niego.\n")
         for i, (s, e) in enumerate(spans):
             if i:
                 print("\n[...]\n")

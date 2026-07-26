@@ -54,6 +54,25 @@ class TestHtmlToText(unittest.TestCase):
         self.assertEqual(eli.html_to_text("<p>Art.\xa021<sup>1</sup>.</p>"), "Art. 21 1.")
         self.assertEqual(eli.html_to_text("<p>Art.\xa0211.</p>"), "Art. 211.")
 
+    # treść przypisu (dymek) API wstawia inline w środek przepisu
+    HTML_PRZYPIS = ('<h3><b>Art.\xa066c<a class="gloss-link tooltip" href="#gloss-0:6:"><sup>6)</sup>'
+                    '<span class="tooltip-text"><span class="pro-gloss-inner">Dodany przez art. 3 pkt 2'
+                    ' ustawy z dnia 9 marca 2023 r.</span></span></a>.</b></h3>'
+                    '<p>Kto uporczywie nie stosuje się do obowiązków.</p>')
+
+    def test_przypis_w_osobnej_linii_z_etykieta(self):
+        t = eli.html_to_text(self.HTML_PRZYPIS)
+        self.assertIn("Art. 66c 6)\n[przypis] Dodany przez", t)   # komentarz redakcyjny ≠ norma
+        self.assertTrue(t.startswith("Art. 66c 6)"))
+
+    def test_przypis_nie_udaje_naglowka_jednostki(self):
+        # Przypis potrafi zaczynać się od „Art. 598…"/„Tytuł działu…" (7 razy w k.p.c.);
+        # na początku linii udawałby granicę jednostki i tnąłby fragment w losowym miejscu.
+        html = self.HTML_PRZYPIS.replace("Dodany przez art. 3 pkt 2", "Art. 598 16 w związku z art.")
+        t = eli.html_to_text(html)
+        self.assertNotIn("\nArt. 598", t)
+        self.assertIn("[przypis] Art. 598", t)
+
 
 class TestFragmenty(unittest.TestCase):
     # Tekst po konwersji HTML→tekst: art. 21¹ (indeks górny w <sup>) renderuje się
@@ -106,6 +125,92 @@ class TestFragmenty(unittest.TestCase):
 
     def test_brak_trafien(self):
         self.assertEqual(eli._fragmenty(self.TXT, "nie ma takiej frazy"), [])
+
+    def test_pusta_fraza(self):
+        self.assertEqual(eli._fragmenty(self.TXT, "   "), [])
+
+
+class TestFragmentyZPrzypisem(unittest.TestCase):
+    """Nagłówek z ODSYŁACZEM DO PRZYPISU (art. 66c Kodeksu wykroczeń — zgłoszenie z 2026-07-26).
+
+    W tekście jednolitym każdy niedawno dodany lub zmieniony przepis ma przy numerze odsyłacz
+    („Art. 66c 6)Dodany przez…"), a kropka artykułu stoi dopiero za treścią przypisu. Wymaganie
+    kropki tuż po numerze dawało fałszywy negatyw tam, gdzie prawo jest najświeższe.
+    """
+
+    TXT = ("Art. 66b 4)W brzmieniu ustalonym przez art. 2 ustawy z dnia 13 stycznia 2023 r..\n"
+           "Kto zawiadamia o niebezpieczeństwie.\n\n"
+           "Art. 66c 6)Dodany przez art. 3 pkt 2 ustawy z dnia 9 marca 2023 r..\n"
+           "Kto uporczywie nie stosuje się do obowiązków, podlega karze ograniczenia wolności.\n\n"
+           "Art. 66.\nKto ze złośliwości wywołuje niepotrzebną czynność.\n\n"
+           "Art. 107 10)W tym brzmieniu obowiązuje do dnia wejścia w życie zmiany..\n"
+           "Kto w celu dokuczenia innej osobie złośliwie wprowadza ją w błąd.\n\n"
+           "Art. 446 1 7)Zdanie drugie utraciło moc..\nPrzepis z indeksem górnym i przypisem.\n\n"
+           "Art. 446 1 a.\nPrzepis z indeksem górnym i literą (art. 446 ze zn. 1a).\n\n"
+           "Art. 669 101)W brzmieniu ustalonym przez art. 1..\nTreść z przypisem 101.\n")
+
+    def _frag(self, fraza):
+        return [self.TXT[s:e] for s, e in eli._fragmenty(self.TXT, fraza)]
+
+    def test_sufiks_literowy_z_przypisem(self):
+        # To był zgłoszony bug: --fragment "art. 66c" zwracało „nie znaleziono".
+        frags = self._frag("art. 66c")
+        self.assertEqual(len(frags), 1)
+        self.assertIn("uporczywie", frags[0])
+        self.assertNotIn("zawiadamia", frags[0])      # art. 66b to inny artykuł
+        self.assertNotIn("złośliwości", frags[0])     # art. 66 to inny artykuł
+
+    def test_goly_numer_z_przypisem(self):
+        frags = self._frag("art. 107")
+        self.assertEqual(len(frags), 1)
+        self.assertIn("dokuczenia", frags[0])
+
+    def test_indeks_gorny_z_przypisem(self):
+        frags = self._frag("art. 446(1)")
+        self.assertEqual(len(frags), 1)
+        self.assertIn("indeksem górnym i przypisem", frags[0])
+        self.assertNotIn("i literą", frags[0])        # art. 446 ze zn. 1a to inny artykuł
+
+    def test_indeks_gorny_z_litera_rozdzielone_spacja(self):
+        # "Art. 446 1 a." — indeks górny i litera bywają w tekście rozdzielone
+        frags = self._frag("art. 446(1a)")
+        self.assertEqual(len(frags), 1)
+        self.assertIn("i literą", frags[0])
+
+    def test_przypis_nie_udaje_indeksu_gornego(self):
+        # "art. 669¹" NIE może trafić w "Art. 669 101)" (art. 669 z przypisem 101)
+        self.assertEqual(eli._hity_naglowka(self.TXT, "art. 669(1)"), [])
+        frags = self._frag("art. 669")
+        self.assertEqual(len(frags), 1)
+        self.assertIn("przypisem 101", frags[0])
+
+    def test_goly_numer_nie_lapie_sufiksu_literowego(self):
+        frags = self._frag("art. 66")
+        self.assertEqual(len(frags), 1)
+        self.assertIn("złośliwości", frags[0])
+
+    def test_brak_naglowka_wraca_do_szukania_pelnotekstowego(self):
+        # Fałszywy negatyw jest gorszy niż odesłanie: bez nagłówka pokazujemy trafienia w treści.
+        self.assertEqual(eli._hity_naglowka(self.TXT, "art. 2"), [])
+        frags = self._frag("art. 2")
+        self.assertEqual(len(frags), 1)
+        self.assertIn("art. 2 ustawy z dnia 13 stycznia 2023", frags[0])
+
+    def test_wielka_litera_w_zapytaniu(self):
+        # ze zgłoszenia: „Art. 66c" i „art. 66c" muszą dawać ten sam wynik
+        self.assertEqual(eli._fragmenty(self.TXT, "Art. 66c"), eli._fragmenty(self.TXT, "art. 66c"))
+
+    def test_warianty_myslnika(self):
+        # myślnik w akcie (U+2012) vs. zwykły "-" w zapytaniu — nie może to być fałszywy negatyw
+        txt = "Art. 5.\nProgram korekcyjno‒edukacyjny dla sprawców.\n"
+        self.assertEqual(len(eli._fragmenty(txt, "korekcyjno-edukacyjny")), 1)
+
+    def test_inwariant_spojnosci(self):
+        """§3.2 zgłoszenia: fraza widoczna w `tekst <akt>` NIGDY nie może dać „nie znaleziono"."""
+        for i in range(0, len(self.TXT) - 12):
+            fraza = self.TXT[i:i + 12 + (i % 25)].strip()
+            if len(fraza) >= 8:
+                self.assertTrue(eli._fragmenty(self.TXT, fraza), f"brak trafienia dla {fraza!r}")
 
 
 class TestTjZTekstem(unittest.TestCase):

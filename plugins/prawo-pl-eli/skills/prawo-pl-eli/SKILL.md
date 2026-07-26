@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-eli
-version: 1.6.1
+version: 1.6.2
 description: >-
   Odpytuje OFICJALNE API ELI Sejmu (api.sejm.gov.pl/eli) — źródło pierwotne prawa polskiego
   (Dziennik Ustaw, Monitor Polski): wyszukiwanie aktów, TEKST JEDNOLITY, pojedyncze artykuły,
@@ -73,8 +73,14 @@ Sygnaturę można podać w wielu formach: `DU 2000 1037`, `DU/2024/18`, `"Dz.U. 
   (wycina tylko jednostki z frazą — pełny kodeks to setki tysięcy znaków):
   `python3 scripts/eli.py tekst DU 2024 18 --fragment "art. 299"` (trafia w nagłówek artykułu, nie w odesłania)
   `python3 scripts/eli.py tekst DU 2024 18 --fragment "przedawnienie"` (wyszukiwanie pełnotekstowe)
-  `--pdf ŚCIEŻKA` zapisuje urzędowy PDF (preferuje tekst jednolity). Artykuły z indeksem górnym są
-  w tekście sklejone: art. 299¹ → `--fragment "art. 2991"`.
+  `--pdf ŚCIEŻKA` zapisuje urzędowy PDF (preferuje tekst jednolity). Indeks górny podawaj w nawiasie
+  albo unicodem: art. 299¹ → `--fragment "art. 299(1)"` lub `"art. 299¹"`; sufiks literowy normalnie:
+  `"art. 66c"`. Nagłówki przepisów niedawno dodanych lub zmienionych mają w tekście jednolitym
+  odsyłacz do przypisu („Art. 66c 6)Dodany przez…") — `--fragment` to obsługuje.
+  **„Nie znaleziono frazy" NIE znaczy, że przepisu nie ma w akcie** (zwłaszcza przy nietypowym
+  oznaczeniu jednostki): sprawdź jeszcze samym numerem (`--fragment "66c"`) albo słowem z treści,
+  zanim napiszesz, że przepis nie istnieje. Gdy nagłówka nie ma, narzędzie samo pokazuje trafienia
+  pełnotekstowe z ostrzeżeniem — mogą to być odesłania z innych przepisów, nie sam przepis.
 - **struktura** — spis jednostek redakcyjnych (tytuły/działy/rozdziały/artykuły):
   `python3 scripts/eli.py struktura DU 2024 18 --filtr "Art. 299"` (opcje: `--filtr`, `--poziom N`)
 - **odniesienia** — powiązania: nowelizacje, podstawa prawna, tekst jednolity, akty wykonawcze:
@@ -121,11 +127,20 @@ potem `tekst <t.j.> --fragment "art. N"` (dwie komendy zamiast trzech):
      (indeksacja bywa opóźniona). Przy sprawie na konkretną datę zweryfikuj dodatkowo (np. najnowsze
      pozycje `dziennikustaw.gov.pl`, proces legislacyjny), a w odpowiedzi zaznacz:
      „stan prawny na dzień X wg ELI — do potwierdzenia".
-3. **Do DOSŁOWNEGO cytatu w umowie/piśmie/sądzie** używaj urzędowego PDF (`tekst … --pdf`), bo
+3. **NIGDY nie twierdź, że przepisu nie ma, na podstawie pustego `--fragment`.** Pusty wynik to brak
+   dopasowania frazy, nie dowód nieistnienia przepisu — a najczęściej zawodzi przy przepisach ŚWIEŻO
+   dodanych lub zmienionych (nietypowe oznaczenie jednostki, odsyłacz do przypisu, indeks górny).
+   Zanim postawisz twierdzenie negatywne o prawie, przeszukaj pełny tekst aktu liniowo:
+   `python3 scripts/eli.py tekst <akt> | grep -n -i "<fraza>"` — i dopiero zero trafień tam jest
+   podstawą do „brak takiego przepisu w tym akcie". Sprawdź też, czy pytasz o WŁAŚCIWY akt: sankcja
+   za naruszenie obowiązku zwykle stoi w k.w./k.k., a nie w ustawie, która ten obowiązek nakłada.
+4. **Do DOSŁOWNEGO cytatu w umowie/piśmie/sądzie** używaj urzędowego PDF (`tekst … --pdf`), bo
    `text.html` po konwersji bywa zlepiony; `--fragment` jest świetny do szybkiego odczytu i analizy.
-4. **Zawsze podawaj sygnaturę Dz.U./M.P. i ELI** przy cytacie (np. „art. 299 § 1 k.s.h., Dz.U. 2024
+   Linia zaczynająca się od `[przypis]` to **komentarz redakcyjny tekstu jednolitego** (kiedy przepis
+   dodano lub zmieniono), a NIE treść normy — nigdy jej nie cytuj jako przepisu.
+5. **Zawsze podawaj sygnaturę Dz.U./M.P. i ELI** przy cytacie (np. „art. 299 § 1 k.s.h., Dz.U. 2024
    poz. 18"). To pozwala odbiorcy zweryfikować źródło.
-5. Pełna lista endpointów i parametrów: `references/api.md` (czytaj przy zapytaniach spoza powyższych
+6. Pełna lista endpointów i parametrów: `references/api.md` (czytaj przy zapytaniach spoza powyższych
    komend — np. słowniki typów/haseł, listowanie roczników, akty zmieniające w okresie).
 
 ## Czego ten skill NIE obejmuje
