@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Offline unit tests for eurlex.py pure functions (no network). Run: python3 tools/test_eurlex.py"""
+import sys
 import importlib.util
 import pathlib
 import unittest
@@ -130,6 +131,33 @@ class TestKonsolidacje(unittest.TestCase):
                 {"celex": {"value": "02016R0679(01)"}}]
         wynik, _ = self._z_fake_sparql(rows, "32016R0679")
         self.assertEqual(wynik, ["02016R0679-20160504"])
+
+
+class TestFlagaJson(unittest.TestCase):
+    """--json musi działać także PO komendzie — modele piszą flagi właśnie tam."""
+
+    ARGV = ["szukaj", "fraza"]
+
+    def _parsuj(self, argv):
+        """Uruchamia main() z podmienionym cmd_szukaj — parsowanie bez wykonania (bez sieci)."""
+        zlapane = {}
+        oryg_argv, oryg_cmd = sys.argv, eurlex.cmd_szukaj
+        eurlex.cmd_szukaj = lambda a: zlapane.update(vars(a))
+        sys.argv = ["silnik.py"] + argv
+        try:
+            eurlex.main()
+        finally:
+            sys.argv, eurlex.cmd_szukaj = oryg_argv, oryg_cmd
+        return zlapane
+
+    def test_flaga_po_komendzie(self):
+        self.assertTrue(self._parsuj(self.ARGV + ["--json"])["json"])
+
+    def test_flaga_przed_komenda(self):
+        self.assertTrue(self._parsuj(["--json"] + self.ARGV)["json"])
+
+    def test_bez_flagi(self):
+        self.assertFalse(self._parsuj(self.ARGV)["json"])
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-eli
-version: 1.6.3
+version: 1.6.4
 description: >-
   Odpytuje OFICJALNE API ELI Sejmu (api.sejm.gov.pl/eli) — źródło pierwotne prawa polskiego
   (Dziennik Ustaw, Monitor Polski): wyszukiwanie aktów, TEKST JEDNOLITY, pojedyncze artykuły,
@@ -85,7 +85,7 @@ Sygnaturę można podać w wielu formach: `DU 2000 1037`, `DU/2024/18`, `"Dz.U. 
   `python3 scripts/eli.py struktura DU 2024 18 --filtr "Art. 299"` (opcje: `--filtr`, `--poziom N`)
 - **odniesienia** — powiązania: nowelizacje, podstawa prawna, tekst jednolity, akty wykonawcze:
   `python3 scripts/eli.py odniesienia DU 2024 18`
-- każda komenda przyjmuje `--json` (surowa odpowiedź API do dalszego przetwarzania).
+- każda komenda przyjmuje `--json` (surowa odpowiedź API do dalszego przetwarzania; działa przed komendą i po niej).
 
 Narzędzie samo ostrzega: `tekst` na akcie, który ma tekst jednolity, każe cytować z najnowszego t.j.;
 na tekście jednolitym wypisuje „Nowelizacje po tekście jednolitym". Gdy `text.html` świeżego t.j. jest

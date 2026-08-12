@@ -19,7 +19,7 @@ Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
 """
 import sys, json, re, time, argparse, urllib.request, urllib.parse, urllib.error
 
-__version__ = "1.6.3"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "1.6.4"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://orzeczenia.uodo.gov.pl/api"
 POLA = "id,refid,refname,title,dates,kind"  # domyślne pola listy wyników
 
@@ -149,8 +149,10 @@ def cmd_szukaj(a):
     if not isinstance(d, list):
         sys.exit("BŁĄD: API UODO zwróciło nieoczekiwaną odpowiedź.")
     if not d:
-        sys.exit("Brak wyników. Fraza działa jak regex (bez rozróżniania wielkości liter) — "
-                 "spróbuj krótszego rdzenia, np. 'biometr' zamiast 'dane biometryczne'.")
+        sys.exit("Brak wyników. Fraza działa jak regex (bez rozróżniania wielkości liter) i szuka "
+                 "DOSŁOWNIE — a tytuły i treści są po polsku ODMIENIONE ('nałożenie kary "
+                 "pieniężnej', nie 'kara pieniężna'). Podaj RDZEŃ bez końcówki: 'pieniężn', "
+                 "'biometr', 'monitoring'. To NIE dowód, że takich decyzji nie ma.")
     print(f"Znaleziono: {len(d)}  (strona {a.strona}, po {a.limit}; sortowanie od najnowszych)\n")
     for it in d:
         _wiersz(it)
@@ -187,7 +189,9 @@ def cmd_decyzja(a):
     if a.fragment:
         spans = _fragmenty(txt, a.fragment)
         if not spans:
-            sys.exit(f"Nie znaleziono frazy {a.fragment!r} w treści ({len(txt)} znaków). Spróbuj inną frazą.")
+            sys.exit(f"Nie znaleziono frazy {a.fragment!r} w treści ({len(txt)} znaków). Tekst jest "
+                     "po polsku odmieniony — podaj RDZEŃ bez końcówki ('pieniężn' zamiast 'kara "
+                     "pieniężna'). To NIE dowód, że decyzja o tym nie mówi.")
         for i, (s, e) in enumerate(spans):
             if i:
                 print("\n[...]\n")
@@ -242,8 +246,14 @@ def main():
 
     d = sub.add_parser("decyzja")
     d.add_argument("id", help="sygnatura (DKN.5131.9.2025) albo URN (urn:ndoc:gov:pl:uodo:2025:dkn_5131_9)")
-    d.add_argument("--fragment", help='wytnij okna wokół frazy w treści (np. "kara pieniężna")')
+    d.add_argument("--fragment", help='wytnij okna wokół frazy w treści — podawaj RDZEŃ, np. "pieniężn"')
     d.set_defaults(func=cmd_decyzja)
+
+    # --json działa też PO komendzie (modele piszą flagi właśnie tam); SUPPRESS sprawia,
+    # że brak flagi w subparserze nie kasuje wartości podanej przed komendą
+    for p in sub.choices.values():
+        p.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
+                       help="zrzut surowego JSON")
 
     a = ap.parse_args()
     a.func(a)

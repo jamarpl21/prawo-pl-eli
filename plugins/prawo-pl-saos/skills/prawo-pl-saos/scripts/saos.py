@@ -22,7 +22,7 @@ Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
 import sys, json, re, time, argparse, urllib.request, urllib.parse, urllib.error
 from html.parser import HTMLParser
 
-__version__ = "1.6.3"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "1.6.4"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://www.saos.org.pl/api"
 
 # Aliasy typów sądów (courtType w API SAOS)
@@ -50,6 +50,29 @@ CT_PL = {
     "COMMON": "sąd powszechny", "ADMINISTRATIVE": "sąd administracyjny",
     "NATIONAL_APPEAL_CHAMBER": "Krajowa Izba Odwoławcza",
 }
+# SAOS jest bazą WTÓRNĄ i część zbiorów przestała być zasilana. Bez tej informacji zero trafień
+# z nowszą datą wygląda jak „nie ma takiego orzecznictwa" — a to najgroźniejszy fałszywy negatyw
+# w pracy prawnika. Ostatni rocznik z treścią zweryfikowany na żywo 2026-08-12 (sądy powszechne
+# są zasilane na bieżąco, więc ich tu nie ma).
+ZASIEG = {
+    "SUPREME": (2016, "nowsze orzeczenia SN: portal SN (www.sn.pl/orzecznictwo) "
+                      "albo Baza Orzeczeń SN"),
+    "CONSTITUTIONAL_TRIBUNAL": (2015, "nowsze orzeczenia TK: OTK (ipo.trybunal.gov.pl)"),
+    "NATIONAL_APPEAL_CHAMBER": (2018, "nowsze orzeczenia KIO: UZP (www.uzp.gov.pl/kio/orzeczenia)"),
+}
+
+
+def _ostrzezenie_zasiegu(ct, od=None):
+    """Komunikat o granicy zbioru dla typu sądu (None = zbiór zasilany na bieżąco)."""
+    wpis = ZASIEG.get(ct or "")
+    if not wpis:
+        return None
+    rok, gdzie = wpis
+    tekst = (f"UWAGA: w SAOS {CT_PL.get(ct, ct)} kończy się na {rok} r. — ten zbiór nie jest już "
+             f"zasilany. Brak nowszych trafień to NIE brak orzecznictwa; {gdzie}.")
+    if od and od[:4].isdigit() and int(od[:4]) > rok:
+        tekst += f"\n     Twój zakres zaczyna się od {od}, czyli POZA zbiorem — stąd zero wyników."
+    return tekst
 
 
 def _get(path, params=None, soft=False):
@@ -254,6 +277,9 @@ def cmd_szukaj(a):
     if ct == "ADMINISTRATIVE":
         print("UWAGA: sądy administracyjne (NSA/WSA) są w SAOS praktycznie nieobecne — orzecznictwo "
               "administracyjne pobieraj skillem prawo-pl-cbosa (scripts/cbosa.py, baza CBOSA).\n")
+    granica = _ostrzezenie_zasiegu(ct, a.od)
+    if granica:
+        print(granica + "\n")
     for it in items:
         _wiersz(it)
     if items:
@@ -339,7 +365,9 @@ def cmd_sygnatura(a):
     if not items:
         sys.exit(f"Nie znaleziono orzeczenia o sygnaturze {sig!r} w SAOS.\n"
                  "SAOS to baza wtórna (nie ma wszystkiego) — sprawdź też portal właściwego sądu; "
-                 "sygnatury sądów administracyjnych (NSA/WSA) szukaj skillem prawo-pl-cbosa.")
+                 "sygnatury sądów administracyjnych (NSA/WSA) szukaj skillem prawo-pl-cbosa.\n"
+                 "Granice zbiorów: SN kończy się na 2016 r., TK na 2015 r., KIO na 2018 r. "
+                 "(sądy powszechne są na bieżąco) — nowszej sygnatury z tych sądów SAOS nie ma.")
     print(f"Sygnatura {sig!r}: dopasowań {total}\n")
     for it in items:
         cn = _case_numbers(it)
@@ -377,6 +405,12 @@ def main():
     sy = sub.add_parser("sygnatura")
     sy.add_argument("sygnatura", nargs="+")
     sy.set_defaults(func=cmd_sygnatura)
+
+    # --json działa też PO komendzie (modele piszą flagi właśnie tam); SUPPRESS sprawia,
+    # że brak flagi w subparserze nie kasuje wartości podanej przed komendą
+    for p in sub.choices.values():
+        p.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
+                       help="zrzut surowego JSON")
 
     a = ap.parse_args()
     a.func(a)

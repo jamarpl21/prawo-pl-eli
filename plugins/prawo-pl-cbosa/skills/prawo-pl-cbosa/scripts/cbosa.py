@@ -22,7 +22,7 @@ komendą i po niej)
 import sys, json, re, time, argparse, ssl, calendar, html as html_mod
 import urllib.request, urllib.parse, urllib.error, http.cookiejar
 
-__version__ = "1.6.3"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "1.6.4"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://orzeczenia.nsa.gov.pl"
 
 # Miasta WSA (klucz bez diakrytyków) → końcówka pełnej nazwy z formularza CBOSA.
@@ -428,9 +428,9 @@ def main():
     sy.add_argument("sygnatura", nargs="+")
     sy.set_defaults(func=cmd_sygnatura)
 
-    # --json działa też PO komendzie (naturalna kolejność); SUPPRESS = brak flagi nie nadpisuje
-    # wartości z parsera głównego
-    for p in (s, o, sy):
+    # --json działa też PO komendzie (modele piszą flagi właśnie tam); SUPPRESS sprawia,
+    # że brak flagi w subparserze nie kasuje wartości podanej przed komendą
+    for p in sub.choices.values():
         p.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
                        help="zrzut sparsowanych danych jako JSON")
 

@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-saos
-version: 1.6.3
+version: 1.6.4
 description: >-
   Odpytuje PUBLICZNE API SAOS (saos.org.pl) — bazę polskiego ORZECZNICTWA: wyroki, postanowienia
   i uchwały Sądu Najwyższego (SN), Trybunału Konstytucyjnego (TK), sądów powszechnych (SA/SO/SR)
@@ -10,8 +10,9 @@ description: >-
   podstawy w judykaturze). Treść przepisu bierz z ELI (skill prawo-pl-eli), tu szukasz JAK go stosują.
   Filtruj po sądzie, sygnaturze, sędzim, powołanym przepisie i dacie; zwraca pełne uzasadnienia,
   powołane przepisy i powołane orzeczenia. UWAGA: SAOS to baza WTÓRNA (agregat) — sądy administracyjne
-  (NSA/WSA) są w niej praktycznie nieobecne (dla nich: skill prawo-pl-cbosa). Polish case-law from the
-  public SAOS API.
+  (NSA/WSA) są w niej praktycznie nieobecne (dla nich: skill prawo-pl-cbosa), a zbiory SN (do 2016 r.),
+  TK (do 2015 r.) i KIO (do 2018 r.) są zamknięte; sądy powszechne idą na bieżąco. Polish case-law from
+  the public SAOS API.
 ---
 
 # Polskie orzecznictwo z publicznego API SAOS
@@ -62,7 +63,7 @@ python3 "$SAOS" <komenda> [...]
   uzasadnienia. Do długich uzasadnień: `--fragment "rękojmia"` (wycina okna wokół frazy).
 - **sygnatura** — szybkie odszukanie po numerze sprawy:
   `python3 scripts/saos.py sygnatura III CSK 203/09`
-- każda komenda przyjmuje `--json` (surowa odpowiedź API; podawaj PRZED komendą: `saos.py --json szukaj ...`).
+- każda komenda przyjmuje `--json` (surowa odpowiedź API; działa przed komendą i po niej).
 
 Typowy przepływ: `szukaj` (zawęź `--sad`/`--przepis`/`--haslo`) → wybierz ID → `orzeczenie <id>`
 → w razie potrzeby skacz po `referencedCourtCases` do powołanych orzeczeń.
@@ -74,11 +75,16 @@ Typowy przepływ: `szukaj` (zawęź `--sad`/`--przepis`/`--haslo`) → wybierz I
    **sygnaturę + sąd + datę** (np. „wyrok SN z 9.04.2010, III CSK 203/09").
 2. **Brak sądów administracyjnych.** NSA/WSA są w SAOS praktycznie nieobecne (`--sad admin` zwykle zwraca 0).
    Orzecznictwo administracyjne pobieraj skillem **prawo-pl-cbosa** (baza CBOSA, `scripts/cbosa.py`).
-3. **Świeżość bywa opóźniona.** Najnowsze orzeczenia mogą jeszcze nie być w bazie — przy sprawie na konkretną
-   datę zaznacz „wg SAOS na dzień X — do potwierdzenia" i sprawdź portal sądu.
-4. **Nie myl orzeczenia z przepisem.** Po znalezieniu orzeczenia, brzmienie powołanego przepisu i jego
+3. **Zbiory SN, TK i KIO są ZAMKNIĘTE — sprawdzone na żywo 2026-08-12.** SAOS przestał je zasilać:
+   **SN kończy się na 2016 r.**, **TK na 2015 r.**, **KIO na 2018 r.** (sądy powszechne idą na bieżąco).
+   Zero trafień z nowszą datą NIE znaczy, że orzecznictwa nie ma — silnik sam o tym ostrzega przy
+   `--sad SN|TK|KIO`. Nowsze bierz z portalu SN (`sn.pl/orzecznictwo`), OTK (`ipo.trybunal.gov.pl`)
+   albo UZP (`uzp.gov.pl/kio/orzeczenia`) i oznacz jako źródło spoza SAOS.
+4. **Świeżość bywa opóźniona.** Najnowsze orzeczenia sądów powszechnych mogą jeszcze nie być w bazie — przy
+   sprawie na konkretną datę zaznacz „wg SAOS na dzień X — do potwierdzenia" i sprawdź portal sądu.
+5. **Nie myl orzeczenia z przepisem.** Po znalezieniu orzeczenia, brzmienie powołanego przepisu i jego
    aktualność potwierdź w ELI (`prawo-pl-eli`) — orzeczenie mogło zapaść na starszym stanie prawnym.
-5. Pełna lista endpointów i parametrów: `references/api.md`.
+6. Pełna lista endpointów i parametrów: `references/api.md`.
 
 ## Czego ten skill NIE obejmuje
 

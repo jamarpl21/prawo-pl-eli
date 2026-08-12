@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-rejestr-umow
-version: 1.6.3
+version: 1.6.4
 description: >-
   Odpytuje publiczne API Centralnego Rejestru Umów JSFP (rejestrumow.gov.pl) — jawny
   rejestr umów zawieranych od 1.07.2026 przez jednostki sektora finansów publicznych:
@@ -75,7 +75,7 @@ jesteś w katalogu skilla.)
 - **slownik** — słowniki API: `python3 scripts/rejestrumow.py slownik rodzaje_zmian_umowy`
   (`kraje`, `strony_umowy`, `rodzaje_zmian_umowy`, `podstawy_wylaczenia_jawnosci`,
   `zakres_wylaczenia_jawnosci`).
-- każda komenda przyjmuje `--json` (surowa odpowiedź API; podawaj PRZED komendą).
+- każda komenda przyjmuje `--json` (surowa odpowiedź API; działa przed komendą i po niej).
 
 Typowy przepływ: `szukaj <filtry>` → wybierz idUmowy → `umowa <idUmowy>` → strony,
 kwoty, aneksy do odpowiedzi.

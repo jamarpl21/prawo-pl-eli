@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Offline unit tests for saos.py pure functions (no network). Run: python3 tools/test_saos.py"""
+import sys
 import importlib.util
 import pathlib
 import unittest
@@ -144,6 +145,55 @@ class TestForma(unittest.TestCase):
 
     def test_empty(self):
         self.assertEqual(saos._forma({}), "")
+
+
+class TestZasiegZbiorow(unittest.TestCase):
+    """SAOS przestał zasilać SN/TK/KIO — bez ostrzeżenia zero trafień udaje brak orzecznictwa."""
+
+    def test_sn_ma_granice(self):
+        k = saos._ostrzezenie_zasiegu("SUPREME")
+        self.assertIn("2016", k)
+        self.assertIn("Sąd Najwyższy", k)
+
+    def test_zakres_poza_zbiorem_dopisuje_powod(self):
+        k = saos._ostrzezenie_zasiegu("NATIONAL_APPEAL_CHAMBER", "2021-01-01")
+        self.assertIn("2018", k)
+        self.assertIn("POZA zbiorem", k)
+
+    def test_zakres_w_zbiorze_bez_dopisku(self):
+        k = saos._ostrzezenie_zasiegu("CONSTITUTIONAL_TRIBUNAL", "2010-01-01")
+        self.assertNotIn("POZA zbiorem", k)
+
+    def test_sady_powszechne_bez_ostrzezenia(self):
+        self.assertIsNone(saos._ostrzezenie_zasiegu("COMMON"))
+        self.assertIsNone(saos._ostrzezenie_zasiegu(None))
+
+
+class TestFlagaJson(unittest.TestCase):
+    """--json musi działać także PO komendzie — modele piszą flagi właśnie tam."""
+
+    ARGV = ["szukaj", "fraza"]
+
+    def _parsuj(self, argv):
+        """Uruchamia main() z podmienionym cmd_szukaj — parsowanie bez wykonania (bez sieci)."""
+        zlapane = {}
+        oryg_argv, oryg_cmd = sys.argv, saos.cmd_szukaj
+        saos.cmd_szukaj = lambda a: zlapane.update(vars(a))
+        sys.argv = ["silnik.py"] + argv
+        try:
+            saos.main()
+        finally:
+            sys.argv, saos.cmd_szukaj = oryg_argv, oryg_cmd
+        return zlapane
+
+    def test_flaga_po_komendzie(self):
+        self.assertTrue(self._parsuj(self.ARGV + ["--json"])["json"])
+
+    def test_flaga_przed_komenda(self):
+        self.assertTrue(self._parsuj(["--json"] + self.ARGV)["json"])
+
+    def test_bez_flagi(self):
+        self.assertFalse(self._parsuj(self.ARGV)["json"])
 
 
 if __name__ == "__main__":

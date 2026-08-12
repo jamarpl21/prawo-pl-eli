@@ -20,7 +20,7 @@ CELEX np.: 32016R0679 (RODO), 02016R0679-20160504 (wersja skonsolidowana), reg/2
 import sys, json, re, time, argparse, urllib.request, urllib.parse, urllib.error
 from html.parser import HTMLParser
 
-__version__ = "1.6.3"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "1.6.4"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 SPARQL = "https://publications.europa.eu/webapi/rdf/sparql"
 CELLAR = "http://publications.europa.eu/resource/celex/"
 CDM = "http://publications.europa.eu/ontology/cdm#"
@@ -228,8 +228,10 @@ SELECT DISTINCT ?celex ?date ?title ?inf WHERE {{
     if a.json:
         print(json.dumps(rows, ensure_ascii=False, indent=2)); return
     if not rows:
-        print(f"Brak wyników dla {a.fraza!r} (język {lang}). Spróbuj krótszą frazą, "
-              "--jezyk eng, albo bez --typ/--rok."); return
+        print(f"Brak wyników dla {a.fraza!r} (język {lang}). Szukanie idzie po TYTULE i dopasowuje "
+              "DOSŁOWNIE, a tytuły są odmienione ('ochrony danych osobowych', nie 'dane osobowe') — "
+              "podaj RDZEŃ albo formę z tytułu ('osobow', 'danych osobowych'). Dalej nic? Spróbuj "
+              "--jezyk eng albo bez --typ/--rok. To NIE dowód, że aktu nie ma."); return
     print(f"Wyniki (pokazuję {len(rows)}, najnowsze pierwsze):\n")
     for b in rows:
         inf = _v(b, "inf")
@@ -414,6 +416,12 @@ def main():
     t.add_argument("--jezyk", default="pol"); t.add_argument("--pdf")
     t.add_argument("--fragment", help='wytnij tylko jednostki z frazą, np. "art. 6" albo "profilowanie"')
     t.set_defaults(func=cmd_tekst)
+
+    # --json działa też PO komendzie (modele piszą flagi właśnie tam); SUPPRESS sprawia,
+    # że brak flagi w subparserze nie kasuje wartości podanej przed komendą
+    for p in sub.choices.values():
+        p.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
+                       help="zrzut surowego JSON")
 
     a = ap.parse_args()
     a.func(a)

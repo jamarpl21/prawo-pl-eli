@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-edzienniki
-version: 1.6.3
+version: 1.6.4
 description: >-
   Odpytuje API ELI 16 WOJEWÓDZKICH DZIENNIKÓW URZĘDOWYCH — PRAWO MIEJSCOWE: uchwały rad gmin,
   powiatów i sejmików województw, rozporządzenia i zarządzenia wojewody, akty prawa miejscowego.
@@ -68,7 +68,7 @@ python3 "$EDZ" <komenda> [...]
   `python3 scripts/edzienniki.py akt DS 2026 3299`
 - **tekst** — treść aktu; `--fragment` wycina okna wokół frazy; `--pdf` zapisuje urzędowy PDF:
   `python3 scripts/edzienniki.py tekst DS 2026 3299 --fragment "§ 2"`
-- każda komenda przyjmuje `--json` (surowa odpowiedź API; podawaj PRZED komendą).
+- każda komenda przyjmuje `--json` (surowa odpowiedź API; działa przed komendą i po niej).
 
 Typowy przepływ: ustal województwo → `szukaj --woj <kod> "<gmina lub przedmiot>"` →
 `akt <woj> <rok> <poz>` → `tekst … --fragment` albo `--pdf` do dosłownego cytatu.

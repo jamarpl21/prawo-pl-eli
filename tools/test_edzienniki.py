@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Offline unit tests for edzienniki.py pure functions (no network). Run: python3 tools/test_edzienniki.py"""
+import sys
 import importlib.util
 import pathlib
 import unittest
@@ -130,6 +131,33 @@ class TestFragmenty(unittest.TestCase):
 
     def test_brak_trafien(self):
         self.assertEqual(edz._fragmenty("dowolny tekst", "nie ma"), [])
+
+
+class TestFlagaJson(unittest.TestCase):
+    """--json musi działać także PO komendzie — modele piszą flagi właśnie tam."""
+
+    ARGV = ["szukaj", "--woj", "mazowieckie"]
+
+    def _parsuj(self, argv):
+        """Uruchamia main() z podmienionym cmd_szukaj — parsowanie bez wykonania (bez sieci)."""
+        zlapane = {}
+        oryg_argv, oryg_cmd = sys.argv, edz.cmd_szukaj
+        edz.cmd_szukaj = lambda a: zlapane.update(vars(a))
+        sys.argv = ["silnik.py"] + argv
+        try:
+            edz.main()
+        finally:
+            sys.argv, edz.cmd_szukaj = oryg_argv, oryg_cmd
+        return zlapane
+
+    def test_flaga_po_komendzie(self):
+        self.assertTrue(self._parsuj(self.ARGV + ["--json"])["json"])
+
+    def test_flaga_przed_komenda(self):
+        self.assertTrue(self._parsuj(["--json"] + self.ARGV)["json"])
+
+    def test_bez_flagi(self):
+        self.assertFalse(self._parsuj(self.ARGV)["json"])
 
 
 if __name__ == "__main__":

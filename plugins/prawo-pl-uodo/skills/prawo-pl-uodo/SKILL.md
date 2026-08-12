@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-uodo
-version: 1.6.3
+version: 1.6.4
 description: >-
   Odpytuje OFICJALNE API Portalu Orzeczeń UODO (orzeczenia.uodo.gov.pl) — decyzje Prezesa
   Urzędu Ochrony Danych Osobowych: kary pieniężne za naruszenia RODO, upomnienia, nakazy,
@@ -53,16 +53,19 @@ python3 "$UODO" <komenda> [...]
   `python3 scripts/uodo.py najnowsze --limit 10`
 - **szukaj** — wyszukiwanie pełnotekstowe / po tytule / po dacie publikacji:
   `python3 scripts/uodo.py szukaj "biometr" --limit 5`
-  `python3 scripts/uodo.py szukaj --tytul "kara pieniężna" --od 2026-01-01`
-  Fraza działa jak **regex bez rozróżniania wielkości liter** — szukaj RDZENIA słowa
-  („biometr" znajdzie „biometryczne/biometrii"). API stosuje **jeden warunek na zapytanie**
-  (fraza ALBO tytuł; zakres dat można łączyć z warunkiem). Zaawansowane: `--warunek
+  `python3 scripts/uodo.py szukaj --tytul "pieniężn" --od 2026-01-01`
+  Fraza działa jak **regex bez rozróżniania wielkości liter**, dopasowuje DOSŁOWNIE — szukaj
+  RDZENIA słowa („biometr" znajdzie „biometryczne/biometrii"). Tytuły to zdania w formie
+  ODMIENIONEJ („nałożenie kary pieniężnej…"), więc mianownik („kara pieniężna") nie trafia
+  w nic — zero wyników z mianownika to NIE dowód, że takich decyzji nie ma.
+  API stosuje **jeden warunek na zapytanie** (fraza ALBO tytuł; zakres dat można łączyć
+  z warunkiem). Zaawansowane: `--warunek
   "indeks:operator:wartość"` (indeksy i operatory: `references/api.md`). `--limit N`, `--strona N`.
 - **decyzja** — pełna decyzja po sygnaturze albo URN:
   `python3 scripts/uodo.py decyzja DKN.5131.9.2025`
   Pokazuje metadane (status, daty ogłoszenia/publikacji), przedmiot i pełną treść.
-  Do długich decyzji: `--fragment "kara pieniężna"` (wycina okna wokół frazy).
-- każda komenda przyjmuje `--json` (surowa odpowiedź API; podawaj PRZED komendą).
+  Do długich decyzji: `--fragment "pieniężn"` (wycina okna wokół frazy; też podawaj rdzeń).
+- każda komenda przyjmuje `--json` (surowa odpowiedź API; działa przed komendą i po niej).
 
 Typowy przepływ: `szukaj "<rdzeń frazy>"` → wybierz sygnaturę → `decyzja <sygnatura>`
 → do sądowej kontroli tej decyzji: skill prawo-pl-cbosa (`szukaj "<sygnatura decyzji>"`).

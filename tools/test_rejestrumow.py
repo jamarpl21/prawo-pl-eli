@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Offline unit tests for rejestrumow.py pure functions (no network). Run: python3 tools/test_rejestrumow.py"""
+import sys
 import importlib.util
 import pathlib
 import types
@@ -99,6 +100,49 @@ class TestPelne(unittest.TestCase):
     def test_usuwa_puste(self):
         self.assertEqual(rejestrumow._pelne({"a": 1, "b": None, "c": "", "d": 0}),
                          {"a": 1, "d": 0})
+
+
+class TestLimit(unittest.TestCase):
+    """API tnie stronę do 50 — nagłówek i numeracja stron muszą mówić o REALNEJ wielkości."""
+
+    def test_obciete_do_50(self):
+        self.assertEqual(rejestrumow._limit(100), 50)
+        self.assertEqual(rejestrumow._limit(50), 50)
+
+    def test_male_wartosci_bez_zmian(self):
+        self.assertEqual(rejestrumow._limit(10), 10)
+        self.assertEqual(rejestrumow._limit(1), 1)
+
+    def test_zero_i_ujemne_podnoszone(self):
+        self.assertEqual(rejestrumow._limit(0), 1)
+        self.assertEqual(rejestrumow._limit(-5), 1)
+
+
+class TestFlagaJson(unittest.TestCase):
+    """--json musi działać także PO komendzie — modele piszą flagi właśnie tam."""
+
+    ARGV = ["szukaj"]
+
+    def _parsuj(self, argv):
+        """Uruchamia main() z podmienionym cmd_szukaj — parsowanie bez wykonania (bez sieci)."""
+        zlapane = {}
+        oryg_argv, oryg_cmd = sys.argv, rejestrumow.cmd_szukaj
+        rejestrumow.cmd_szukaj = lambda a: zlapane.update(vars(a))
+        sys.argv = ["silnik.py"] + argv
+        try:
+            rejestrumow.main()
+        finally:
+            sys.argv, rejestrumow.cmd_szukaj = oryg_argv, oryg_cmd
+        return zlapane
+
+    def test_flaga_po_komendzie(self):
+        self.assertTrue(self._parsuj(self.ARGV + ["--json"])["json"])
+
+    def test_flaga_przed_komenda(self):
+        self.assertTrue(self._parsuj(["--json"] + self.ARGV)["json"])
+
+    def test_bez_flagi(self):
+        self.assertFalse(self._parsuj(self.ARGV)["json"])
 
 
 if __name__ == "__main__":

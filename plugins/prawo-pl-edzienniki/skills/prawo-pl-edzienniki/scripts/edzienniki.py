@@ -21,7 +21,7 @@ Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
 import sys, json, re, time, argparse, urllib.request, urllib.parse, urllib.error
 from html.parser import HTMLParser
 
-__version__ = "1.6.3"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "1.6.4"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 
 # kod → (województwo, host, publisher ELI). Kody = sufiks publishera (POL_WOJ_XX).
 WOJEWODZTWA = {
@@ -371,6 +371,12 @@ def main():
     t.add_argument("--fragment", help='wytnij okna wokół frazy (np. "§ 3")')
     t.add_argument("--pdf", help="zapisz urzędowy PDF do pliku")
     t.set_defaults(func=cmd_tekst)
+
+    # --json działa też PO komendzie (modele piszą flagi właśnie tam); SUPPRESS sprawia,
+    # że brak flagi w subparserze nie kasuje wartości podanej przed komendą
+    for p in sub.choices.values():
+        p.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
+                       help="zrzut surowego JSON")
 
     a = ap.parse_args()
     a.func(a)

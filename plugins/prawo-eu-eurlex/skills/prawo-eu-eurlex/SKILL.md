@@ -1,6 +1,6 @@
 ---
 name: prawo-eu-eurlex
-version: 1.6.3
+version: 1.6.4
 description: >-
   Odpytuje OFICJALNE repozytorium prawa UE — CELLAR/EUR-Lex Urzędu Publikacji (SPARQL + REST,
   bez klucza): wyszukiwanie aktów, pełny tekst PO POLSKU i w 23 innych językach, WERSJE
@@ -64,6 +64,10 @@ wersje skonsolidowane `02016R0679-20160504`, sprostowania `32016R0679R(01)`, tra
 - **szukaj** — znajdź akt po frazie z tytułu (domyślnie tytuły polskie):
   `python3 scripts/eurlex.py szukaj "sztucznej inteligencji" --typ REG --limit 5`
   (opcje: `--typ REG|DIR|DEC`, `--rok`, `--jezyk pol|eng|…`, `--obowiazujace`, `--limit`)
+  Fraza dopasowuje się DOSŁOWNIE do tytułu, a tytuły są odmienione — podawaj RDZEŃ albo formę
+  z tytułu („danych osobowych"/„osobow", nie „dane osobowe"; RODO ma w tytule „ochrony osób
+  fizycznych w związku z przetwarzaniem danych osobowych"). Zero trafień z mianownika to NIE
+  dowód, że aktu nie ma.
 - **meta** — metadane: tytuł, typ, **wejście w życie / data stosowania** (bywa kilka dat!),
   status, ELI: `python3 scripts/eurlex.py meta 32016R0679`
 - **skonsolidowany** — WERSJE SKONSOLIDOWANE aktu (odpowiednik tekstu jednolitego; data w CELEX
@@ -75,7 +79,7 @@ wersje skonsolidowane `02016R0679-20160504`, sprostowania `32016R0679R(01)`, tra
   `--jezyk eng` — inna wersja językowa; `--pdf ŚCIEŻKA` zapisuje urzędowy PDF.
 - **odniesienia** — nowelizacje, sprostowania, podstawa prawna:
   `python3 scripts/eurlex.py odniesienia 32016R0679`
-- każda komenda przyjmuje `--json` (surowa odpowiedź do dalszego przetwarzania).
+- każda komenda przyjmuje `--json` (surowa odpowiedź do dalszego przetwarzania; działa przed komendą i po niej).
 
 Narzędzie samo ostrzega: na akcie bazowym podpowiada najnowszą wersję skonsolidowaną; na wersji
 skonsolidowanej przypomina o jej dokumentacyjnym charakterze i o nowszych wersjach. Nie ignoruj

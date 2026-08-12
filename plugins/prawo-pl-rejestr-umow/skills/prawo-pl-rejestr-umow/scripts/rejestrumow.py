@@ -24,7 +24,7 @@ Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
 """
 import sys, json, re, time, argparse, urllib.request, urllib.parse, urllib.error
 
-__version__ = "1.6.3"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "1.6.4"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://rejestrumow.gov.pl/api-dp/v1"
 
 SORTY = ["unitNameAsc", "unitNameDesc", "unitVoivodeshipAsc", "unitVoivodeshipDesc",
@@ -149,9 +149,15 @@ def _filtry(a):
     return body
 
 
+def _limit(n):
+    """API twardo tnie stronę do 50 — obcinamy JAWNIE, żeby nagłówek i numeracja stron nie kłamały
+    (przy --limit 100 silnik pobierał 50, a pisał „po 100")."""
+    return max(1, min(n, 50))
+
+
 def _szukaj(body, limit=10, strona=0, sort=None):
     """POST /agreements/search?offset&limit&sortKey — lista umów (limit obcinany do 50)."""
-    limit = max(1, min(limit, 50))
+    limit = _limit(limit)
     return _req("/agreements/search",
                 {"offset": max(0, strona) * limit, "limit": limit, "sortKey": sort}, body)
 
@@ -188,6 +194,7 @@ def _lista(d, limit, strona):
 
 
 def cmd_najnowsze(a):
+    a.limit = _limit(a.limit)
     d = _szukaj({}, a.limit, sort="publicationDateDesc")
     if a.json:
         print(json.dumps(d, ensure_ascii=False, indent=2)); return
@@ -209,10 +216,11 @@ def cmd_szukaj(a):
         sys.exit("Podaj kryterium: frazę przedmiotu umowy, --jsfp/--regon/--nip, --wykonawca, "
                  "--woj, --status, zakres dat/wartości albo --zapytanie '<json>'.\n"
                  "Pełną listę bez filtra daje komenda 'najnowsze'.")
+    a.limit = _limit(a.limit)
     d = _szukaj(body, a.limit, a.strona, a.sort)
     if a.json:
         print(json.dumps(d, ensure_ascii=False, indent=2)); return
-    _lista(d, max(1, min(a.limit, 50)), a.strona)
+    _lista(d, a.limit, a.strona)
 
 
 def _strona_umowy(i, s):
@@ -348,6 +356,12 @@ def main():
     sl = sub.add_parser("slownik")
     sl.add_argument("nazwa", help=f"nazwa słownika: {', '.join(SLOWNIKI)}")
     sl.set_defaults(func=cmd_slownik)
+
+    # --json działa też PO komendzie (modele piszą flagi właśnie tam); SUPPRESS sprawia,
+    # że brak flagi w subparserze nie kasuje wartości podanej przed komendą
+    for p in sub.choices.values():
+        p.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
+                       help="zrzut surowego JSON")
 
     a = ap.parse_args()
     a.func(a)
