@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-cbosa
-version: 1.6.2
+version: 1.6.3
 description: >-
   Przeszukuje CBOSA — Centralną Bazę Orzeczeń Sądów Administracyjnych (orzeczenia.nsa.gov.pl):
   wyroki, postanowienia i uchwały NSA oraz 16 WSA (~2,4 mln orzeczeń od 2004 r.). Używaj przy
@@ -57,7 +57,8 @@ python3 "$CBOSA" <komenda> [...]
   `python3 scripts/cbosa.py szukaj "odpowiedzialność członków zarządu" --sad NSA --od 2024-01-01`
   Opcje: `--sad NSA | "WSA Warszawa" | "WSA Kraków" …` (16 miast; można też podać pełną nazwę),
   `--sygnatura "II FSK 2870/18"`, `--rodzaj wyrok|postanowienie|uchwala`, `--symbol 6119`
-  (symbol sprawy, np. 611x podatki), `--sedzia "Nowak"`, `--od/--do RRRR-MM-DD`,
+  (symbol sprawy, np. 611x podatki), `--sedzia "Nowak"`, `--od/--do RRRR-MM-DD` (można też sam rok
+  `2024` albo `2024-01` — silnik uzupełni do początku/końca okresu),
   `--strona N` (od 1; stała wielkość strony: 10 wyników).
 - **orzeczenie** — pełne orzeczenie po `doc_id` (z listy `szukaj`):
   `python3 scripts/cbosa.py orzeczenie 8889489BE0`
@@ -66,7 +67,7 @@ python3 "$CBOSA" <komenda> [...]
   `--fragment "interpretacja"` (wycina okna wokół frazy).
 - **sygnatura** — szybkie odszukanie po sygnaturze:
   `python3 scripts/cbosa.py sygnatura II FSK 2870/18`
-- każda komenda przyjmuje `--json` (sparsowane dane jako JSON; podawaj PRZED komendą).
+- każda komenda przyjmuje `--json` (sparsowane dane jako JSON; działa przed komendą i po niej).
 
 Typowy przepływ: `szukaj` (zawęź `--sad`/`--od`/`--symbol`) → wybierz doc_id → `orzeczenie <doc_id>`
 → w razie potrzeby skacz po sygnaturach powiązanych (WSA ↔ NSA w tej samej sprawie).
@@ -77,15 +78,20 @@ Typowy przepływ: `szukaj` (zawęź `--sad`/`--od`/`--symbol`) → wybierz doc_i
    HTML. Zmiana układu stron może zepsuć parsowanie — gdy wynik wygląda na obcięty/pusty, zajrzyj
    pod podany link „Źródło" i zgłoś problem. Nie zrównoleglaj zapytań (wbudowany throttling ≥0,5 s;
    serwer bywa przeciążony i ucina połączenia — silnik sam ponawia).
-2. **Baza ma charakter informacyjno-edukacyjny** (nie jest urzędowym publikatorem, orzeczenia są
+2. **Rozróżniaj trzy komunikaty — tylko jeden znaczy „awaria".**
+   „Brak wyników (zweryfikowane zero)" = CBOSA wyszukało i nic nie ma → **zmień zapytanie**
+   (krótsza fraza, bez `--sad`, szerszy zakres dat), nie ponawiaj tego samego.
+   „CBOSA odrzuciło zapytanie: …" = błąd parametrów (np. formatu daty) → popraw i ponów.
+   „BŁĄD: … strona bez listy wyników" albo „BŁĄD sieci" = serwer → ponów za chwilę.
+3. **Baza ma charakter informacyjno-edukacyjny** (nie jest urzędowym publikatorem, orzeczenia są
    zanonimizowane). Zawsze podawaj **sygnaturę + sąd + datę** (np. „wyrok NSA z 10.02.2021,
    II FSK 2870/18"); do dosłownego cytatu w piśmie podaj też link do strony orzeczenia.
-3. **Dwuinstancyjność:** sprawy WSA i NSA łącz przez pole „Sygn. powiązane" (skarga kasacyjna od
+4. **Dwuinstancyjność:** sprawy WSA i NSA łącz przez pole „Sygn. powiązane" (skarga kasacyjna od
    wyroku WSA → wyrok NSA). Sygnatury: NSA np. `II FSK 2870/18`, WSA np. `I SA/Bk 226/18`.
-4. **Nie myl orzeczenia z przepisem.** Brzmienie i aktualność powołanych przepisów potwierdź w ELI
+5. **Nie myl orzeczenia z przepisem.** Brzmienie i aktualność powołanych przepisów potwierdź w ELI
    (skill prawo-pl-eli) — orzeczenie mogło zapaść na starszym stanie prawnym.
-5. **Okno serwisowe:** CBOSA ma codzienną krótką przerwę ok. 21:00 — błędy o tej porze są normalne.
-6. Szczegóły kontraktu HTML (pola formularza, struktura stron): `references/api.md`.
+6. **Okno serwisowe:** CBOSA ma codzienną krótką przerwę ok. 21:00 — błędy o tej porze są normalne.
+7. Szczegóły kontraktu HTML (pola formularza, struktura stron): `references/api.md`.
 
 ## Czego ten skill NIE obejmuje
 

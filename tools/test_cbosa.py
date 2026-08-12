@@ -60,6 +60,64 @@ class TestRodzaj(unittest.TestCase):
             cbosa._rodzaj("apelacja")
 
 
+class TestData(unittest.TestCase):
+    def test_pelna_data_bez_zmian(self):
+        self.assertEqual(cbosa._data("2024-01-31"), "2024-01-31")
+
+    def test_pusta(self):
+        self.assertEqual(cbosa._data(None), "")
+        self.assertEqual(cbosa._data(""), "")
+
+    def test_skroty_uzupelniane_zaleznie_od_konca(self):
+        self.assertEqual(cbosa._data("2024"), "2024-01-01")
+        self.assertEqual(cbosa._data("2024", koniec=True), "2024-12-31")
+        self.assertEqual(cbosa._data("2024-02"), "2024-02-01")
+        self.assertEqual(cbosa._data("2024-02", koniec=True), "2024-02-29")  # rok przestępny
+        self.assertEqual(cbosa._data("2023-02", koniec=True), "2023-02-28")
+
+    def test_separatory_i_zera(self):
+        self.assertEqual(cbosa._data("2024.1.5"), "2024-01-05")
+
+    def test_zly_format_exits(self):
+        # regresja: CBOSA odpowiada wtedy stroną błędu, nie do odróżnienia od przeciążenia
+        for zla in ("31-12-2024", "2024-13-01", "2024-02-30", "wczoraj", "01/2024"):
+            with self.assertRaises(SystemExit, msg=f"data: {zla!r}"):
+                cbosa._data(zla)
+
+
+class TestFormularz(unittest.TestCase):
+    """Mapowanie argumentów CLI na pola formularza CBOSA."""
+
+    class _Args:
+        fraza = sygnatura = sad = rodzaj = symbol = sedzia = od = do = None
+
+    def _form(self, **kw):
+        a = self._Args()
+        for k, v in kw.items():
+            setattr(a, k, v)
+        return cbosa._formularz(a)
+
+    def test_samo_od_dostaje_gorna_granice(self):
+        # regresja: CBOSA na samo `odDaty` (puste `doDaty`) zwraca ZERO wyników
+        f = self._form(od="2024-01-01")
+        self.assertEqual(f["odDaty"], "2024-01-01")
+        self.assertEqual(f["doDaty"], cbosa.DO_OTWARTE)
+
+    def test_samo_do_bez_zmian(self):
+        f = self._form(do="2020-12-31")  # ta strona zakresu działa w CBOSA otwarta
+        self.assertEqual(f["odDaty"], "")
+        self.assertEqual(f["doDaty"], "2020-12-31")
+
+    def test_oba_konce_zachowane(self):
+        f = self._form(od="2024", do="2025")
+        self.assertEqual((f["odDaty"], f["doDaty"]), ("2024-01-01", "2025-12-31"))
+
+    def test_bez_dat_puste(self):
+        f = self._form(fraza="RODO")
+        self.assertEqual((f["odDaty"], f["doDaty"]), ("", ""))
+        self.assertEqual(f["wszystkieSlowa"], "RODO")
+
+
 class TestWyniki(unittest.TestCase):
     # zminiaturyzowana struktura żywej strony wyników CBOSA (2026-07)
     HTML = """
@@ -74,13 +132,21 @@ class TestWyniki(unittest.TestCase):
         I SA/Bk 226/18 - Wyrok WSA w Białymstoku z 2018-06-06<br/></a></span></td></tr>
     </table>"""
 
+    # strona CBOSA bez trafień: formularz z komunikatem, bez licznika „Znaleziono N"
+    HTML_ZERO = """<form name="QueryForm" method="post" action="/cbo/search">
+      <div class="warning"> Nie znaleziono orzeczeń spełniających podany warunek! </div>
+      <div class="forma"><TABLE id="qt"></TABLE></div></form>"""
+    HTML_ZLA_DATA = """<form name="QueryForm" method="post" action="/cbo/search">
+      <div class="warning"> Niepoprawny format daty, podaj RRRR-MM-DD! </div>
+      <div class="forma"><TABLE id="qt"></TABLE></div></form>"""
+
     def test_total_i_pozycje(self):
-        total, poz = cbosa._wyniki(self.HTML)
+        total, poz, _ = cbosa._wyniki(self.HTML)
         self.assertEqual(total, 1878)
         self.assertEqual(len(poz), 2)
 
     def test_glowny_wynik(self):
-        _, poz = cbosa._wyniki(self.HTML)
+        _, poz, _ = cbosa._wyniki(self.HTML)
         glowny = poz[0]
         self.assertEqual(glowny["doc_id"], "8889489BE0")
         self.assertFalse(glowny["powiazane"])
@@ -88,14 +154,31 @@ class TestWyniki(unittest.TestCase):
         self.assertIn("6112", glowny["snippet"])
 
     def test_powiazane_oznaczone(self):
-        _, poz = cbosa._wyniki(self.HTML)
+        _, poz, _ = cbosa._wyniki(self.HTML)
         self.assertTrue(poz[1]["powiazane"])
         self.assertEqual(poz[1]["doc_id"], "109C7D1883")
 
+    def test_brak_trafien_to_zweryfikowane_zero(self):
+        # regresja: bez tego każde puste wyszukiwanie wyglądało jak awaria serwera
+        total, poz, komunikat = cbosa._wyniki(self.HTML_ZERO)
+        self.assertEqual(total, 0)
+        self.assertEqual(poz, [])
+        self.assertIn("Nie znaleziono orzeczeń", komunikat)
+
+    def test_blad_formularza_zwraca_komunikat(self):
+        total, poz, komunikat = cbosa._wyniki(self.HTML_ZLA_DATA)
+        self.assertIsNone(total)  # to nie zero — zapytanie w ogóle nie zostało wykonane
+        self.assertEqual(poz, [])
+        self.assertIn("Niepoprawny format daty", komunikat)
+
+    def test_strona_z_wynikami_bez_komunikatu(self):
+        self.assertEqual(cbosa._wyniki(self.HTML)[2], "")
+
     def test_pusty_html(self):
-        total, poz = cbosa._wyniki("<html><body>Brak wyników</body></html>")
+        total, poz, komunikat = cbosa._wyniki("<html><body>Brak wyników</body></html>")
         self.assertIsNone(total)
         self.assertEqual(poz, [])
+        self.assertEqual(komunikat, "")
 
 
 class TestOrzeczenie(unittest.TestCase):
@@ -132,6 +215,53 @@ class TestOrzeczenie(unittest.TestCase):
         self.assertIn("oddalił skargę", d["uzasadnienie"])
         self.assertNotIn("<P>", d["uzasadnienie"])
         self.assertNotIn("\xa0", d["uzasadnienie"])  # NBSP znormalizowany
+
+
+class TestFetchPonowienia(unittest.TestCase):
+    """Krótkie okna, w których CBOSA ucina połączenia, muszą przeżyć kilka ponowień."""
+
+    def _bez_sieci(self, awarie):
+        """Podmienia opener: pierwsze `awarie` prób pada, kolejna zwraca stronę. Zwraca licznik."""
+        licznik = {"proby": 0, "spanie": []}
+
+        class _Odpowiedz:
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *a):
+                return False
+
+            def read(self_inner):
+                return b"<html>OK</html>"
+
+        class _Opener:
+            def open(self_inner, req, timeout=None):
+                licznik["proby"] += 1
+                if licznik["proby"] <= awarie:
+                    raise OSError("Remote end closed connection without response")
+                return _Odpowiedz()
+
+        return licznik, _Opener()
+
+    def _uruchom(self, awarie):
+        licznik, opener = self._bez_sieci(awarie)
+        oryg_opener, oryg_sleep = cbosa.urllib.request.build_opener, cbosa.time.sleep
+        cbosa.urllib.request.build_opener = lambda *a, **k: opener
+        cbosa.time.sleep = lambda s: licznik["spanie"].append(s)
+        try:
+            return licznik, cbosa._fetch("/cbo/search", data={"submit": "Szukaj"})
+        finally:
+            cbosa.urllib.request.build_opener, cbosa.time.sleep = oryg_opener, oryg_sleep
+
+    def test_przezywa_kilkunastosekundowe_okno(self):
+        licznik, html = self._uruchom(awarie=4)  # cztery zerwane połączenia z rzędu
+        self.assertIn("OK", html)
+        self.assertEqual(licznik["proby"], 5)
+        self.assertGreaterEqual(sum(s for s in licznik["spanie"] if s > 0.5), 26)
+
+    def test_trwala_awaria_konczy_bledem(self):
+        with self.assertRaises(SystemExit):
+            self._uruchom(awarie=99)
 
 
 class TestText(unittest.TestCase):

@@ -19,13 +19,19 @@ serwisowe ok. 21:00. Wszystkie pola i regexy zweryfikowane na żywych stronach (
 | `sad` | `dowolny` \| **PEŁNA nazwa**: `Naczelny Sąd Administracyjny`, `Wojewódzki Sąd Administracyjny w Warszawie`, … (`we Wrocławiu`, `w Gorzowie Wlkp.`); też historyczne `NSA oz. w …` |
 | `rodzaj` | `dowolny` \| `Wyrok` \| `Postanowienie` \| `Uchwała` |
 | `symbole` | symbol sprawy, np. `6119` |
-| `odDaty`, `doDaty` | `RRRR-MM-DD` |
+| `odDaty`, `doDaty` | `RRRR-MM-DD` — **wyłącznie ten format**; inny (np. `2024`, `31-12-2024`) zwraca formularz z komunikatem „Niepoprawny format daty, podaj RRRR-MM-DD!" i BEZ listy wyników |
 | `sedziowie` | nazwisko |
 | `funkcja` | `dowolna` \| `przewodniczący` \| `sprawozdawca` \| `autor uzasadnienia` |
 | `submit` | `Szukaj` |
 
-**PUŁAPKA:** pole `sad` przyjmuje pełny TEKST opcji — wartość spoza listy (np. `0`) po cichu zwraca
+**PUŁAPKA 1:** pole `sad` przyjmuje pełny TEKST opcji — wartość spoza listy (np. `0`) po cichu zwraca
 0 wyników zamiast błędu. `cbosa.py` mapuje aliasy (`NSA`, `WSA <miasto>`) na pełne nazwy.
+
+**PUŁAPKA 2 (zakres dat otwarty od góry):** wypełnione `odDaty` przy PUSTYM `doDaty` po cichu zwraca
+**0 wyników** — puste `doDaty` działa jak górna granica sprzed początku zakresu (zweryfikowane:
+`odDaty=2024-01-01, doDaty=""` → 0; `doDaty=2099-12-31` → 421 trafień na tej samej frazie).
+Odwrotnie jest poprawnie: samo `doDaty` (z pustym `odDaty`) filtruje „do dnia". `cbosa.py` przy samym
+`--od` dostawia `doDaty=2099-12-31` (stała `DO_OTWARTE`).
 
 ## Paginacja
 
@@ -39,6 +45,11 @@ POST zwraca stronę 1 + ciasteczka sesji (`Set-Cookie`). Kolejne strony: `GET /c
   (`DOC_ID` = 10 znaków hex); po niej komórka `font-size: 10pt` ze snippetem (treść wyniku, symbole,
   skarżony organ, powołane przepisy)
 - orzeczenia powiązane (ta sama sprawa w innej instancji): `<span class="powiazane"><a href="/doc/…">…</a></span>`
+- **komunikaty formularza:** `<div class="warning">…</div>` na stronie BEZ licznika „Znaleziono N".
+  Znane treści: `Nie znaleziono orzeczeń spełniających podany warunek!` (**zweryfikowane zero** —
+  zapytanie wykonane, brak trafień) oraz `Niepoprawny format daty, podaj RRRR-MM-DD!` (**błąd
+  zapytania** — CBOSA w ogóle nie szukało). Strona bez licznika i bez `warning` = przeciążenie
+  serwera/strona błędu; tylko wtedy warto ponawiać.
 
 ## Strona orzeczenia: `GET /doc/{DOC_ID}`
 
@@ -53,7 +64,8 @@ POST zwraca stronę 1 + ciasteczka sesji (`Set-Cookie`). Kolejne strony: `GET /c
 ## Mapowanie komend `cbosa.py` → pola
 
 `szukaj FRAZA`→`wszystkieSlowa`, `--sad`→`sad` (alias→pełna nazwa), `--sygnatura`→`sygnatura`,
-`--rodzaj`→`rodzaj`, `--symbol`→`symbole`, `--sedzia`→`sedziowie`, `--od/--do`→`odDaty/doDaty`,
+`--rodzaj`→`rodzaj`, `--symbol`→`symbole`, `--sedzia`→`sedziowie`, `--od/--do`→`odDaty/doDaty`
+(skróty `RRRR` i `RRRR-MM` silnik uzupełnia do początku okresu dla `--od`, do końca dla `--do`),
 `--strona N`→`GET /cbo/find?p=N` (po POST). `sygnatura <S>` = `szukaj` z samym polem `sygnatura`.
 
 ## Wskazówki

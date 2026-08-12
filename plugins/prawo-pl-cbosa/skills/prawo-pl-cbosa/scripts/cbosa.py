@@ -16,12 +16,13 @@ Komendy:
          [--symbol 6119] [--sedzia N] [--od RRRR-MM-DD] [--do RRRR-MM-DD] [--strona N]
   orzeczenie <doc_id> [--fragment "<fraza>"]   pełne orzeczenie: metadane, sentencja, uzasadnienie
   sygnatura <sygnatura...>                      znajdź orzeczenie po sygnaturze
-Globalnie: --json  (zrzut sparsowanych danych jako JSON zamiast podsumowania)
+Globalnie: --json  (zrzut sparsowanych danych jako JSON zamiast podsumowania; działa przed
+komendą i po niej)
 """
-import sys, json, re, time, argparse, ssl, html as html_mod
+import sys, json, re, time, argparse, ssl, calendar, html as html_mod
 import urllib.request, urllib.parse, urllib.error, http.cookiejar
 
-__version__ = "1.6.2"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "1.6.3"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://orzeczenia.nsa.gov.pl"
 
 # Miasta WSA (klucz bez diakrytyków) → końcówka pełnej nazwy z formularza CBOSA.
@@ -71,6 +72,28 @@ def _rodzaj(s):
     return r
 
 
+def _data(s, koniec=False):
+    """--od/--do → RRRR-MM-DD. Formularz CBOSA przyjmuje WYŁĄCZNIE ten format (inny zwraca
+    stronę błędu bez wyników, nie do odróżnienia od przeciążenia). Skróty RRRR i RRRR-MM
+    uzupełniamy do początku okresu (--od) albo jego końca (--do)."""
+    if not s:
+        return ""
+    t = s.strip().replace(".", "-").replace("/", "-")
+    m = re.fullmatch(r"(\d{4})(?:-(\d{1,2})(?:-(\d{1,2}))?)?", t)
+    if not m:
+        sys.exit(f"Nieprawidłowa data: {s!r}. Format RRRR-MM-DD (np. 2024-01-31); "
+                 "można też podać sam rok (2024) albo rok z miesiącem (2024-01).")
+    rok, mies, dzien = m.group(1), m.group(2), m.group(3)
+    mm = int(mies) if mies else (12 if koniec else 1)
+    if not 1 <= mm <= 12:
+        sys.exit(f"Nieprawidłowa data: {s!r} — miesiąc poza zakresem. Format RRRR-MM-DD.")
+    ostatni = calendar.monthrange(int(rok), mm)[1]
+    dd = int(dzien) if dzien else (ostatni if koniec else 1)
+    if not 1 <= dd <= ostatni:
+        sys.exit(f"Nieprawidłowa data: {s!r} — nie ma takiego dnia. Format RRRR-MM-DD.")
+    return f"{rok}-{mm:02d}-{dd:02d}"
+
+
 # ── HTTP: throttling, ciasteczka sesji (paginacja), awaryjny kontekst SSL ────────────────
 _jar = http.cookiejar.CookieJar()
 _ssl_ctx = ssl.create_default_context()
@@ -78,7 +101,9 @@ _ostatnie = [0.0]
 
 
 def _fetch(path, data=None):
-    """GET/POST strony CBOSA (HTML). Throttling >=0,5 s; jedno ponowienie na błąd przejściowy.
+    """GET/POST strony CBOSA (HTML). Throttling >=0,5 s; ponowienia z rosnącym odstępem.
+    CBOSA miewa kilkunastosekundowe okna, w których ucina połączenia bez odpowiedzi — stąd
+    łącznie ~26 s ponawiania (za krótkie okno ponowień = fałszywy raport „skill nie działa").
     CBOSA serwuje niekompletny łańcuch certyfikatów — na systemach, gdzie weryfikacja pada,
     silnik przechodzi (tylko dla tego hosta) na kontekst bez weryfikacji łańcucha (dane publiczne)."""
     global _ssl_ctx
@@ -91,8 +116,8 @@ def _fetch(path, data=None):
     }
     if body is not None:
         headers["Content-Type"] = "application/x-www-form-urlencoded"
-    # CBOSA bywa chwiejna (ucina połączenia bez odpowiedzi) — kilka ponowień z rosnącym odstępem
-    for attempt in (1, 2, 3, 4):
+    # odstęp przed kolejną próbą; None = ostatnia próba (dalej już błąd)
+    for odstep in (2, 4, 8, 12, None):
         czekaj = 0.5 - (time.time() - _ostatnie[0])
         if czekaj > 0:
             time.sleep(czekaj)
@@ -105,8 +130,8 @@ def _fetch(path, data=None):
             with opener.open(req, timeout=40) as r:
                 return r.read().decode("utf-8", "replace")
         except urllib.error.HTTPError as e:
-            if e.code >= 500 and attempt < 4:
-                time.sleep(2 * attempt); continue
+            if e.code >= 500 and odstep is not None:
+                time.sleep(odstep); continue
             sys.exit(f"BŁĄD HTTP {e.code}: {url}\n"
                      "CBOSA ma codzienne krótkie okno serwisowe ok. 21:00 — spróbuj ponownie później.")
         except urllib.error.URLError as e:
@@ -116,15 +141,17 @@ def _fetch(path, data=None):
                 ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
                 _ssl_ctx = ctx
                 continue
-            if attempt < 4:
-                time.sleep(2 * attempt); continue
+            if odstep is not None:
+                time.sleep(odstep); continue
             sys.exit(f"BŁĄD sieci: {url} ({e})\n"
                      "Serwer CBOSA bywa przeciążony i ucina połączenia — spróbuj ponownie za chwilę.")
         except Exception as e:  # noqa: BLE001
-            if attempt < 4:
-                time.sleep(2 * attempt); continue
+            if odstep is not None:
+                time.sleep(odstep); continue
             sys.exit(f"BŁĄD sieci: {url} ({e})\n"
                      "Serwer CBOSA bywa przeciążony i ucina połączenia — spróbuj ponownie za chwilę.")
+    # wyczerpane próby po przełączeniu kontekstu SSL w ostatnim obiegu — nigdy nie zwracaj None
+    sys.exit(f"BŁĄD sieci: {url} — nie udało się pobrać strony po kilku próbach.")
 
 
 # ── Parsowanie HTML (regexy zweryfikowane na żywych stronach CBOSA) ─────────────────────
@@ -161,13 +188,24 @@ def _fragmenty(txt, fraza, maks=6, okno=600):
 
 
 def _wyniki(strona_html):
-    """Lista wyników wyszukiwarki → (liczba trafień, [pozycje]). Pozycja: doc_id, opis, snippet,
-    powiazane (True = link z sekcji „orzeczenia powiązane", nie samodzielne trafienie)."""
+    """Lista wyników wyszukiwarki → (liczba trafień, [pozycje], komunikat CBOSA). Pozycja:
+    doc_id, opis, snippet, powiazane (True = link z sekcji „orzeczenia powiązane", nie
+    samodzielne trafienie).
+
+    Komunikaty formularza CBOSA siedzą w <div class="warning"> i NIE są błędem serwera:
+    „Nie znaleziono orzeczeń…" to ZWERYFIKOWANE zero (total=0 — inaczej każde puste
+    wyszukiwanie wyglądałoby jak awaria), „Niepoprawny format daty…" to błąd zapytania."""
     flat = _flat(strona_html)
+    komunikat = ""
+    m = re.search(r'<div class="warning">(.*?)</div>', flat, re.S)
+    if m:
+        komunikat = re.sub(r"\s+", " ", _text(m.group(1))).strip()
     total = None
     m = re.search(r"Znaleziono\s+([\d\s\xa0]+)\s+orzecze", flat)
     if m:
         total = int(re.sub(r"[\s\xa0]", "", m.group(1)))
+    elif _ascii(komunikat).startswith("nie znaleziono orzecze"):
+        total = 0
     pozycje = []
     for m in re.finditer(r'<a href="/doc/([A-F0-9]{6,})"[^>]*>(.*?)</a>', flat, re.I):
         opis = re.sub(r"\s+", " ", html_mod.unescape(re.sub(r"<[^>]+>", " ", m.group(2)))).strip()
@@ -184,7 +222,7 @@ def _wyniki(strona_html):
             if sm:
                 snippet = re.sub(r"\s+", " ", _text(sm.group(1))).strip()
         pozycje.append({"doc_id": m.group(1), "opis": opis, "snippet": snippet, "powiazane": powiazane})
-    return total, pozycje
+    return total, pozycje, komunikat
 
 
 def _orzeczenie(strona_html, doc_id):
@@ -218,7 +256,16 @@ def _orzeczenie(strona_html, doc_id):
 
 
 # ── Komendy ──────────────────────────────────────────────────────────────────────────────
+DO_OTWARTE = "2099-12-31"  # patrz _formularz: CBOSA nie umie zakresu dat otwartego od góry
+
+
 def _formularz(a):
+    od = _data(getattr(a, "od", None))
+    do = _data(getattr(a, "do", None), koniec=True)
+    # PUŁAPKA CBOSA: samo `odDaty` (bez `doDaty`) daje ZERO wyników — puste `doDaty` jest czytane
+    # jako górna granica sprzed początku zakresu. Odwrotnie (samo `doDaty`) działa poprawnie.
+    if od and not do:
+        do = DO_OTWARTE
     return {
         "wszystkieSlowa": getattr(a, "fraza", None) or "",
         "wystepowanie": "gdziekolwiek",
@@ -227,8 +274,8 @@ def _formularz(a):
         "sad": _sad(getattr(a, "sad", None)),
         "rodzaj": _rodzaj(getattr(a, "rodzaj", None)),
         "symbole": getattr(a, "symbol", None) or "",
-        "odDaty": getattr(a, "od", None) or "",
-        "doDaty": getattr(a, "do", None) or "",
+        "odDaty": od,
+        "doDaty": do,
         "sedziowie": getattr(a, "sedzia", None) or "",
         "funkcja": "",
         "submit": "Szukaj",
@@ -265,11 +312,14 @@ def cmd_szukaj(a):
     if not kryteria:
         sys.exit("Podaj kryterium: frazę albo --sad / --sygnatura / --rodzaj / --symbol / --sedzia / zakres dat.")
     strona = max(1, a.strona)
-    total, pozycje = _szukaj(_formularz(a), strona)
+    total, pozycje, komunikat = _szukaj(_formularz(a), strona)
     if a.json:
-        print(json.dumps({"total": total, "strona": strona, "wyniki": pozycje},
+        print(json.dumps({"total": total, "strona": strona, "komunikat": komunikat, "wyniki": pozycje},
                          ensure_ascii=False, indent=2)); return
     if total is None and not pozycje:
+        if komunikat:  # formularz odrzucił zapytanie (np. zła data) — to błąd wejścia, nie serwera
+            sys.exit(f"CBOSA odrzuciło zapytanie: {komunikat}\nPopraw parametry i ponów "
+                     "(daty w formacie RRRR-MM-DD).")
         # strona bez licznika „Znaleziono N" = strona błędu/przeciążenia, NIE zweryfikowane zero
         sys.exit("BŁĄD: CBOSA zwróciło stronę bez listy wyników (serwer przeciążony albo strona "
                  "błędu) — to NIE oznacza braku orzeczeń. Spróbuj ponownie za chwilę; zapytania "
@@ -328,10 +378,13 @@ def cmd_sygnatura(a):
     form = {"wszystkieSlowa": "", "wystepowanie": "gdziekolwiek", "odmiana": "on",
             "sygnatura": sig, "sad": "dowolny", "rodzaj": "dowolny", "symbole": "",
             "odDaty": "", "doDaty": "", "sedziowie": "", "funkcja": "", "submit": "Szukaj"}
-    total, pozycje = _szukaj(form)
+    total, pozycje, komunikat = _szukaj(form)
     if a.json:
-        print(json.dumps({"total": total, "wyniki": pozycje}, ensure_ascii=False, indent=2)); return
+        print(json.dumps({"total": total, "komunikat": komunikat, "wyniki": pozycje},
+                         ensure_ascii=False, indent=2)); return
     if total is None and not pozycje:
+        if komunikat:
+            sys.exit(f"CBOSA odrzuciło zapytanie: {komunikat}")
         sys.exit("BŁĄD: CBOSA zwróciło stronę bez listy wyników (serwer przeciążony albo strona "
                  "błędu) — to NIE oznacza braku orzeczeń. Spróbuj ponownie za chwilę.")
     glowne = [p for p in pozycje if not p["powiazane"]]
@@ -374,6 +427,12 @@ def main():
     sy = sub.add_parser("sygnatura")
     sy.add_argument("sygnatura", nargs="+")
     sy.set_defaults(func=cmd_sygnatura)
+
+    # --json działa też PO komendzie (naturalna kolejność); SUPPRESS = brak flagi nie nadpisuje
+    # wartości z parsera głównego
+    for p in (s, o, sy):
+        p.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
+                       help="zrzut sparsowanych danych jako JSON")
 
     a = ap.parse_args()
     a.func(a)
