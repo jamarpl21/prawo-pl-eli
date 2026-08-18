@@ -1,6 +1,6 @@
 {
   "name": "prawo-eu-eurlex",
-  "version": "1.6.4",
+  "version": "1.6.5",
   "description": "Prawo UE z oficjalnego repozytorium CELLAR/EUR-Lex Urzędu Publikacji (SPARQL + REST, bez klucza) do każdego pytania o prawo unijne: rozporządzenia, dyrektywy, wersje skonsolidowane, pojedyncze artykuły po polsku, nowelizacje i podstawa prawna. Read-only.",
   "author": {
     "name": "Krzysztof Gibek"

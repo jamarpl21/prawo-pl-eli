@@ -1,7 +1,7 @@
 {
   "name": "prawo-eu-eurlex",
   "description": "Prawo UE z oficjalnego repozytorium CELLAR/EUR-Lex Urzędu Publikacji (SPARQL + REST, bez klucza) do każdego pytania o prawo unijne: rozporządzenia (RODO, AI Act, DORA, DSA), dyrektywy, wersje skonsolidowane, pojedyncze artykuły po polsku, nowelizacje i podstawa prawna. Read-only — źródło pierwotne zamiast cytowania przepisów z pamięci lub portali.",
-  "version": "1.6.4",
+  "version": "1.6.5",
   "author": {
     "name": "Krzysztof Gibek"
   },

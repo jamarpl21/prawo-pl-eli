@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-edzienniki
-version: 1.6.4
+version: 1.6.5
 description: >-
   Odpytuje API ELI 16 WOJEWÓDZKICH DZIENNIKÓW URZĘDOWYCH — PRAWO MIEJSCOWE: uchwały rad gmin,
   powiatów i sejmików województw, rozporządzenia i zarządzenia wojewody, akty prawa miejscowego.
