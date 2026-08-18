@@ -25,6 +25,10 @@ from html.parser import HTMLParser
 __version__ = "1.6.4"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://www.saos.org.pl/api"
 
+
+class VerificationUnknown(RuntimeError):
+    """Zapytanie nie pozwoliło ustalić, czy dane istnieją."""
+
 # Aliasy typów sądów (courtType w API SAOS)
 SADY = {
     "SN": "SUPREME", "SUPREME": "SUPREME",
@@ -76,7 +80,11 @@ def _ostrzezenie_zasiegu(ct, od=None):
 
 
 def _get(path, params=None, soft=False):
-    """GET z jednym ponowieniem na błąd przejściowy. soft=True: zamiast wyjścia zwraca None."""
+    """GET z jednym ponowieniem.
+
+    Zwraca dane, w tym pusty wynik jako VERIFIED_ABSENT. Przy soft=True błąd
+    żądania ma osobny stan UNKNOWN (VerificationUnknown), nigdy None/pusty wynik.
+    """
     url = BASE + path
     if params:
         q = urllib.parse.urlencode({k: v for k, v in params.items() if v not in (None, "", False)})
@@ -93,14 +101,14 @@ def _get(path, params=None, soft=False):
                 if attempt == 1:
                     time.sleep(2); continue
                 if soft:
-                    return None
+                    raise VerificationUnknown("SAOS ma przerwę techniczną")
                 sys.exit("BŁĄD: SAOS ma przerwę techniczną (serwis chwilowo niedostępny) — spróbuj ponownie później.")
             break
         except urllib.error.HTTPError as e:
             if e.code >= 500 and attempt == 1:
                 time.sleep(2); continue
             if soft:
-                return None
+                raise VerificationUnknown(f"HTTP {e.code}: {url}") from e
             if e.code == 404:
                 sys.exit(f"BŁĄD HTTP 404 (nie znaleziono): {url}")
             sys.exit(f"BŁĄD HTTP {e.code}: {url}")
@@ -108,12 +116,38 @@ def _get(path, params=None, soft=False):
             if attempt == 1:
                 time.sleep(2); continue
             if soft:
-                return None
+                raise VerificationUnknown(f"błąd sieci: {url} ({e})") from e
             sys.exit(f"BŁĄD sieci: {url} ({e})")
     try:
         return json.loads(raw)
     except (json.JSONDecodeError, TypeError):
         return raw
+
+
+def _expect_dict(d, what):
+    if not isinstance(d, dict):
+        sys.exit(f"BŁĄD: nie udało się zweryfikować {what}, ponieważ API SAOS zwróciło "
+                 "nieoczekiwaną odpowiedź. Spróbuj ponownie za chwilę.")
+    return d
+
+
+def _expect_search(d, what):
+    d = _expect_dict(d, what)
+    info = d.get("info")
+    if not isinstance(d.get("items"), list) or not isinstance(info, dict) \
+            or "totalResults" not in info:
+        sys.exit(f"BŁĄD: nie udało się zweryfikować {what}, ponieważ odpowiedź API SAOS "
+                 "nie zawiera kompletnego wyniku wyszukiwania. Spróbuj ponownie za chwilę.")
+    return d
+
+
+def _expect_judgment(d, judgment_id):
+    d = _expect_dict(d, f"orzeczenia {judgment_id}")
+    data = d.get("data", d)
+    if not isinstance(data, dict) or data.get("id") is None:
+        sys.exit(f"BŁĄD: nie udało się zweryfikować orzeczenia {judgment_id}, ponieważ odpowiedź "
+                 "API SAOS nie zawiera danych orzeczenia. Spróbuj ponownie za chwilę.")
+    return d
 
 
 class _Stripper(HTMLParser):
@@ -267,10 +301,9 @@ def cmd_szukaj(a):
     if not kryteria:
         sys.exit("Podaj kryterium: frazę albo --sad / --sygnatura / --przepis / --sedzia / --haslo / --typ / zakres dat.")
     d = _get("/search/judgments", params)
+    d = _expect_search(d, "wyników wyszukiwania")
     if a.json:
         print(json.dumps(d, ensure_ascii=False, indent=2)); return
-    if not isinstance(d, dict):
-        sys.exit("BŁĄD: API SAOS zwróciło nieoczekiwaną odpowiedź — spróbuj ponownie za chwilę.")
     items = d.get("items", [])
     total = (d.get("info") or {}).get("totalResults", "?")
     print(f"Znaleziono: {total}  (pokazuję {len(items)}, strona {params['pageNumber']}, po {params['pageSize']})\n")
@@ -290,10 +323,9 @@ def cmd_szukaj(a):
 
 def cmd_orzeczenie(a):
     d = _get(f"/judgments/{a.id}")
+    d = _expect_judgment(d, a.id)
     if a.json:
         print(json.dumps(d, ensure_ascii=False, indent=2)); return
-    if not isinstance(d, dict):
-        sys.exit("BŁĄD: API SAOS zwróciło nieoczekiwaną odpowiedź.")
     data = d.get("data", d)
     cn = _case_numbers(data) or "—"
     ctype = CT_PL.get(data.get("courtType", ""), data.get("courtType", ""))
@@ -358,10 +390,11 @@ def cmd_sygnatura(a):
     sig = " ".join(a.sygnatura).strip()
     d = _get("/search/judgments", {"caseNumber": sig, "pageSize": 20, "pageNumber": 0,
                                    "sortingField": "JUDGMENT_DATE", "sortingDirection": "DESC"})
+    d = _expect_search(d, f"orzeczenia o sygnaturze {sig!r}")
     if a.json:
         print(json.dumps(d, ensure_ascii=False, indent=2)); return
-    items = d.get("items", []) if isinstance(d, dict) else []
-    total = (d.get("info") or {}).get("totalResults", 0) if isinstance(d, dict) else 0
+    items = d.get("items", [])
+    total = (d.get("info") or {}).get("totalResults", 0)
     if not items:
         sys.exit(f"Nie znaleziono orzeczenia o sygnaturze {sig!r} w SAOS.\n"
                  "SAOS to baza wtórna (nie ma wszystkiego) — sprawdź też portal właściwego sądu; "

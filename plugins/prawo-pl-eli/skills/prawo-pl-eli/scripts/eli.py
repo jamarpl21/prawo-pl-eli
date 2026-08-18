@@ -23,8 +23,21 @@ __version__ = "1.6.4"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validat
 BASE = "https://api.sejm.gov.pl/eli"
 
 
+class VerificationUnknown(RuntimeError):
+    """Zapytanie nie pozwoliło ustalić, czy dane istnieją."""
+
+
+def _nie_zweryfikowano(co, blad):
+    sys.exit(f"BŁĄD: nie udało się zweryfikować {co} ({blad}). "
+             "Spróbuj ponownie za chwilę.")
+
+
 def _get(path, params=None, soft=False):
-    """GET z jednym ponowieniem na błąd przejściowy. soft=True: zamiast wyjścia zwraca None."""
+    """GET z jednym ponowieniem.
+
+    Zwraca dane, w tym pustą odpowiedź jako VERIFIED_ABSENT. Przy soft=True błąd
+    żądania ma osobny stan UNKNOWN (VerificationUnknown), nigdy None/pusty wynik.
+    """
     url = BASE + path
     if params:
         q = urllib.parse.urlencode({k: v for k, v in params.items() if v not in (None, "", False)})
@@ -42,18 +55,18 @@ def _get(path, params=None, soft=False):
             if e.code >= 500 and attempt == 1:
                 time.sleep(2); continue
             if soft:
-                return None
+                raise VerificationUnknown(f"HTTP {e.code}: {url}") from e
             sys.exit(f"BŁĄD HTTP {e.code}: {url}")
         except Exception as e:
             if attempt == 1:
                 time.sleep(2); continue
             if soft:
-                return None
+                raise VerificationUnknown(f"błąd sieci: {url} ({e})") from e
             sys.exit(f"BŁĄD sieci: {url} ({e})")
     if raw is not None and "Request Rejected" in raw and "rejected" in raw.lower():
         # zapora (WAF) api.sejm.gov.pl potrafi odrzucać wybrane URL-e (m.in. /text.html/{tree})
         if soft:
-            return None
+            raise VerificationUnknown(f"zapora api.sejm.gov.pl odrzuciła żądanie: {url}")
         sys.exit(f"BŁĄD: zapora api.sejm.gov.pl odrzuciła żądanie (Request Rejected): {url}\n"
                  "Spróbuj ponownie; do pojedynczego artykułu użyj: tekst <syg> --fragment \"art. N\".")
     if "json" in ctype:
@@ -269,7 +282,8 @@ def _tj_z_tekstem(path, refs):
         base = next((r.get("act") for r in items if isinstance(r, dict) and isinstance(r.get("act"), dict)), None)
         if base and base.get("ELI"):
             base_refs = _get(f"/acts/{base['ELI']}/references", soft=True)
-            tj = _tj_acts(base_refs) if isinstance(base_refs, dict) else []
+            base_refs = _expect_dict(base_refs, "odniesienia aktu bazowego")
+            tj = _tj_acts(base_refs)
     for act in tj:
         eli_id = act.get("ELI")
         if not eli_id or eli_id == biezacy_eli:
@@ -360,8 +374,12 @@ def cmd_meta(a):
 
 def cmd_tekst(a):
     path, label = act_path(a.sygnatura)
-    refs = _get(path + "/references", soft=True)
-    ostrz = _ostrzezenia(refs) if isinstance(refs, dict) else []
+    try:
+        refs = _get(path + "/references", soft=True)
+    except VerificationUnknown as e:
+        _nie_zweryfikowano(f"odniesień i aktualności aktu {label}", e)
+    refs = _expect_dict(refs, "odniesienia aktu")
+    ostrz = _ostrzezenia(refs)
     if a.pdf:
         # pobierz urzędowy PDF (preferuj tekst jednolity, typ 'U'/'T', inaczej oryginał 'O')
         meta = _expect_dict(_get(path), "metadane aktu")
@@ -386,7 +404,10 @@ def cmd_tekst(a):
         html = json.dumps(html, ensure_ascii=False)
     txt = html_to_text(html if isinstance(html, str) else "")
     if not txt:
-        fb = _tj_z_tekstem(path, refs if isinstance(refs, dict) else {})
+        try:
+            fb = _tj_z_tekstem(path, refs if isinstance(refs, dict) else {})
+        except VerificationUnknown as e:
+            _nie_zweryfikowano(f"zapasowego tekstu jednolitego dla {label}", e)
         if not fb:
             sys.exit(f"BŁĄD: text.html dla {label} jest PUSTE w API (HTML bywa dodawany z opóźnieniem) "
                      f"i nie znalazłem innego tekstu jednolitego z tekstem. "
@@ -519,8 +540,12 @@ def cmd_tj(a):
         # sprawdź na akcie bazowym, czy nie ma już NOWSZEGO tekstu jednolitego
         m = re.match(r"^/acts/(DU|MP)/(\d+)/(\d+)$", path)
         if base and base.get("ELI") and m:
-            base_refs = _get(f"/acts/{base['ELI']}/references", soft=True)
-            newer = _tj_acts(base_refs) if isinstance(base_refs, dict) else []
+            try:
+                base_refs = _get(f"/acts/{base['ELI']}/references", soft=True)
+            except VerificationUnknown as e:
+                _nie_zweryfikowano(f"nowszego tekstu jednolitego dla {label}", e)
+            base_refs = _expect_dict(base_refs, "odniesienia aktu bazowego")
+            newer = _tj_acts(base_refs)
             if newer and _eli_rok_poz(newer[0]) > (int(m.group(2)), int(m.group(3))):
                 print(f"UWAGA: istnieje NOWSZY tekst jednolity: {newer[0].get('displayAddress') or newer[0].get('ELI','')} — cytuj z niego.")
         return
