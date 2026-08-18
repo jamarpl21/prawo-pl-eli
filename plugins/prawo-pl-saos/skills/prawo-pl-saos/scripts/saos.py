@@ -446,7 +446,11 @@ def main():
                        help="zrzut surowego JSON")
 
     a = ap.parse_args()
-    a.func(a)
+    try:
+        a.func(a)
+    except VerificationUnknown as e:
+        sys.exit(f"BŁĄD: nie udało się zweryfikować danych w SAOS ({e}). "
+                 "Spróbuj ponownie za chwilę.")
 
 
 if __name__ == "__main__":

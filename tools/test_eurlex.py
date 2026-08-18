@@ -181,6 +181,16 @@ class EurlexVerificationContractTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "nie udało się zweryfikować.*Spróbuj ponownie"):
                 eurlex.cmd_skonsolidowany(args)
 
+    def test_ostrzezenia_przy_tekscie_nie_blokuja_tresci(self):
+        # przy tekście/meta konsolidacje to informacja POBOCZNA — awaria SPARQL daje
+        # głośne ostrzeżenie zamiast odebrać użytkownikowi treść główną
+        with mock.patch.object(eurlex, "_konsolidacje",
+                               side_effect=eurlex.VerificationUnknown("timeout")):
+            out = eurlex._ostrzezenia_konsolidacja("32016R0679")
+        self.assertEqual(len(out), 1)
+        self.assertIn("nie udało się zweryfikować", out[0])
+        self.assertIn("skonsolidowany 32016R0679", out[0])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

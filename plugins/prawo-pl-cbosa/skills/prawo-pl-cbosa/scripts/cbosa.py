@@ -139,8 +139,14 @@ def _fetch(path, data=None):
         except urllib.error.HTTPError as e:
             if e.code >= 500 and odstep is not None:
                 time.sleep(odstep); continue
-            raise VerificationUnknown(
-                f"HTTP {e.code}: {url}; CBOSA ma codzienne krótkie okno serwisowe ok. 21:00") from e
+            if e.code in (404, 410) and path.startswith("/doc/"):
+                # CBOSA odpowiada 410 (Gone) dla nieistniejącego doc_id — zweryfikowany brak,
+                # a nie awaria; "spróbuj ponownie" odsyłałoby użytkownika w nieskończoną pętlę
+                sys.exit(f"Nie znaleziono orzeczenia o id {path[len('/doc/'):]!r} w CBOSA "
+                         f"(HTTP {e.code} — zweryfikowany brak). doc_id bierz z komendy "
+                         "szukaj albo sygnatura.")
+            dopisek = "; CBOSA ma codzienne krótkie okno serwisowe ok. 21:00" if e.code >= 500 else ""
+            raise VerificationUnknown(f"HTTP {e.code}: {url}{dopisek}") from e
         except urllib.error.URLError as e:
             if isinstance(getattr(e, "reason", None), ssl.SSLCertVerificationError) \
                     and _ssl_ctx.verify_mode != ssl.CERT_NONE:
@@ -259,8 +265,6 @@ def _orzeczenie(strona_html, doc_id):
                       r'\s*</div>\s*<span class="info-list-value-uzasadnienie">(.*?)</span>', flat, re.S)
         if m:
             d[sekcja.lower()] = _text(m.group(1))
-    if not d.get("tytul") and not d.get("metadane"):
-        raise VerificationUnknown(f"nie udało się rozpoznać strony orzeczenia {doc_id}")
     return d
 
 
@@ -342,6 +346,11 @@ def cmd_orzeczenie(a):
     d = _orzeczenie(_fetch(f"/doc/{doc_id}"), doc_id)
     if a.json:
         print(json.dumps(d, ensure_ascii=False, indent=2)); return
+    if not d.get("tytul") and not d.get("metadane"):
+        # strona pobrana, ale nierozpoznana (przebudowa HTML? strona błędu z HTTP 200?) —
+        # UNKNOWN z podpowiedzią; częściowy parse obejrzysz przez --json
+        raise VerificationUnknown(f"nie udało się rozpoznać strony orzeczenia {doc_id} — "
+                                  f"sprawdź w przeglądarce: {d['url']}")
     print(f"# {d.get('tytul', doc_id)}   [{doc_id}]")
     for k in ("Data orzeczenia", "Sąd", "Sędziowie", "Symbol z opisem", "Hasła tematyczne",
               "Skarżony organ", "Treść wyniku", "Powołane przepisy", "Sygn. powiązane"):

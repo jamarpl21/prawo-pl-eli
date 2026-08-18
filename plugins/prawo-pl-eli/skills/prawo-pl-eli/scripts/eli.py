@@ -35,8 +35,10 @@ def _nie_zweryfikowano(co, blad):
 def _get(path, params=None, soft=False):
     """GET z jednym ponowieniem.
 
-    Zwraca dane, w tym pustą odpowiedź jako VERIFIED_ABSENT. Przy soft=True błąd
-    żądania ma osobny stan UNKNOWN (VerificationUnknown), nigdy None/pusty wynik.
+    Zwraca dane, w tym pustą odpowiedź jako VERIFIED_ABSENT. Przy soft=True:
+    HTTP 404 to zweryfikowany brak zasobu (None) — API ELI odpowiada 404 wyłącznie dla
+    nieistniejącego adresu (zapora daje 200 + "Request Rejected", przeciążenie 5xx);
+    każdy inny błąd żądania to osobny stan UNKNOWN (VerificationUnknown).
     """
     url = BASE + path
     if params:
@@ -55,6 +57,8 @@ def _get(path, params=None, soft=False):
             if e.code >= 500 and attempt == 1:
                 time.sleep(2); continue
             if soft:
+                if e.code == 404:
+                    return None
                 raise VerificationUnknown(f"HTTP {e.code}: {url}") from e
             sys.exit(f"BŁĄD HTTP {e.code}: {url}")
         except Exception as e:
@@ -282,16 +286,24 @@ def _tj_z_tekstem(path, refs):
         base = next((r.get("act") for r in items if isinstance(r, dict) and isinstance(r.get("act"), dict)), None)
         if base and base.get("ELI"):
             base_refs = _get(f"/acts/{base['ELI']}/references", soft=True)
-            base_refs = _expect_dict(base_refs, "odniesienia aktu bazowego")
-            tj = _tj_acts(base_refs)
+            tj = _tj_acts(base_refs) if isinstance(base_refs, dict) else []
+    niepewne = None
     for act in tj:
         eli_id = act.get("ELI")
         if not eli_id or eli_id == biezacy_eli:
             continue
-        html = _get(f"/acts/{eli_id}/text.html", soft=True)
+        # awaria pobrania JEDNEGO kandydata nie może udawać, że zapasowego t.j. nie ma —
+        # próbujemy kolejnych, a UNKNOWN zgłaszamy dopiero gdy żaden nie dał tekstu
+        try:
+            html = _get(f"/acts/{eli_id}/text.html", soft=True)
+        except VerificationUnknown as e:
+            niepewne = e
+            continue
         txt = html_to_text(html) if isinstance(html, str) else ""
         if txt:
             return act, txt
+    if niepewne is not None:
+        raise VerificationUnknown(f"nie wszystkie teksty jednolite dało się pobrać ({niepewne})")
     return None
 
 
@@ -374,12 +386,16 @@ def cmd_meta(a):
 
 def cmd_tekst(a):
     path, label = act_path(a.sygnatura)
+    # odniesienia służą tylko ostrzeżeniom o aktualności — ich awaria nie może odebrać
+    # użytkownikowi samego tekstu; zamiast tego tekst dostaje GŁOŚNE ostrzeżenie
     try:
         refs = _get(path + "/references", soft=True)
     except VerificationUnknown as e:
-        _nie_zweryfikowano(f"odniesień i aktualności aktu {label}", e)
-    refs = _expect_dict(refs, "odniesienia aktu")
-    ostrz = _ostrzezenia(refs)
+        refs = None
+        ostrz = [f"UWAGA: nie udało się zweryfikować aktualności aktu {label} ({e}) — "
+                 "sprawdź nowelizacje i teksty jednolite ręcznie, zanim zacytujesz."]
+    else:
+        ostrz = _ostrzezenia(refs) if isinstance(refs, dict) else []
     if a.pdf:
         # pobierz urzędowy PDF (preferuj tekst jednolity, typ 'U'/'T', inaczej oryginał 'O')
         meta = _expect_dict(_get(path), "metadane aktu")
@@ -543,9 +559,10 @@ def cmd_tj(a):
             try:
                 base_refs = _get(f"/acts/{base['ELI']}/references", soft=True)
             except VerificationUnknown as e:
-                _nie_zweryfikowano(f"nowszego tekstu jednolitego dla {label}", e)
-            base_refs = _expect_dict(base_refs, "odniesienia aktu bazowego")
-            newer = _tj_acts(base_refs)
+                print(f"UWAGA: nie udało się sprawdzić, czy istnieje nowszy tekst jednolity ({e}) — "
+                      "zweryfikuj ręcznie, zanim zacytujesz.")
+                return
+            newer = _tj_acts(base_refs) if isinstance(base_refs, dict) else []
             if newer and _eli_rok_poz(newer[0]) > (int(m.group(2)), int(m.group(3))):
                 print(f"UWAGA: istnieje NOWSZY tekst jednolity: {newer[0].get('displayAddress') or newer[0].get('ELI','')} — cytuj z niego.")
         return
@@ -583,7 +600,10 @@ def main():
                        help="zrzut surowego JSON")
 
     a = ap.parse_args()
-    a.func(a)
+    try:
+        a.func(a)
+    except VerificationUnknown as e:
+        _nie_zweryfikowano("danych w API ELI", e)
 
 
 if __name__ == "__main__":

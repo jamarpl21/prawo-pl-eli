@@ -339,6 +339,32 @@ class CbosaVerificationContractTests(unittest.TestCase):
         with self.assertRaises(cbosa.VerificationUnknown):
             cbosa._wyniki("<html><title>Service unavailable</title></html>")
 
+    def test_http_410_na_doc_to_zweryfikowany_brak(self):
+        # CBOSA odpowiada 410 (Gone) dla nieistniejącego doc_id — to potwierdzone
+        # "nie ma", nie awaria; komunikat nie może odsyłać w pętlę "spróbuj ponownie"
+        err = urllib.error.HTTPError("https://orzeczenia.nsa.gov.pl/doc/DEADBEEF",
+                                     410, "Gone", {}, None)
+        opener = mock.Mock()
+        opener.open.side_effect = err
+        cbosa._ostatnie[0] = 0.0
+        with mock.patch.object(cbosa.urllib.request, "build_opener", return_value=opener), \
+                mock.patch.object(cbosa.time, "sleep"):
+            with self.assertRaisesRegex(SystemExit, "Nie znaleziono orzeczenia") as caught:
+                cbosa._fetch("/doc/DEADBEEF")
+        self.assertNotIn("ponownie", str(caught.exception))
+
+    def test_http_410_na_wyszukiwarce_to_nadal_unknown(self):
+        # 410/404 ma sens "brak dokumentu" tylko na /doc/{id}; na wyszukiwarce to awaria
+        err = urllib.error.HTTPError("https://orzeczenia.nsa.gov.pl/cbo/search",
+                                     410, "Gone", {}, None)
+        opener = mock.Mock()
+        opener.open.side_effect = err
+        cbosa._ostatnie[0] = 0.0
+        with mock.patch.object(cbosa.urllib.request, "build_opener", return_value=opener), \
+                mock.patch.object(cbosa.time, "sleep"):
+            with self.assertRaises(cbosa.VerificationUnknown):
+                cbosa._fetch("/cbo/search")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

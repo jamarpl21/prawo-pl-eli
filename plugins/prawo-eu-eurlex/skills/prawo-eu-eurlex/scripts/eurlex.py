@@ -200,11 +200,16 @@ SELECT DISTINCT ?celex WHERE {{
 
 
 def _ostrzezenia_konsolidacja(celex):
-    """Ostrzeżenia o wersjach skonsolidowanych dla aktu/wersji (lista linii)."""
+    """Ostrzeżenia o wersjach skonsolidowanych dla aktu/wersji (lista linii).
+
+    To informacja POBOCZNA przy tekście/metadanych — awaria SPARQL nie może odebrać
+    użytkownikowi treści głównej, więc UNKNOWN staje się tu głośnym ostrzeżeniem
+    (pełną weryfikację wymusza komenda skonsolidowany, gdzie to treść główna)."""
     try:
         kons = _konsolidacje(celex)
     except VerificationUnknown as e:
-        _nie_zweryfikowano(f"wersji skonsolidowanych dla {celex}", e)
+        return [f"UWAGA: nie udało się zweryfikować, czy akt {celex} ma wersje skonsolidowane "
+                f"({e}) — sprawdź komendą: skonsolidowany {celex}, zanim zacytujesz."]
     out = []
     if celex.startswith("0"):
         out.append("UWAGA: wersja skonsolidowana ma charakter DOKUMENTACYJNY (nie jest autentyczna) — "
@@ -447,7 +452,10 @@ def main():
                        help="zrzut surowego JSON")
 
     a = ap.parse_args()
-    a.func(a)
+    try:
+        a.func(a)
+    except VerificationUnknown as e:
+        _nie_zweryfikowano("danych w EUR-Lex", e)
 
 
 if __name__ == "__main__":

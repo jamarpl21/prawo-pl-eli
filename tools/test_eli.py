@@ -2,6 +2,8 @@
 # -*- coding: utf-8 -*-
 """Offline unit tests for eli.py pure functions (no network). Run: python3 tools/test_eli.py"""
 import argparse
+import contextlib
+import io
 import sys
 import importlib.util
 import pathlib
@@ -329,12 +331,54 @@ class EliVerificationContractTests(unittest.TestCase):
         with mock.patch.object(eli.urllib.request, "urlopen", return_value=response):
             self.assertEqual(eli._get("/acts/search", soft=True), [])
 
-    def test_command_reports_unknown_references(self):
+    def test_soft_404_is_verified_absent(self):
+        # API ELI odpowiada 404 wyłącznie dla nieistniejącego zasobu — to zweryfikowany
+        # brak (None), nie awaria; "spróbuj ponownie" byłoby tu fałszywym komunikatem
+        err = urllib.error.HTTPError("u", 404, "Not Found", {}, None)
+        with mock.patch.object(eli.urllib.request, "urlopen", side_effect=err), \
+                mock.patch.object(eli.time, "sleep"):
+            self.assertIsNone(eli._get("/acts/DU/2024/999999/references", soft=True))
+
+    def test_tekst_dostarczony_mimo_awarii_odniesien(self):
+        # awaria POBOCZNEGO /references nie odbiera tekstu — tekst + GŁOŚNE ostrzeżenie
+        def fake_get(path, params=None, soft=False):
+            if path.endswith("/references"):
+                raise eli.VerificationUnknown("timeout")
+            return "<html><body><p>Art. 1. Treść przepisu.</p></body></html>"
         args = argparse.Namespace(sygnatura=["DU", "2024", "18"], json=False,
                                   pdf=None, fragment=None)
-        with mock.patch.object(eli, "_get", side_effect=eli.VerificationUnknown("timeout")):
-            with self.assertRaisesRegex(SystemExit, "nie udało się zweryfikować.*Spróbuj ponownie"):
-                eli.cmd_tekst(args)
+        out = io.StringIO()
+        with mock.patch.object(eli, "_get", side_effect=fake_get), \
+                contextlib.redirect_stdout(out):
+            eli.cmd_tekst(args)
+        self.assertIn("Art. 1. Treść przepisu.", out.getvalue())
+        self.assertIn("nie udało się zweryfikować aktualności", out.getvalue())
+
+    def test_fallback_pomija_kandydata_z_awaria(self):
+        # awaria transportu na JEDNYM kandydacie t.j. nie zabija pętli zapasowej
+        refs = {"Inf. o tekście jednolitym": [
+            {"act": {"ELI": "DU/2023/100", "displayAddress": "Dz.U. 2023 poz. 100"}},
+            {"act": {"ELI": "DU/2020/50", "displayAddress": "Dz.U. 2020 poz. 50"}}]}
+        def fake_get(path, params=None, soft=False):
+            if "2023/100" in path:
+                raise eli.VerificationUnknown("zapora odrzuciła żądanie")
+            return "<html><body><p>Art. 1. Tekst z 2020 r.</p></body></html>"
+        with mock.patch.object(eli, "_get", side_effect=fake_get):
+            act, txt = eli._tj_z_tekstem("/acts/DU/2024/18", refs)
+        self.assertEqual(act["ELI"], "DU/2020/50")
+        self.assertIn("Tekst z 2020", txt)
+
+    def test_fallback_unknown_gdy_zaden_kandydat_nie_dal_tekstu(self):
+        # gdy część kandydatów padła, a żaden nie dał tekstu — UNKNOWN, nie "braku t.j."
+        refs = {"Inf. o tekście jednolitym": [
+            {"act": {"ELI": "DU/2023/100"}}, {"act": {"ELI": "DU/2020/50"}}]}
+        def fake_get(path, params=None, soft=False):
+            if "2023/100" in path:
+                raise eli.VerificationUnknown("timeout")
+            return ""
+        with mock.patch.object(eli, "_get", side_effect=fake_get):
+            with self.assertRaises(eli.VerificationUnknown):
+                eli._tj_z_tekstem("/acts/DU/2024/18", refs)
 
 
 if __name__ == "__main__":
