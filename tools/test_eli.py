@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Offline unit tests for eli.py pure functions (no network). Run: python3 tools/test_eli.py"""
+import argparse
 import sys
 import importlib.util
 import pathlib
 import unittest
+import urllib.error
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 _spec = importlib.util.spec_from_file_location(
@@ -295,6 +298,43 @@ class TestFlagaJson(unittest.TestCase):
 
     def test_bez_flagi(self):
         self.assertFalse(self._parsuj(self.ARGV)["json"])
+
+
+class _Response:
+    def __init__(self, body, content_type="application/json"):
+        self.body = body
+        self.headers = {"Content-Type": content_type}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+    def read(self):
+        return self.body
+
+
+class EliVerificationContractTests(unittest.TestCase):
+    """found/verified_absent/unknown - blad transportu nie moze wygladac jak potwierdzony brak."""
+
+    def test_soft_transport_error_is_unknown(self):
+        with mock.patch.object(eli.urllib.request, "urlopen", side_effect=urllib.error.URLError("offline")), \
+                mock.patch.object(eli.time, "sleep"):
+            with self.assertRaises(eli.VerificationUnknown):
+                eli._get("/acts/test/references", soft=True)
+
+    def test_successful_empty_json_is_verified_absent(self):
+        response = _Response(b"[]")
+        with mock.patch.object(eli.urllib.request, "urlopen", return_value=response):
+            self.assertEqual(eli._get("/acts/search", soft=True), [])
+
+    def test_command_reports_unknown_references(self):
+        args = argparse.Namespace(sygnatura=["DU", "2024", "18"], json=False,
+                                  pdf=None, fragment=None)
+        with mock.patch.object(eli, "_get", side_effect=eli.VerificationUnknown("timeout")):
+            with self.assertRaisesRegex(SystemExit, "nie udało się zweryfikować.*Spróbuj ponownie"):
+                eli.cmd_tekst(args)
 
 
 if __name__ == "__main__":

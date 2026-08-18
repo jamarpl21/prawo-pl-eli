@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Offline unit tests for saos.py pure functions (no network). Run: python3 tools/test_saos.py"""
+import argparse
 import sys
 import importlib.util
 import pathlib
 import unittest
+import urllib.error
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 _spec = importlib.util.spec_from_file_location(
@@ -194,6 +197,46 @@ class TestFlagaJson(unittest.TestCase):
 
     def test_bez_flagi(self):
         self.assertFalse(self._parsuj(self.ARGV)["json"])
+
+
+class _Response:
+    headers = {"Content-Type": "application/json"}
+
+    def __init__(self, body):
+        self.body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+    def read(self):
+        return self.body
+
+
+class SaosVerificationContractTests(unittest.TestCase):
+    """found/verified_absent/unknown - blad transportu nie moze wygladac jak potwierdzony brak."""
+
+    def test_soft_transport_error_is_unknown(self):
+        with mock.patch.object(saos.urllib.request, "urlopen", side_effect=urllib.error.URLError("offline")), \
+                mock.patch.object(saos.time, "sleep"):
+            with self.assertRaises(saos.VerificationUnknown):
+                saos._get("/search/judgments", soft=True)
+
+    def test_successful_zero_results_is_verified_absent(self):
+        response = _Response(b'{"items": [], "info": {"totalResults": 0}}')
+        with mock.patch.object(saos.urllib.request, "urlopen", return_value=response):
+            result = saos._get("/search/judgments", soft=True)
+        self.assertEqual(result["items"], [])
+        self.assertEqual(result["info"]["totalResults"], 0)
+
+    def test_malformed_api_response_is_not_no_results(self):
+        args = argparse.Namespace(sygnatura=["III", "CSK", "203/09"], json=False)
+        with mock.patch.object(saos, "_get", return_value={"message": "maintenance"}):
+            with self.assertRaisesRegex(SystemExit, "nie udało się zweryfikować") as caught:
+                saos.cmd_sygnatura(args)
+        self.assertNotIn("Nie znaleziono orzeczenia", str(caught.exception))
 
 
 if __name__ == "__main__":

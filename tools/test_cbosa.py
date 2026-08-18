@@ -5,6 +5,8 @@ import sys
 import importlib.util
 import pathlib
 import unittest
+import urllib.error
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 _spec = importlib.util.spec_from_file_location(
@@ -176,10 +178,10 @@ class TestWyniki(unittest.TestCase):
         self.assertEqual(cbosa._wyniki(self.HTML)[2], "")
 
     def test_pusty_html(self):
-        total, poz, komunikat = cbosa._wyniki("<html><body>Brak wyników</body></html>")
-        self.assertIsNone(total)
-        self.assertEqual(poz, [])
-        self.assertEqual(komunikat, "")
+        # Strona bez rozpoznanego licznika/listy jest teraz UNKNOWN, nie cichym
+        # sentinelem (None, [], "") - patch found/verified_absent/unknown.
+        with self.assertRaises(cbosa.VerificationUnknown):
+            cbosa._wyniki("<html><body>Brak wyników</body></html>")
 
 
 class TestOrzeczenie(unittest.TestCase):
@@ -261,7 +263,10 @@ class TestFetchPonowienia(unittest.TestCase):
         self.assertGreaterEqual(sum(s for s in licznik["spanie"] if s > 0.5), 26)
 
     def test_trwala_awaria_konczy_bledem(self):
-        with self.assertRaises(SystemExit):
+        # Trwala awaria transportu to teraz UNKNOWN (nie SystemExit) na poziomie
+        # _fetch - main() dopiero mapuje to na polski komunikat i exit (patch
+        # found/verified_absent/unknown, patrz VerificationUnknown ponizej).
+        with self.assertRaises(cbosa.VerificationUnknown):
             self._uruchom(awarie=99)
 
 
@@ -309,6 +314,30 @@ class TestFlagaJson(unittest.TestCase):
 
     def test_bez_flagi(self):
         self.assertFalse(self._parsuj(self.ARGV)["json"])
+
+
+class CbosaVerificationContractTests(unittest.TestCase):
+    """found/verified_absent/unknown - blad transportu nie moze wygladac jak potwierdzony brak."""
+
+    def test_transport_error_is_unknown(self):
+        opener = mock.Mock()
+        opener.open.side_effect = urllib.error.URLError("offline")
+        cbosa._ostatnie[0] = 0.0
+        with mock.patch.object(cbosa.urllib.request, "build_opener", return_value=opener), \
+                mock.patch.object(cbosa.time, "sleep"):
+            with self.assertRaises(cbosa.VerificationUnknown):
+                cbosa._fetch("/cbo/search")
+
+    def test_no_results_warning_is_verified_absent(self):
+        html = '<div class="warning">Nie znaleziono orzeczeń spełniających kryteria</div>'
+        total, results, message = cbosa._wyniki(html)
+        self.assertEqual(total, 0)
+        self.assertEqual(results, [])
+        self.assertIn("Nie znaleziono", message)
+
+    def test_unrecognized_error_page_is_unknown(self):
+        with self.assertRaises(cbosa.VerificationUnknown):
+            cbosa._wyniki("<html><title>Service unavailable</title></html>")
 
 
 if __name__ == "__main__":

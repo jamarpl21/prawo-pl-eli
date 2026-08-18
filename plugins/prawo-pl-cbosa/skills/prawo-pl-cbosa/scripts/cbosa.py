@@ -25,6 +25,10 @@ import urllib.request, urllib.parse, urllib.error, http.cookiejar
 __version__ = "1.6.4"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://orzeczenia.nsa.gov.pl"
 
+
+class VerificationUnknown(RuntimeError):
+    """Zapytanie nie pozwoliło ustalić, czy dane istnieją."""
+
 # Miasta WSA (klucz bez diakrytyków) → końcówka pełnej nazwy z formularza CBOSA.
 # Wartości pola 'sad' to PEŁNE nazwy sądów — wartość spoza listy CBOSA po cichu zwraca 0 wyników.
 _WSA = {
@@ -102,6 +106,9 @@ _ostatnie = [0.0]
 
 def _fetch(path, data=None):
     """GET/POST strony CBOSA (HTML). Throttling >=0,5 s; ponowienia z rosnącym odstępem.
+    Zwraca pobrany HTML jako FOUND; UNKNOWN przekazuje przez VerificationUnknown.
+    VERIFIED_ABSENT ustala dopiero parser _wyniki z poprawnej strony CBOSA.
+
     CBOSA miewa kilkunastosekundowe okna, w których ucina połączenia bez odpowiedzi — stąd
     łącznie ~26 s ponawiania (za krótkie okno ponowień = fałszywy raport „skill nie działa").
     CBOSA serwuje niekompletny łańcuch certyfikatów — na systemach, gdzie weryfikacja pada,
@@ -132,8 +139,8 @@ def _fetch(path, data=None):
         except urllib.error.HTTPError as e:
             if e.code >= 500 and odstep is not None:
                 time.sleep(odstep); continue
-            sys.exit(f"BŁĄD HTTP {e.code}: {url}\n"
-                     "CBOSA ma codzienne krótkie okno serwisowe ok. 21:00 — spróbuj ponownie później.")
+            raise VerificationUnknown(
+                f"HTTP {e.code}: {url}; CBOSA ma codzienne krótkie okno serwisowe ok. 21:00") from e
         except urllib.error.URLError as e:
             if isinstance(getattr(e, "reason", None), ssl.SSLCertVerificationError) \
                     and _ssl_ctx.verify_mode != ssl.CERT_NONE:
@@ -143,15 +150,13 @@ def _fetch(path, data=None):
                 continue
             if odstep is not None:
                 time.sleep(odstep); continue
-            sys.exit(f"BŁĄD sieci: {url} ({e})\n"
-                     "Serwer CBOSA bywa przeciążony i ucina połączenia — spróbuj ponownie za chwilę.")
+            raise VerificationUnknown(f"błąd sieci: {url} ({e}); serwer CBOSA ucina połączenia") from e
         except Exception as e:  # noqa: BLE001
             if odstep is not None:
                 time.sleep(odstep); continue
-            sys.exit(f"BŁĄD sieci: {url} ({e})\n"
-                     "Serwer CBOSA bywa przeciążony i ucina połączenia — spróbuj ponownie za chwilę.")
+            raise VerificationUnknown(f"błąd sieci: {url} ({e}); serwer CBOSA ucina połączenia") from e
     # wyczerpane próby po przełączeniu kontekstu SSL w ostatnim obiegu — nigdy nie zwracaj None
-    sys.exit(f"BŁĄD sieci: {url} — nie udało się pobrać strony po kilku próbach.")
+    raise VerificationUnknown(f"nie udało się pobrać {url} po kilku próbach")
 
 
 # ── Parsowanie HTML (regexy zweryfikowane na żywych stronach CBOSA) ─────────────────────
@@ -222,6 +227,8 @@ def _wyniki(strona_html):
             if sm:
                 snippet = re.sub(r"\s+", " ", _text(sm.group(1))).strip()
         pozycje.append({"doc_id": m.group(1), "opis": opis, "snippet": snippet, "powiazane": powiazane})
+    if total is None and not pozycje and not komunikat:
+        raise VerificationUnknown("CBOSA zwróciło stronę bez licznika i listy wyników")
     return total, pozycje, komunikat
 
 
@@ -252,6 +259,8 @@ def _orzeczenie(strona_html, doc_id):
                       r'\s*</div>\s*<span class="info-list-value-uzasadnienie">(.*?)</span>', flat, re.S)
         if m:
             d[sekcja.lower()] = _text(m.group(1))
+    if not d.get("tytul") and not d.get("metadane"):
+        raise VerificationUnknown(f"nie udało się rozpoznać strony orzeczenia {doc_id}")
     return d
 
 
@@ -313,17 +322,13 @@ def cmd_szukaj(a):
         sys.exit("Podaj kryterium: frazę albo --sad / --sygnatura / --rodzaj / --symbol / --sedzia / zakres dat.")
     strona = max(1, a.strona)
     total, pozycje, komunikat = _szukaj(_formularz(a), strona)
-    if a.json:
-        print(json.dumps({"total": total, "strona": strona, "komunikat": komunikat, "wyniki": pozycje},
-                         ensure_ascii=False, indent=2)); return
     if total is None and not pozycje:
         if komunikat:  # formularz odrzucił zapytanie (np. zła data) — to błąd wejścia, nie serwera
             sys.exit(f"CBOSA odrzuciło zapytanie: {komunikat}\nPopraw parametry i ponów "
                      "(daty w formacie RRRR-MM-DD).")
-        # strona bez licznika „Znaleziono N" = strona błędu/przeciążenia, NIE zweryfikowane zero
-        sys.exit("BŁĄD: CBOSA zwróciło stronę bez listy wyników (serwer przeciążony albo strona "
-                 "błędu) — to NIE oznacza braku orzeczeń. Spróbuj ponownie za chwilę; zapytania "
-                 "z zakresem dat bywają najcięższe (możesz zawęzić frazą i filtrować daty z listy).")
+    if a.json:
+        print(json.dumps({"total": total, "strona": strona, "komunikat": komunikat, "wyniki": pozycje},
+                         ensure_ascii=False, indent=2)); return
     if total == 0 or not pozycje:
         sys.exit("Brak wyników (zweryfikowane zero). Uwaga: wyszukiwarka CBOSA wymaga dokładnych "
                  "wartości — spróbuj prostszej frazy, bez --sad, albo sprawdź sygnaturę/symbol.")
@@ -337,8 +342,6 @@ def cmd_orzeczenie(a):
     d = _orzeczenie(_fetch(f"/doc/{doc_id}"), doc_id)
     if a.json:
         print(json.dumps(d, ensure_ascii=False, indent=2)); return
-    if not d.get("tytul") and not d.get("metadane"):
-        sys.exit(f"Nie udało się sparsować orzeczenia {doc_id} — sprawdź w przeglądarce: {d['url']}")
     print(f"# {d.get('tytul', doc_id)}   [{doc_id}]")
     for k in ("Data orzeczenia", "Sąd", "Sędziowie", "Symbol z opisem", "Hasła tematyczne",
               "Skarżony organ", "Treść wyniku", "Powołane przepisy", "Sygn. powiązane"):
@@ -379,14 +382,12 @@ def cmd_sygnatura(a):
             "sygnatura": sig, "sad": "dowolny", "rodzaj": "dowolny", "symbole": "",
             "odDaty": "", "doDaty": "", "sedziowie": "", "funkcja": "", "submit": "Szukaj"}
     total, pozycje, komunikat = _szukaj(form)
-    if a.json:
-        print(json.dumps({"total": total, "komunikat": komunikat, "wyniki": pozycje},
-                         ensure_ascii=False, indent=2)); return
     if total is None and not pozycje:
         if komunikat:
             sys.exit(f"CBOSA odrzuciło zapytanie: {komunikat}")
-        sys.exit("BŁĄD: CBOSA zwróciło stronę bez listy wyników (serwer przeciążony albo strona "
-                 "błędu) — to NIE oznacza braku orzeczeń. Spróbuj ponownie za chwilę.")
+    if a.json:
+        print(json.dumps({"total": total, "komunikat": komunikat, "wyniki": pozycje},
+                         ensure_ascii=False, indent=2)); return
     glowne = [p for p in pozycje if not p["powiazane"]]
     if not glowne:
         sys.exit(f"Nie znaleziono orzeczenia o sygnaturze {sig!r} w CBOSA.\n"
@@ -435,7 +436,11 @@ def main():
                        help="zrzut sparsowanych danych jako JSON")
 
     a = ap.parse_args()
-    a.func(a)
+    try:
+        a.func(a)
+    except VerificationUnknown as e:
+        sys.exit(f"BŁĄD: nie udało się zweryfikować danych w CBOSA ({e}). "
+                 "Spróbuj ponownie za chwilę.")
 
 
 if __name__ == "__main__":

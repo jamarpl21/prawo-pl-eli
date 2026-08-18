@@ -34,6 +34,15 @@ JEZYKI = {"pl": "POL", "pol": "POL", "en": "ENG", "eng": "ENG", "de": "DEU", "de
           "pt": "POR", "por": "POR", "uk": "UKR", "ukr": "UKR"}
 
 
+class VerificationUnknown(RuntimeError):
+    """Zapytanie nie pozwoliło ustalić, czy dane istnieją."""
+
+
+def _nie_zweryfikowano(co, blad):
+    sys.exit(f"BŁĄD: nie udało się zweryfikować {co} ({blad}). "
+             "Spróbuj ponownie za chwilę.")
+
+
 def _lang(j):
     code = JEZYKI.get((j or "pol").lower())
     if code:
@@ -68,18 +77,22 @@ def _http(url, data=None, headers=None, timeout=60):
 
 
 def _sparql(query, soft=False):
-    """Zapytanie do publicznego endpointu SPARQL Urzędu Publikacji. Zwraca listę bindingów."""
+    """Zapytanie SPARQL zwracające listę bindingów.
+
+    Pusta lista oznacza VERIFIED_ABSENT. Przy soft=True błąd ma osobny stan
+    UNKNOWN (VerificationUnknown), nigdy None/pustą listę.
+    """
     data = urllib.parse.urlencode({"query": query, "format": "application/sparql-results+json"}).encode()
     try:
         raw, _ = _http(SPARQL, data=data, headers={"Accept": "application/sparql-results+json"})
         return json.loads(raw.decode("utf-8", "replace"))["results"]["bindings"]
-    except SystemExit:
+    except SystemExit as e:
         if soft:
-            return None
+            raise VerificationUnknown(str(e)) from e
         raise
     except Exception as e:
         if soft:
-            return None
+            raise VerificationUnknown(f"nieoczekiwana odpowiedź SPARQL: {e}") from e
         sys.exit(f"BŁĄD: nieoczekiwana odpowiedź SPARQL ({e}) — spróbuj ponownie za chwilę.")
 
 
@@ -172,7 +185,10 @@ def celex_norm(parts):
 
 
 def _konsolidacje(celex):
-    """Lista CELEX-ów wersji skonsolidowanych aktu, najnowsza pierwsza (albo [])."""
+    """Lista CELEX-ów wersji skonsolidowanych albo VERIFIED_ABSENT jako [].
+
+    VerificationUnknown jest przekazywany do wywołującego, bez zamiany na [].
+    """
     base = celex.split("-")[0]
     base = base if base.startswith("0") else "0" + base[1:]
     rows = _sparql(f"""PREFIX cdm: <{CDM}>
@@ -180,14 +196,15 @@ SELECT DISTINCT ?celex WHERE {{
   ?w cdm:resource_legal_id_celex ?celex .
   FILTER(STRSTARTS(STR(?celex), "{base}-"))
 }} ORDER BY DESC(?celex) LIMIT 100""", soft=True)
-    if not rows:
-        return []
     return [c for c in (_v(b, "celex") for b in rows) if re.search(r"-\d{8}$", c)]
 
 
 def _ostrzezenia_konsolidacja(celex):
     """Ostrzeżenia o wersjach skonsolidowanych dla aktu/wersji (lista linii)."""
-    kons = _konsolidacje(celex)
+    try:
+        kons = _konsolidacje(celex)
+    except VerificationUnknown as e:
+        _nie_zweryfikowano(f"wersji skonsolidowanych dla {celex}", e)
     out = []
     if celex.startswith("0"):
         out.append("UWAGA: wersja skonsolidowana ma charakter DOKUMENTACYJNY (nie jest autentyczna) — "
@@ -286,7 +303,10 @@ SELECT ?type ?date ?inf ?eli ?eiv ?eov ?title WHERE {{
 
 def cmd_skonsolidowany(a):
     celex = celex_norm(a.celex)
-    kons = _konsolidacje(celex)
+    try:
+        kons = _konsolidacje(celex)
+    except VerificationUnknown as e:
+        _nie_zweryfikowano(f"wersji skonsolidowanych dla {celex}", e)
     if a.json:
         print(json.dumps(kons, ensure_ascii=False, indent=2)); return
     if not kons:
@@ -311,7 +331,7 @@ SELECT ?man ?mtype WHERE {{
   ?man cdm:manifestation_manifests_expression ?exp .
   ?man cdm:manifestation_type ?mtype .
   FILTER(STRSTARTS(STR(?mtype), "pdf"))
-}} LIMIT 5""", soft=True) or []
+}} LIMIT 5""", soft=True)
     pdfy = sorted(rows, key=lambda b: _v(b, "mtype"))  # pdfa1a/pdfa2a przed zwykłym pdf
     return (_v(pdfy[0], "man") + "/DOC_1") if pdfy else None
 
@@ -322,7 +342,10 @@ def cmd_tekst(a):
     lang3 = lang.lower()
     url = CELLAR + urllib.parse.quote(celex, safe="/")
     if a.pdf:
-        pdf_url = _pdf_url(celex, lang)
+        try:
+            pdf_url = _pdf_url(celex, lang)
+        except VerificationUnknown as e:
+            _nie_zweryfikowano(f"manifestacji PDF dla {celex} w języku {lang3}", e)
         if not pdf_url:
             sys.exit(f"Brak manifestacji PDF dla {celex} w języku {lang3} — spróbuj inny --jezyk.")
         data, _ = _http(pdf_url)

@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Offline unit tests for eurlex.py pure functions (no network). Run: python3 tools/test_eurlex.py"""
+import argparse
 import sys
 import importlib.util
 import pathlib
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 _spec = importlib.util.spec_from_file_location(
@@ -158,6 +160,26 @@ class TestFlagaJson(unittest.TestCase):
 
     def test_bez_flagi(self):
         self.assertFalse(self._parsuj(self.ARGV)["json"])
+
+
+class EurlexVerificationContractTests(unittest.TestCase):
+    """found/verified_absent/unknown - blad transportu nie moze wygladac jak potwierdzony brak."""
+
+    def test_soft_transport_error_is_unknown(self):
+        with mock.patch.object(eurlex, "_http", side_effect=SystemExit("BŁĄD sieci")):
+            with self.assertRaises(eurlex.VerificationUnknown):
+                eurlex._sparql("SELECT * WHERE {}", soft=True)
+
+    def test_successful_zero_consolidations_is_verified_absent(self):
+        with mock.patch.object(eurlex, "_sparql", return_value=[]):
+            self.assertEqual(eurlex._konsolidacje("32016R0679"), [])
+
+    def test_command_reports_unknown_consolidations(self):
+        args = argparse.Namespace(celex=["32016R0679"], json=False)
+        with mock.patch.object(eurlex, "_konsolidacje",
+                               side_effect=eurlex.VerificationUnknown("timeout")):
+            with self.assertRaisesRegex(SystemExit, "nie udało się zweryfikować.*Spróbuj ponownie"):
+                eurlex.cmd_skonsolidowany(args)
 
 
 if __name__ == "__main__":
