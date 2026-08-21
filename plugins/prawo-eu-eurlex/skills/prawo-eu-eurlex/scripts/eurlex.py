@@ -52,8 +52,28 @@ def _lang(j):
     sys.exit(f"Nieznany język: {j!r}. Użyj np. pol, eng, deu, fra (kod 3-literowy).")
 
 
+def _wymus_https(url):
+    """Podnosi http:// do https:// dla adresów, z których realnie pobieramy treść.
+
+    CELLAR identyfikuje zasoby URI w formie ``http://`` i tak też zwraca adresy
+    manifestacji w wynikach SPARQL — to poprawne jako *nazwa* zasobu, ale jako
+    *transport* oznacza pobieranie tekstu aktu prawnego kanałem bez szyfrowania
+    i bez uwierzytelnienia serwera. Treść trafia stąd do cytatów prawnych, więc
+    podmiana w tranzycie jest realnym ryzykiem, nie teoretycznym.
+
+    Podnosimy schemat wyłącznie tuż przed żądaniem; stałe URI przestrzeni nazw
+    (CDM, LANG_AUTH, TYPE_AUTH, XSD_STR) zostają nietknięte, bo zmiana ich
+    postaci zerwałaby dopasowanie w zapytaniach SPARQL.
+    """
+    if url.startswith("http://") and url[len("http://"):].split("/", 1)[0].endswith(
+            ("europa.eu", "europa.eu:80")):
+        return "https://" + url[len("http://"):]
+    return url
+
+
 def _http(url, data=None, headers=None, timeout=60):
     """GET/POST z jednym ponowieniem na błąd przejściowy. Zwraca (bytes, content-type)."""
+    url = _wymus_https(url)
     req = urllib.request.Request(url, data=data, headers={
         "User-Agent": f"eurlex-skill/{__version__}", **(headers or {})})
     for attempt in (1, 2):

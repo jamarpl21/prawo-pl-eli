@@ -19,7 +19,7 @@ Komendy:
 Globalnie: --json  (zrzut sparsowanych danych jako JSON zamiast podsumowania; działa przed
 komendą i po niej)
 """
-import sys, json, re, time, argparse, ssl, calendar, html as html_mod
+import sys, os, json, re, time, argparse, ssl, calendar, html as html_mod
 import urllib.request, urllib.parse, urllib.error, http.cookiejar
 
 __version__ = "1.6.5"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
@@ -148,12 +148,26 @@ def _fetch(path, data=None):
             dopisek = "; CBOSA ma codzienne krótkie okno serwisowe ok. 21:00" if e.code >= 500 else ""
             raise VerificationUnknown(f"HTTP {e.code}: {url}{dopisek}") from e
         except urllib.error.URLError as e:
-            if isinstance(getattr(e, "reason", None), ssl.SSLCertVerificationError) \
-                    and _ssl_ctx.verify_mode != ssl.CERT_NONE:
-                ctx = ssl.create_default_context()
-                ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
-                _ssl_ctx = ctx
-                continue
+            if isinstance(getattr(e, "reason", None), ssl.SSLCertVerificationError):
+                # Cichy downgrade TLS jest tu grozniejszy niz awaria: tresc orzeczenia
+                # trafia do cytatow w pismach procesowych, wiec zgoda na niezweryfikowany
+                # certyfikat oznacza zgode na cytowanie tresci od dowolnego posrednika.
+                # Domyslnie odmawiamy; obnizenie wymaga jawnej, swiadomej decyzji operatora.
+                if os.environ.get("CBOSA_INSECURE_TLS") != "1":
+                    raise VerificationUnknown(
+                        f"blad weryfikacji certyfikatu TLS: {url} ({e.reason}). "
+                        "Tresc z niezweryfikowanego polaczenia nie nadaje sie do cytowania. "
+                        "Jesli swiadomie akceptujesz to ryzyko (np. znany problem po stronie "
+                        "serwera), ustaw CBOSA_INSECURE_TLS=1 dla tego wywolania."
+                    ) from e
+                if _ssl_ctx.verify_mode != ssl.CERT_NONE:
+                    print("UWAGA: CBOSA_INSECURE_TLS=1 — weryfikacja certyfikatu WYLACZONA dla "
+                          f"{url}. Tresc pobrana tym polaczeniem NIE jest uwierzytelniona i nie "
+                          "powinna byc cytowana bez sprawdzenia w innym zrodle.", file=sys.stderr)
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
+                    _ssl_ctx = ctx
+                    continue
             if odstep is not None:
                 time.sleep(odstep); continue
             raise VerificationUnknown(f"błąd sieci: {url} ({e}); serwer CBOSA ucina połączenia") from e
