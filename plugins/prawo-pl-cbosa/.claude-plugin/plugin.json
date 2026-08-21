@@ -1,7 +1,7 @@
 {
   "name": "prawo-pl-cbosa",
   "description": "Orzecznictwo polskich sądów administracyjnych z CBOSA (orzeczenia.nsa.gov.pl): wyroki, postanowienia i uchwały NSA oraz 16 WSA (~2,4 mln orzeczeń od 2004 r.). Wyszukiwanie po frazie, sygnaturze, sądzie, symbolu sprawy, sędzim i dacie; pełne sentencje i uzasadnienia, powołane przepisy, sygnatury powiązane. CBOSA nie ma API — skill czyta publiczne strony HTML (read-only, z throttlingiem). SN/TK/sądy powszechne/KIO: prawo-pl-saos.",
-  "version": "1.6.5",
+  "version": "1.6.6",
   "author": {
     "name": "Krzysztof Gibek"
   },

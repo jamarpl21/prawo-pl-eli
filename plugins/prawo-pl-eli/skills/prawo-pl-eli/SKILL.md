@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-eli
-version: 1.6.5
+version: 1.6.6
 description: >-
   Odpytuje OFICJALNE API ELI Sejmu (api.sejm.gov.pl/eli) — źródło pierwotne prawa polskiego
   (Dziennik Ustaw, Monitor Polski): wyszukiwanie aktów, TEKST JEDNOLITY, pojedyncze artykuły,

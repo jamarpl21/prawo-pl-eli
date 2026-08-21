@@ -1,7 +1,7 @@
 {
   "name": "prawo-pl-rejestr-umow",
   "description": "Umowy jednostek sektora finansów publicznych z publicznego API Centralnego Rejestru Umów (rejestrumow.gov.pl, jawny rejestr od 1.07.2026): zamawiający (JSFP), wykonawca, przedmiot, wartość, okres, aneksy, wyłączenia jawności. Wyszukiwanie po przedmiocie umowy, nazwie/REGON/NIP stron, województwie, dacie i wartości; pełne szczegóły umowy po idUmowy. Read-only, bez klucza. Podstawa prawna (art. 34a–34b u.f.p.): prawo-pl-eli; orzecznictwo o jawności umów: prawo-pl-cbosa/prawo-pl-saos.",
-  "version": "1.6.5",
+  "version": "1.6.6",
   "author": {
     "name": "Krzysztof Gibek"
   },

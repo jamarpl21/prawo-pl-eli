@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-uodo
-version: 1.6.5
+version: 1.6.6
 description: >-
   Odpytuje OFICJALNE API Portalu Orzeczeń UODO (orzeczenia.uodo.gov.pl) — decyzje Prezesa
   Urzędu Ochrony Danych Osobowych: kary pieniężne za naruszenia RODO, upomnienia, nakazy,
