@@ -2,12 +2,15 @@
 # -*- coding: utf-8 -*-
 """Offline unit tests for cbosa.py pure functions (no network). Run: python3 tools/test_cbosa.py"""
 import os
+import io
+import json
 import sys
 import importlib.util
 import pathlib
 import ssl
 import unittest
 import urllib.error
+from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -373,32 +376,131 @@ class TestZgodaNaObnizenieTls(unittest.TestCase):
 
     def setUp(self):
         cbosa._ostatnie[0] = 0.0
-        self._ctx = cbosa._ssl_ctx
+        cbosa._transport_tls_verified = True
 
     def tearDown(self):
-        cbosa._ssl_ctx = self._ctx
+        cbosa._transport_tls_verified = True
 
-    def _padnij_na_certyfikacie(self):
-        blad = urllib.error.URLError(ssl.SSLCertVerificationError("certificate verify failed"))
-        opener = mock.Mock()
-        opener.open.side_effect = blad
-        return mock.patch.object(cbosa.urllib.request, "build_opener", return_value=opener)
+    class _Odpowiedz:
+        def __init__(self, body=b"<html>OK</html>"):
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return self.body
+
+    def _transport(self, zachowanie):
+        """Buduje opener zależny od kontekstu HTTPS i zapisuje kontekst każdej próby."""
+        proby = []
+
+        def build_opener(*handlers):
+            https = next(h for h in handlers if isinstance(h, cbosa.urllib.request.HTTPSHandler))
+            context = https._context
+
+            class _Opener:
+                def open(self, req, timeout=None):
+                    proby.append(context)
+                    return zachowanie(len(proby), context)
+
+            return _Opener()
+
+        return proby, mock.patch.object(cbosa.urllib.request, "build_opener",
+                                        side_effect=build_opener)
+
+    @staticmethod
+    def _blad_certyfikatu():
+        return urllib.error.URLError(ssl.SSLCertVerificationError("certificate verify failed"))
 
     def test_bez_zgody_konczy_sie_unknown(self):
         srodowisko = {k: v for k, v in os.environ.items() if k != "CBOSA_INSECURE_TLS"}
-        with mock.patch.dict(os.environ, srodowisko, clear=True), self._padnij_na_certyfikacie():
+        proby, transport = self._transport(lambda nr, ctx: (_ for _ in ()).throw(
+            self._blad_certyfikatu()))
+        with mock.patch.dict(os.environ, srodowisko, clear=True), transport:
             with self.assertRaises(cbosa.VerificationUnknown) as ctx:
                 cbosa._fetch("/doc/testowy")
         komunikat = str(ctx.exception)
         self.assertIn("certyfikat", komunikat.lower())
         self.assertIn("CBOSA_INSECURE_TLS", komunikat)
+        self.assertEqual(len(proby), 1)
 
     def test_bez_zgody_nie_dotyka_kontekstu_ssl(self):
         srodowisko = {k: v for k, v in os.environ.items() if k != "CBOSA_INSECURE_TLS"}
-        with mock.patch.dict(os.environ, srodowisko, clear=True), self._padnij_na_certyfikacie():
+        proby, transport = self._transport(lambda nr, ctx: (_ for _ in ()).throw(
+            self._blad_certyfikatu()))
+        with mock.patch.dict(os.environ, srodowisko, clear=True), transport:
             with self.assertRaises(cbosa.VerificationUnknown):
                 cbosa._fetch("/doc/testowy")
-        self.assertNotEqual(cbosa._ssl_ctx.verify_mode, ssl.CERT_NONE)
+        self.assertTrue(proby)
+        self.assertTrue(all(ctx.verify_mode != ssl.CERT_NONE for ctx in proby))
+
+    def test_opt_in_przelacza_kontekst_i_realnie_ponawia(self):
+        def zachowanie(nr, context):
+            if context.verify_mode != ssl.CERT_NONE:
+                raise self._blad_certyfikatu()
+            return self._Odpowiedz()
+
+        proby, transport = self._transport(zachowanie)
+        with mock.patch.dict(os.environ, {"CBOSA_INSECURE_TLS": "1"}, clear=True), \
+                transport, mock.patch.object(cbosa.time, "sleep"), redirect_stderr(io.StringIO()):
+            html = cbosa._fetch("/doc/testowy")
+        self.assertIn("OK", html)
+        self.assertEqual(len(proby), 2)
+        self.assertNotEqual(proby[0].verify_mode, ssl.CERT_NONE)
+        self.assertEqual(proby[1].verify_mode, ssl.CERT_NONE)
+        self.assertIsNot(proby[0], proby[1])
+        self.assertFalse(cbosa._transport_tls_verified)
+
+    def test_blad_certyfikatu_w_ostatnim_obiegu_ma_dodatkowa_probe(self):
+        def zachowanie(nr, context):
+            if nr < 5:
+                raise OSError("Remote end closed connection without response")
+            if nr == 5:
+                raise self._blad_certyfikatu()
+            return self._Odpowiedz()
+
+        proby, transport = self._transport(zachowanie)
+        with mock.patch.dict(os.environ, {"CBOSA_INSECURE_TLS": "1"}, clear=True), \
+                transport, mock.patch.object(cbosa.time, "sleep"), redirect_stderr(io.StringIO()):
+            html = cbosa._fetch("/doc/testowy")
+        self.assertIn("OK", html)
+        self.assertEqual(len(proby), 6)
+        self.assertTrue(all(ctx.verify_mode != ssl.CERT_NONE for ctx in proby[:5]))
+        self.assertEqual(proby[5].verify_mode, ssl.CERT_NONE)
+
+    def test_json_niesie_znacznik_nieuwierzytelnionego_transportu(self):
+        body = TestOrzeczenie.HTML.encode("utf-8")
+
+        def zachowanie(nr, context):
+            if context.verify_mode != ssl.CERT_NONE:
+                raise self._blad_certyfikatu()
+            return self._Odpowiedz(body)
+
+        proby, transport = self._transport(zachowanie)
+        args = mock.Mock(doc_id="8889489BE0", json=True, fragment=None)
+        stdout = io.StringIO()
+        with mock.patch.dict(os.environ, {"CBOSA_INSECURE_TLS": "1"}, clear=True), \
+                transport, mock.patch.object(cbosa.time, "sleep"), \
+                redirect_stderr(io.StringIO()), redirect_stdout(stdout):
+            cbosa.cmd_orzeczenie(args)
+        wynik = json.loads(stdout.getvalue())
+        self.assertFalse(wynik["transport_tls_verified"])
+        self.assertEqual(len(proby), 2)
+
+    def test_tekst_ma_adnotacje_przy_tresci(self):
+        cbosa._transport_tls_verified = False
+        args = mock.Mock(doc_id="8889489BE0", json=False, fragment=None)
+        stdout = io.StringIO()
+        with mock.patch.object(cbosa, "_fetch", return_value=TestOrzeczenie.HTML), \
+                redirect_stdout(stdout):
+            cbosa.cmd_orzeczenie(args)
+        wynik = stdout.getvalue()
+        self.assertIn("transport TLS nie został zweryfikowany", wynik)
+        self.assertLess(wynik.index("transport TLS"), wynik.index("# II FSK"))
 
 
 if __name__ == "__main__":

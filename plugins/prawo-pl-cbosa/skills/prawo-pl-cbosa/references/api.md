@@ -72,8 +72,11 @@ POST zwraca stronę 1 + ciasteczka sesji (`Set-Cookie`). Kolejne strony: `GET /c
 
 - **Throttling ≥0,5 s** między żądaniami (wbudowany). Serwer bywa przeciążony i ucina połączenia bez
   odpowiedzi — silnik ponawia z rosnącym odstępem; nie zrównoleglaj zapytań.
-- **SSL:** CBOSA serwuje niekompletny łańcuch certyfikatów — na części systemów weryfikacja pada;
-  silnik przechodzi wtedy (tylko dla tego hosta) na kontekst bez weryfikacji łańcucha (dane publiczne).
+- **SSL:** gdy system nie potrafi zweryfikować łańcucha certyfikatów CBOSA, domyślnym wynikiem jest
+  `UNKNOWN`, bez automatycznego obniżenia zabezpieczeń. Jednorazowy, świadomy opt-in
+  `CBOSA_INSECURE_TLS=1 python3 scripts/cbosa.py ...` pozwala ponowić żądanie bez weryfikacji TLS.
+  Taki wynik ma w JSON pole `transport_tls_verified: false`, a w formacie tekstowym wyraźną
+  adnotację przy treści. Nie cytuj jej bez sprawdzenia w innym źródle.
 - **Symbole spraw** (pole `symbole`): 4-cyfrowe oznaczenia repertoriów, np. `611x` podatki
   (6112 PIT, 6110 VAT), `6014` prawo budowlane, `6320` pomoc społeczna, `6480` informacja publiczna.
   Pełny wykaz: zarządzenie Prezesa NSA (dostępne na stronach NSA).

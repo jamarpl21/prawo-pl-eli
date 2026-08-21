@@ -65,9 +65,14 @@ def _wymus_https(url):
     (CDM, LANG_AUTH, TYPE_AUTH, XSD_STR) zostają nietknięte, bo zmiana ich
     postaci zerwałaby dopasowanie w zapytaniach SPARQL.
     """
-    if url.startswith("http://") and url[len("http://"):].split("/", 1)[0].endswith(
-            ("europa.eu", "europa.eu:80")):
-        return "https://" + url[len("http://"):]
+    parsed = urllib.parse.urlsplit(url)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    cellar_host = "publications.europa.eu"
+    if parsed.scheme.lower() == "http" and (
+            host == cellar_host or host.endswith("." + cellar_host)):
+        # Zmieniamy wyłącznie schemat. Oryginalna pisownia hosta, user-info, port,
+        # ścieżka, parametry, query i fragment pozostają bajt w bajt bez zmian.
+        return "https" + url[len(parsed.scheme):]
     return url
 
 

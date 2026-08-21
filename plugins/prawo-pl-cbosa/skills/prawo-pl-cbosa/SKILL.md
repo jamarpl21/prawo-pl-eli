@@ -91,7 +91,11 @@ Typowy przepływ: `szukaj` (zawęź `--sad`/`--od`/`--symbol`) → wybierz doc_i
 5. **Nie myl orzeczenia z przepisem.** Brzmienie i aktualność powołanych przepisów potwierdź w ELI
    (skill prawo-pl-eli) — orzeczenie mogło zapaść na starszym stanie prawnym.
 6. **Okno serwisowe:** CBOSA ma codzienną krótką przerwę ok. 21:00 — błędy o tej porze są normalne.
-7. Szczegóły kontraktu HTML (pola formularza, struktura stron): `references/api.md`.
+7. **Błąd certyfikatu TLS nie obniża zabezpieczeń automatycznie.** Domyślnie daje `UNKNOWN`.
+   Jeżeli operator świadomie akceptuje ryzyko, może dla jednego uruchomienia ustawić
+   `CBOSA_INSECURE_TLS=1`. Wynik JSON ma wtedy `transport_tls_verified: false`, a wynik tekstowy
+   ostrzeżenie przy treści. Takiej treści nie cytuj bez sprawdzenia w innym źródle.
+8. Szczegóły kontraktu HTML (pola formularza, struktura stron): `references/api.md`.
 
 ## Czego ten skill NIE obejmuje
 
