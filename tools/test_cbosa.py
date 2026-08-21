@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Offline unit tests for cbosa.py pure functions (no network). Run: python3 tools/test_cbosa.py"""
+import os
 import sys
 import importlib.util
 import pathlib
+import ssl
 import unittest
 import urllib.error
 from unittest import mock
@@ -364,6 +366,39 @@ class CbosaVerificationContractTests(unittest.TestCase):
                 mock.patch.object(cbosa.time, "sleep"):
             with self.assertRaises(cbosa.VerificationUnknown):
                 cbosa._fetch("/cbo/search")
+
+
+class TestZgodaNaObnizenieTls(unittest.TestCase):
+    """Downgrade TLS wymaga jawnej zgody: tresc CBOSA trafia do cytatow w pismach."""
+
+    def setUp(self):
+        cbosa._ostatnie[0] = 0.0
+        self._ctx = cbosa._ssl_ctx
+
+    def tearDown(self):
+        cbosa._ssl_ctx = self._ctx
+
+    def _padnij_na_certyfikacie(self):
+        blad = urllib.error.URLError(ssl.SSLCertVerificationError("certificate verify failed"))
+        opener = mock.Mock()
+        opener.open.side_effect = blad
+        return mock.patch.object(cbosa.urllib.request, "build_opener", return_value=opener)
+
+    def test_bez_zgody_konczy_sie_unknown(self):
+        srodowisko = {k: v for k, v in os.environ.items() if k != "CBOSA_INSECURE_TLS"}
+        with mock.patch.dict(os.environ, srodowisko, clear=True), self._padnij_na_certyfikacie():
+            with self.assertRaises(cbosa.VerificationUnknown) as ctx:
+                cbosa._fetch("/doc/testowy")
+        komunikat = str(ctx.exception)
+        self.assertIn("certyfikat", komunikat.lower())
+        self.assertIn("CBOSA_INSECURE_TLS", komunikat)
+
+    def test_bez_zgody_nie_dotyka_kontekstu_ssl(self):
+        srodowisko = {k: v for k, v in os.environ.items() if k != "CBOSA_INSECURE_TLS"}
+        with mock.patch.dict(os.environ, srodowisko, clear=True), self._padnij_na_certyfikacie():
+            with self.assertRaises(cbosa.VerificationUnknown):
+                cbosa._fetch("/doc/testowy")
+        self.assertNotEqual(cbosa._ssl_ctx.verify_mode, ssl.CERT_NONE)
 
 
 if __name__ == "__main__":

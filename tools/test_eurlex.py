@@ -192,5 +192,31 @@ class EurlexVerificationContractTests(unittest.TestCase):
         self.assertIn("skonsolidowany 32016R0679", out[0])
 
 
+class TestWymusHttps(unittest.TestCase):
+    """CELLAR nazywa zasoby przez http:// URI, ale pobierac mamy po https."""
+
+    def test_podnosi_schemat_dla_europa_eu(self):
+        self.assertEqual(
+            eurlex._wymus_https("http://publications.europa.eu/resource/celex/32016R0679"),
+            "https://publications.europa.eu/resource/celex/32016R0679")
+
+    def test_nie_rusza_juz_bezpiecznego_adresu(self):
+        url = "https://publications.europa.eu/webapi/rdf/sparql"
+        self.assertEqual(eurlex._wymus_https(url), url)
+
+    def test_nie_rusza_obcego_hosta(self):
+        url = "http://www.w3.org/2001/XMLSchema#string"
+        self.assertEqual(eurlex._wymus_https(url), url)
+
+    def test_nie_daje_sie_nabrac_na_podobna_domene(self):
+        url = "http://publications.europa.eu.evil.example/resource/celex/X"
+        self.assertEqual(eurlex._wymus_https(url), url)
+
+    def test_uri_przestrzeni_nazw_zostaja_http(self):
+        # Zmiana ich postaci zerwalaby dopasowanie w zapytaniach SPARQL.
+        for stala in (eurlex.CDM, eurlex.LANG_AUTH, eurlex.TYPE_AUTH, eurlex.XSD_STR):
+            self.assertTrue(stala.startswith("http://"), stala)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
