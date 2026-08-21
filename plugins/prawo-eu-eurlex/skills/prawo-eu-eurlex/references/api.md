@@ -6,9 +6,12 @@ Wszystko publiczne, bez klucza. Read-only.
 
 - **SPARQL**: `https://publications.europa.eu/webapi/rdf/sparql`
   POST/GET z `query=` + `format=application/sparql-results+json` (też XML/CSV).
-- **CELLAR REST (treść)**: `http://publications.europa.eu/resource/celex/{CELEX}`
-  z nagłówkami `Accept: application/xhtml+xml` i `Accept-Language: pol|eng|…` (kod 3-literowy,
-  małymi). PDF NIE działa przez negocjację — pobierz URL manifestacji przez SPARQL
+- **CELLAR REST (treść)**: URI zasobu ma postać
+  `http://publications.europa.eu/resource/celex/{CELEX}`, ale żądanie sieciowe wysyłaj przez
+  `https://publications.europa.eu/resource/celex/{CELEX}`. `eurlex.py` podnosi schemat do HTTPS
+  tuż przed pobraniem, także dla URL manifestacji zwróconych przez SPARQL. Używa nagłówków
+  `Accept: application/xhtml+xml` i `Accept-Language: pol|eng|…` (kod 3-literowy, małymi).
+  PDF NIE działa przez negocjację — pobierz URL manifestacji przez SPARQL
   (`cdm:manifestation_manifests_expression`, `cdm:manifestation_type` zaczynający się od `pdf`)
   i doklej `/DOC_1`.
 - **ELI URI**: `http://data.europa.eu/eli/reg/2016/679/oj` → przekierowanie na EUR-Lex.

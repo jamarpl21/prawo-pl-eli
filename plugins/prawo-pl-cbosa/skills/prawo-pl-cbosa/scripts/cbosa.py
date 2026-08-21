@@ -98,10 +98,34 @@ def _data(s, koniec=False):
     return f"{rok}-{mm:02d}-{dd:02d}"
 
 
-# ── HTTP: throttling, ciasteczka sesji (paginacja), awaryjny kontekst SSL ────────────────
+# ── HTTP: throttling, ciasteczka sesji (paginacja), jawny opt-in TLS ────────────────────
 _jar = http.cookiejar.CookieJar()
-_ssl_ctx = ssl.create_default_context()
 _ostatnie = [0.0]
+_transport_tls_verified = True
+
+
+def _dane_z_transportem(dane):
+    """Dodaje do wyniku JSON stan uwierzytelnienia transportu w tym przebiegu."""
+    return {**dane, "transport_tls_verified": _transport_tls_verified}
+
+
+def _uwaga_o_transporcie():
+    if _transport_tls_verified:
+        return ""
+    return ("UWAGA: transport TLS nie został zweryfikowany (CBOSA_INSECURE_TLS=1). "
+            "Treść nie jest uwierzytelniona i przed cytowaniem wymaga sprawdzenia "
+            "w innym źródle.")
+
+
+def _drukuj_uwage_o_transporcie():
+    uwaga = _uwaga_o_transporcie()
+    if uwaga:
+        print(uwaga + "\n")
+
+
+def _z_uwaga_o_transporcie(komunikat):
+    uwaga = _uwaga_o_transporcie()
+    return f"{uwaga}\n{komunikat}" if uwaga else komunikat
 
 
 def _fetch(path, data=None):
@@ -111,9 +135,10 @@ def _fetch(path, data=None):
 
     CBOSA miewa kilkunastosekundowe okna, w których ucina połączenia bez odpowiedzi — stąd
     łącznie ~26 s ponawiania (za krótkie okno ponowień = fałszywy raport „skill nie działa").
-    CBOSA serwuje niekompletny łańcuch certyfikatów — na systemach, gdzie weryfikacja pada,
-    silnik przechodzi (tylko dla tego hosta) na kontekst bez weryfikacji łańcucha (dane publiczne)."""
-    global _ssl_ctx
+    CBOSA może serwować łańcuch certyfikatów, którego część systemów nie potrafi zweryfikować.
+    Domyślnie taki błąd daje UNKNOWN. Dopiero CBOSA_INSECURE_TLS=1 pozwala ponowić żądanie bez
+    weryfikacji; wynik jawnie niesie wtedy stan nieuwierzytelnionego transportu."""
+    global _transport_tls_verified
     url = BASE + path
     body = urllib.parse.urlencode(data).encode("utf-8") if data is not None else None
     headers = {
@@ -123,59 +148,68 @@ def _fetch(path, data=None):
     }
     if body is not None:
         headers["Content-Type"] = "application/x-www-form-urlencoded"
-    # odstęp przed kolejną próbą; None = ostatnia próba (dalej już błąd)
+    # Kontekst jest lokalny dla jednego pobrania. Jawny opt-in nie zatruwa kolejnych
+    # wywołań _fetch w tym samym procesie ustawieniem CERT_NONE.
+    ssl_ctx = ssl.create_default_context()
+    insecure_tls = False
+    # odstęp przed kolejną próbą; None = ostatnia zwykła próba (dalej już błąd)
     for odstep in (2, 4, 8, 12, None):
-        czekaj = 0.5 - (time.time() - _ostatnie[0])
-        if czekaj > 0:
-            time.sleep(czekaj)
-        _ostatnie[0] = time.time()
-        opener = urllib.request.build_opener(
-            urllib.request.HTTPSHandler(context=_ssl_ctx),
-            urllib.request.HTTPCookieProcessor(_jar))
-        req = urllib.request.Request(url, data=body, headers=headers)
-        try:
-            with opener.open(req, timeout=40) as r:
-                return r.read().decode("utf-8", "replace")
-        except urllib.error.HTTPError as e:
-            if e.code >= 500 and odstep is not None:
-                time.sleep(odstep); continue
-            if e.code in (404, 410) and path.startswith("/doc/"):
-                # CBOSA odpowiada 410 (Gone) dla nieistniejącego doc_id — zweryfikowany brak,
-                # a nie awaria; "spróbuj ponownie" odsyłałoby użytkownika w nieskończoną pętlę
-                sys.exit(f"Nie znaleziono orzeczenia o id {path[len('/doc/'):]!r} w CBOSA "
-                         f"(HTTP {e.code} — zweryfikowany brak). doc_id bierz z komendy "
-                         "szukaj albo sygnatura.")
-            dopisek = "; CBOSA ma codzienne krótkie okno serwisowe ok. 21:00" if e.code >= 500 else ""
-            raise VerificationUnknown(f"HTTP {e.code}: {url}{dopisek}") from e
-        except urllib.error.URLError as e:
-            if isinstance(getattr(e, "reason", None), ssl.SSLCertVerificationError):
-                # Cichy downgrade TLS jest tu grozniejszy niz awaria: tresc orzeczenia
-                # trafia do cytatow w pismach procesowych, wiec zgoda na niezweryfikowany
-                # certyfikat oznacza zgode na cytowanie tresci od dowolnego posrednika.
-                # Domyslnie odmawiamy; obnizenie wymaga jawnej, swiadomej decyzji operatora.
-                if os.environ.get("CBOSA_INSECURE_TLS") != "1":
-                    raise VerificationUnknown(
-                        f"blad weryfikacji certyfikatu TLS: {url} ({e.reason}). "
-                        "Tresc z niezweryfikowanego polaczenia nie nadaje sie do cytowania. "
-                        "Jesli swiadomie akceptujesz to ryzyko (np. znany problem po stronie "
-                        "serwera), ustaw CBOSA_INSECURE_TLS=1 dla tego wywolania."
-                    ) from e
-                if _ssl_ctx.verify_mode != ssl.CERT_NONE:
-                    print("UWAGA: CBOSA_INSECURE_TLS=1 — weryfikacja certyfikatu WYLACZONA dla "
-                          f"{url}. Tresc pobrana tym polaczeniem NIE jest uwierzytelniona i nie "
-                          "powinna byc cytowana bez sprawdzenia w innym zrodle.", file=sys.stderr)
-                    ctx = ssl.create_default_context()
-                    ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
-                    _ssl_ctx = ctx
-                    continue
-            if odstep is not None:
-                time.sleep(odstep); continue
-            raise VerificationUnknown(f"błąd sieci: {url} ({e}); serwer CBOSA ucina połączenia") from e
-        except Exception as e:  # noqa: BLE001
-            if odstep is not None:
-                time.sleep(odstep); continue
-            raise VerificationUnknown(f"błąd sieci: {url} ({e}); serwer CBOSA ucina połączenia") from e
-    # wyczerpane próby po przełączeniu kontekstu SSL w ostatnim obiegu — nigdy nie zwracaj None
+        # Wewnętrzna pętla gwarantuje jedną realną, natychmiastową próbę po zmianie
+        # kontekstu, nawet jeśli błąd certyfikatu wystąpił w ostatnim obiegu pętli zewnętrznej.
+        while True:
+            czekaj = 0.5 - (time.time() - _ostatnie[0])
+            if czekaj > 0:
+                time.sleep(czekaj)
+            _ostatnie[0] = time.time()
+            opener = urllib.request.build_opener(
+                urllib.request.HTTPSHandler(context=ssl_ctx),
+                urllib.request.HTTPCookieProcessor(_jar))
+            req = urllib.request.Request(url, data=body, headers=headers)
+            if insecure_tls:
+                _transport_tls_verified = False
+            try:
+                with opener.open(req, timeout=40) as r:
+                    return r.read().decode("utf-8", "replace")
+            except urllib.error.HTTPError as e:
+                if e.code >= 500 and odstep is not None:
+                    time.sleep(odstep)
+                    break
+                if e.code in (404, 410) and path.startswith("/doc/"):
+                    # CBOSA odpowiada 410 (Gone) dla nieistniejącego doc_id — zweryfikowany brak,
+                    # a nie awaria; "spróbuj ponownie" odsyłałoby użytkownika w nieskończoną pętlę
+                    sys.exit(_z_uwaga_o_transporcie(
+                        f"Nie znaleziono orzeczenia o id {path[len('/doc/'):]!r} w CBOSA "
+                        f"(HTTP {e.code} — zweryfikowany brak). doc_id bierz z komendy "
+                        "szukaj albo sygnatura."))
+                dopisek = "; CBOSA ma codzienne krótkie okno serwisowe ok. 21:00" if e.code >= 500 else ""
+                raise VerificationUnknown(f"HTTP {e.code}: {url}{dopisek}") from e
+            except urllib.error.URLError as e:
+                if isinstance(getattr(e, "reason", None), ssl.SSLCertVerificationError):
+                    # Domyślnie odmawiamy; obniżenie wymaga jawnej decyzji operatora.
+                    if os.environ.get("CBOSA_INSECURE_TLS") != "1":
+                        raise VerificationUnknown(
+                            f"blad weryfikacji certyfikatu TLS: {url} ({e.reason}). "
+                            "Tresc z niezweryfikowanego polaczenia nie nadaje sie do cytowania. "
+                            "Jesli swiadomie akceptujesz to ryzyko (np. znany problem po stronie "
+                            "serwera), ustaw CBOSA_INSECURE_TLS=1 dla tego wywolania."
+                        ) from e
+                    if not insecure_tls:
+                        print("UWAGA: CBOSA_INSECURE_TLS=1 — weryfikacja certyfikatu WYLACZONA dla "
+                              f"{url}. Tresc pobrana tym polaczeniem NIE jest uwierzytelniona i nie "
+                              "powinna byc cytowana bez sprawdzenia w innym zrodle.", file=sys.stderr)
+                        ssl_ctx = ssl.create_default_context()
+                        ssl_ctx.check_hostname, ssl_ctx.verify_mode = False, ssl.CERT_NONE
+                        insecure_tls = True
+                        continue
+                if odstep is not None:
+                    time.sleep(odstep)
+                    break
+                raise VerificationUnknown(f"błąd sieci: {url} ({e}); serwer CBOSA ucina połączenia") from e
+            except Exception as e:  # noqa: BLE001
+                if odstep is not None:
+                    time.sleep(odstep)
+                    break
+                raise VerificationUnknown(f"błąd sieci: {url} ({e}); serwer CBOSA ucina połączenia") from e
     raise VerificationUnknown(f"nie udało się pobrać {url} po kilku próbach")
 
 
@@ -345,11 +379,15 @@ def cmd_szukaj(a):
             sys.exit(f"CBOSA odrzuciło zapytanie: {komunikat}\nPopraw parametry i ponów "
                      "(daty w formacie RRRR-MM-DD).")
     if a.json:
-        print(json.dumps({"total": total, "strona": strona, "komunikat": komunikat, "wyniki": pozycje},
+        print(json.dumps(_dane_z_transportem(
+                         {"total": total, "strona": strona, "komunikat": komunikat,
+                          "wyniki": pozycje}),
                          ensure_ascii=False, indent=2)); return
     if total == 0 or not pozycje:
-        sys.exit("Brak wyników (zweryfikowane zero). Uwaga: wyszukiwarka CBOSA wymaga dokładnych "
-                 "wartości — spróbuj prostszej frazy, bez --sad, albo sprawdź sygnaturę/symbol.")
+        sys.exit(_z_uwaga_o_transporcie(
+            "Brak wyników (zweryfikowane zero). Uwaga: wyszukiwarka CBOSA wymaga dokładnych "
+            "wartości — spróbuj prostszej frazy, bez --sad, albo sprawdź sygnaturę/symbol."))
+    _drukuj_uwage_o_transporcie()
     _drukuj_liste(total, pozycje, strona)
 
 
@@ -359,12 +397,13 @@ def cmd_orzeczenie(a):
         sys.exit(f"Nieprawidłowy doc_id: {a.doc_id!r} (identyfikator ze strony wyników, np. 8889489BE0).")
     d = _orzeczenie(_fetch(f"/doc/{doc_id}"), doc_id)
     if a.json:
-        print(json.dumps(d, ensure_ascii=False, indent=2)); return
+        print(json.dumps(_dane_z_transportem(d), ensure_ascii=False, indent=2)); return
     if not d.get("tytul") and not d.get("metadane"):
         # strona pobrana, ale nierozpoznana (przebudowa HTML? strona błędu z HTTP 200?) —
         # UNKNOWN z podpowiedzią; częściowy parse obejrzysz przez --json
         raise VerificationUnknown(f"nie udało się rozpoznać strony orzeczenia {doc_id} — "
                                   f"sprawdź w przeglądarce: {d['url']}")
+    _drukuj_uwage_o_transporcie()
     print(f"# {d.get('tytul', doc_id)}   [{doc_id}]")
     for k in ("Data orzeczenia", "Sąd", "Sędziowie", "Symbol z opisem", "Hasła tematyczne",
               "Skarżony organ", "Treść wyniku", "Powołane przepisy", "Sygn. powiązane"):
@@ -409,13 +448,16 @@ def cmd_sygnatura(a):
         if komunikat:
             sys.exit(f"CBOSA odrzuciło zapytanie: {komunikat}")
     if a.json:
-        print(json.dumps({"total": total, "komunikat": komunikat, "wyniki": pozycje},
+        print(json.dumps(_dane_z_transportem(
+                         {"total": total, "komunikat": komunikat, "wyniki": pozycje}),
                          ensure_ascii=False, indent=2)); return
     glowne = [p for p in pozycje if not p["powiazane"]]
     if not glowne:
-        sys.exit(f"Nie znaleziono orzeczenia o sygnaturze {sig!r} w CBOSA.\n"
-                 "Sygnatury sądów administracyjnych mają formę np. \"II FSK 2870/18\" (NSA) "
-                 "albo \"I SA/Bk 226/18\" (WSA). SN/TK/sądy powszechne/KIO → skill prawo-pl-saos.")
+        sys.exit(_z_uwaga_o_transporcie(
+            f"Nie znaleziono orzeczenia o sygnaturze {sig!r} w CBOSA.\n"
+            "Sygnatury sądów administracyjnych mają formę np. \"II FSK 2870/18\" (NSA) "
+            "albo \"I SA/Bk 226/18\" (WSA). SN/TK/sądy powszechne/KIO → skill prawo-pl-saos."))
+    _drukuj_uwage_o_transporcie()
     print(f"Sygnatura {sig!r}: dopasowań {total}\n")
     for p in pozycje:
         prefiks = "  ↳ powiązane: " if p["powiazane"] else "  "
@@ -424,6 +466,8 @@ def cmd_sygnatura(a):
 
 
 def main():
+    global _transport_tls_verified
+    _transport_tls_verified = True
     ap = argparse.ArgumentParser(
         description="CBOSA (read-only, scraping — brak oficjalnego API). "
                     "Orzecznictwo sądów administracyjnych: NSA + 16 WSA.")

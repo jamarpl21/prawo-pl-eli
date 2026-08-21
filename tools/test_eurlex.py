@@ -195,22 +195,44 @@ class EurlexVerificationContractTests(unittest.TestCase):
 class TestWymusHttps(unittest.TestCase):
     """CELLAR nazywa zasoby przez http:// URI, ale pobierac mamy po https."""
 
-    def test_podnosi_schemat_dla_europa_eu(self):
-        self.assertEqual(
-            eurlex._wymus_https("http://publications.europa.eu/resource/celex/32016R0679"),
-            "https://publications.europa.eu/resource/celex/32016R0679")
+    def test_dziewiec_przypadkow_url(self):
+        cases = [
+            ("http://publications.europa.eu/resource/celex/X?x=1#f",
+             "https://publications.europa.eu/resource/celex/X?x=1#f"),
+            ("http://notreally-europa.eu/resource/celex/X",
+             "http://notreally-europa.eu/resource/celex/X"),
+            ("http://publications.europa.eu@notreally-europa.eu/resource/celex/X",
+             "http://publications.europa.eu@notreally-europa.eu/resource/celex/X"),
+            ("http://PUBLICATIONS.EUROPA.EU/resource/celex/X",
+             "https://PUBLICATIONS.EUROPA.EU/resource/celex/X"),
+            ("HTTP://publications.europa.eu/resource/celex/X",
+             "https://publications.europa.eu/resource/celex/X"),
+            ("http://publications.europa.eu./resource/celex/X",
+             "https://publications.europa.eu./resource/celex/X"),
+            ("http://publications.europa.eu:443/resource/celex/X",
+             "https://publications.europa.eu:443/resource/celex/X"),
+            ("http://publications.europa.eu:8080/resource/celex/X",
+             "https://publications.europa.eu:8080/resource/celex/X"),
+            ("http://api.publications.europa.eu/resource/celex/X",
+             "https://api.publications.europa.eu/resource/celex/X"),
+        ]
+        for url, expected in cases:
+            with self.subTest(url=url):
+                self.assertEqual(eurlex._wymus_https(url), expected)
 
-    def test_nie_rusza_juz_bezpiecznego_adresu(self):
-        url = "https://publications.europa.eu/webapi/rdf/sparql"
-        self.assertEqual(eurlex._wymus_https(url), url)
-
-    def test_nie_rusza_obcego_hosta(self):
-        url = "http://www.w3.org/2001/XMLSchema#string"
-        self.assertEqual(eurlex._wymus_https(url), url)
-
-    def test_nie_daje_sie_nabrac_na_podobna_domene(self):
+    def test_nie_daje_sie_nabrac_na_nadhosta(self):
         url = "http://publications.europa.eu.evil.example/resource/celex/X"
         self.assertEqual(eurlex._wymus_https(url), url)
+
+    def test_http_przekazuje_request_z_podniesionym_url(self):
+        odpowiedz = mock.MagicMock()
+        odpowiedz.__enter__.return_value = odpowiedz
+        odpowiedz.read.return_value = b"OK"
+        odpowiedz.headers.get.return_value = "text/plain"
+        with mock.patch.object(eurlex.urllib.request, "urlopen", return_value=odpowiedz) as urlopen:
+            eurlex._http("http://publications.europa.eu/resource/celex/X")
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "https://publications.europa.eu/resource/celex/X")
 
     def test_uri_przestrzeni_nazw_zostaja_http(self):
         # Zmiana ich postaci zerwalaby dopasowanie w zapytaniach SPARQL.
