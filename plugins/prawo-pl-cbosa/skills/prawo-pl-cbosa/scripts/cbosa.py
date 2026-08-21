@@ -188,15 +188,15 @@ def _fetch(path, data=None):
                     # Domyślnie odmawiamy; obniżenie wymaga jawnej decyzji operatora.
                     if os.environ.get("CBOSA_INSECURE_TLS") != "1":
                         raise VerificationUnknown(
-                            f"blad weryfikacji certyfikatu TLS: {url} ({e.reason}). "
-                            "Tresc z niezweryfikowanego polaczenia nie nadaje sie do cytowania. "
-                            "Jesli swiadomie akceptujesz to ryzyko (np. znany problem po stronie "
-                            "serwera), ustaw CBOSA_INSECURE_TLS=1 dla tego wywolania."
+                            f"błąd weryfikacji certyfikatu TLS: {url} ({e.reason}). "
+                            "Treść z niezweryfikowanego połączenia nie nadaje się do cytowania. "
+                            "Jeśli świadomie akceptujesz to ryzyko (np. znany problem po stronie "
+                            "serwera), ustaw CBOSA_INSECURE_TLS=1 dla tego wywołania."
                         ) from e
                     if not insecure_tls:
-                        print("UWAGA: CBOSA_INSECURE_TLS=1 — weryfikacja certyfikatu WYLACZONA dla "
-                              f"{url}. Tresc pobrana tym polaczeniem NIE jest uwierzytelniona i nie "
-                              "powinna byc cytowana bez sprawdzenia w innym zrodle.", file=sys.stderr)
+                        print("UWAGA: CBOSA_INSECURE_TLS=1 — weryfikacja certyfikatu WYŁĄCZONA dla "
+                              f"{url}. Treść pobrana tym połączeniem NIE jest uwierzytelniona i nie "
+                              "powinna być cytowana bez sprawdzenia w innym źródle.", file=sys.stderr)
                         ssl_ctx = ssl.create_default_context()
                         ssl_ctx.check_hostname, ssl_ctx.verify_mode = False, ssl.CERT_NONE
                         insecure_tls = True

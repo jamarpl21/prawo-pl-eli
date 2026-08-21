@@ -76,6 +76,19 @@ def _wymus_https(url):
     return url
 
 
+class _PrzekierowaniaHttps(urllib.request.HTTPRedirectHandler):
+    """CELLAR odpowiada 303 z Location w formie http:// nawet na żądanie https —
+    bez podniesienia schematu także w celu przekierowania treść aktu i tak
+    popłynęłaby czystym HTTP, z pominięciem _wymus_https na URL wejściowym.
+    Adres cellar po https serwuje treść wprost (200), więc pętla nie grozi."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return super().redirect_request(req, fp, code, msg, headers, _wymus_https(newurl))
+
+
+_opener = urllib.request.build_opener(_PrzekierowaniaHttps())
+
+
 def _http(url, data=None, headers=None, timeout=60):
     """GET/POST z jednym ponowieniem na błąd przejściowy. Zwraca (bytes, content-type)."""
     url = _wymus_https(url)
@@ -83,7 +96,7 @@ def _http(url, data=None, headers=None, timeout=60):
         "User-Agent": f"eurlex-skill/{__version__}", **(headers or {})})
     for attempt in (1, 2):
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
+            with _opener.open(req, timeout=timeout) as r:
                 return r.read(), r.headers.get("Content-Type", "")
         except urllib.error.HTTPError as e:
             if e.code >= 500 and attempt == 1:

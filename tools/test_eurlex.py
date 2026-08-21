@@ -229,10 +229,26 @@ class TestWymusHttps(unittest.TestCase):
         odpowiedz.__enter__.return_value = odpowiedz
         odpowiedz.read.return_value = b"OK"
         odpowiedz.headers.get.return_value = "text/plain"
-        with mock.patch.object(eurlex.urllib.request, "urlopen", return_value=odpowiedz) as urlopen:
+        with mock.patch.object(eurlex._opener, "open", return_value=odpowiedz) as otworz:
             eurlex._http("http://publications.europa.eu/resource/celex/X")
-        request = urlopen.call_args.args[0]
+        request = otworz.call_args.args[0]
         self.assertEqual(request.full_url, "https://publications.europa.eu/resource/celex/X")
+
+    def test_przekierowanie_303_na_http_cellar_jest_podnoszone(self):
+        # CELLAR odpowiada 303 z Location http:// nawet na żądanie https — bez podniesienia
+        # schematu w celu przekierowania treść i tak popłynęłaby czystym HTTP.
+        req = eurlex.urllib.request.Request("https://publications.europa.eu/resource/celex/X")
+        nowy = eurlex._PrzekierowaniaHttps().redirect_request(
+            req, None, 303, "See Other", {},
+            "http://publications.europa.eu/resource/cellar/abc.0018.03/DOC_1")
+        self.assertEqual(nowy.full_url,
+                         "https://publications.europa.eu/resource/cellar/abc.0018.03/DOC_1")
+
+    def test_przekierowanie_na_obcy_host_zostaje_bez_zmian(self):
+        req = eurlex.urllib.request.Request("https://publications.europa.eu/resource/celex/X")
+        nowy = eurlex._PrzekierowaniaHttps().redirect_request(
+            req, None, 303, "See Other", {}, "http://data.europa.eu/eli/reg/2016/679/oj")
+        self.assertEqual(nowy.full_url, "http://data.europa.eu/eli/reg/2016/679/oj")
 
     def test_uri_przestrzeni_nazw_zostaja_http(self):
         # Zmiana ich postaci zerwalaby dopasowanie w zapytaniach SPARQL.

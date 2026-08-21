@@ -9,7 +9,9 @@ Wszystko publiczne, bez klucza. Read-only.
 - **CELLAR REST (treść)**: URI zasobu ma postać
   `http://publications.europa.eu/resource/celex/{CELEX}`, ale żądanie sieciowe wysyłaj przez
   `https://publications.europa.eu/resource/celex/{CELEX}`. `eurlex.py` podnosi schemat do HTTPS
-  tuż przed pobraniem, także dla URL manifestacji zwróconych przez SPARQL. Używa nagłówków
+  tuż przed pobraniem, także dla URL manifestacji zwróconych przez SPARQL **oraz w celach
+  przekierowań** — CELLAR odpowiada 303 z `Location: http://…` nawet na żądanie https, więc
+  samo podniesienie URL wejściowego nie wystarcza (treść przyszłaby czystym HTTP). Używa nagłówków
   `Accept: application/xhtml+xml` i `Accept-Language: pol|eng|…` (kod 3-literowy, małymi).
   PDF NIE działa przez negocjację — pobierz URL manifestacji przez SPARQL
   (`cdm:manifestation_manifests_expression`, `cdm:manifestation_type` zaczynający się od `pdf`)
