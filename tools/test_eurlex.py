@@ -2,6 +2,8 @@
 # -*- coding: utf-8 -*-
 """Offline unit tests for eurlex.py pure functions (no network). Run: python3 tools/test_eurlex.py"""
 import argparse
+import contextlib
+import io
 import sys
 import importlib.util
 import pathlib
@@ -205,6 +207,18 @@ class EurlexVerificationContractTests(unittest.TestCase):
                                side_effect=eurlex.VerificationUnknown("timeout")):
             with self.assertRaisesRegex(eurlex.VerificationUnknown, "timeout"):
                 eurlex._ostrzezenia_konsolidacja("32016R0679", strict=True)
+
+    def test_strict_nie_wypisuje_tekstu_przed_kontrola_konsolidacji(self):
+        args = argparse.Namespace(celex=["32016R0679"], jezyk="pol", json=False,
+                                  strict=True, pdf=None, fragment=None)
+        out = io.StringIO()
+        with mock.patch.object(eurlex, "_http", return_value=(b"<p>Artykul 1. Tresc.</p>", "text/html")), \
+                mock.patch.object(eurlex, "_konsolidacje",
+                                  side_effect=eurlex.VerificationUnknown("timeout")), \
+                contextlib.redirect_stdout(out):
+            with self.assertRaisesRegex(eurlex.VerificationUnknown, "timeout"):
+                eurlex.cmd_tekst(args)
+        self.assertEqual(out.getvalue(), "")
 
 
 class TestWymusHttps(unittest.TestCase):

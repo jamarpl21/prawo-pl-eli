@@ -325,6 +325,8 @@ SELECT ?type ?date ?inf ?eli ?eiv ?eov ?title WHERE {{
               ?exp cdm:expression_uses_language <{LANG_AUTH}{lang}> .
               ?exp cdm:expression_title ?title }}
 }}""")
+    strict = getattr(a, "strict", False)
+    ostrz = _ostrzezenia_konsolidacja(celex, True) if strict else None
     if a.json:
         print(json.dumps(rows, ensure_ascii=False, indent=2)); return
     if not rows:
@@ -348,7 +350,7 @@ SELECT ?type ?date ?inf ?eli ?eiv ?eov ?title WHERE {{
     if zb["eli"]:
         print(f"  ELI:     {zb['eli'][0]}")
     print(f"  Tekst:   python3 {sys.argv[0]} tekst {celex} --jezyk pol --fragment \"art. N\"")
-    for w in _ostrzezenia_konsolidacja(celex, getattr(a, "strict", False)):
+    for w in (ostrz if ostrz is not None else _ostrzezenia_konsolidacja(celex)):
         print(w)
 
 
@@ -393,6 +395,8 @@ def cmd_tekst(a):
     lang3 = lang.lower()
     url = CELLAR + urllib.parse.quote(celex, safe="/")
     if a.pdf:
+        strict = getattr(a, "strict", False)
+        ostrz = _ostrzezenia_konsolidacja(celex, True) if strict else None
         try:
             pdf_url = _pdf_url(celex, lang)
         except VerificationUnknown as e:
@@ -403,15 +407,15 @@ def cmd_tekst(a):
         with open(a.pdf, "wb") as f:
             f.write(data)
         print(f"Zapisano PDF ({len(data)} B): {a.pdf}\n(źródło: {pdf_url}, język {lang3})")
-        for w in _ostrzezenia_konsolidacja(celex, getattr(a, "strict", False)):
+        for w in (ostrz if ostrz is not None else _ostrzezenia_konsolidacja(celex)):
             print(w)
         return
     raw, _ = _http(url, headers={"Accept": "application/xhtml+xml", "Accept-Language": lang3})
     txt = html_to_text(raw.decode("utf-8", "replace"))
     if not txt:
         sys.exit(f"Pusty tekst XHTML dla {celex} (język {lang3}) — spróbuj --pdf albo inny --jezyk.")
-    print(f"# CELEX {celex} ({lang3}) — tekst z CELLAR (XHTML→tekst; do dosłownego cytatu zweryfikuj z PDF)\n")
     ostrz = _ostrzezenia_konsolidacja(celex, getattr(a, "strict", False))
+    print(f"# CELEX {celex} ({lang3}) — tekst z CELLAR (XHTML→tekst; do dosłownego cytatu zweryfikuj z PDF)\n")
     for w in ostrz:
         print(w)
     if ostrz:
