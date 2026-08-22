@@ -47,11 +47,19 @@ bez klucza API). Skrypt leży **obok tego pliku SKILL.md** — NIE zakładaj, ż
 `${CLAUDE_PLUGIN_ROOT}/skills/prawo-eu-eurlex`). Uruchamiaj wyłącznie helper z bieżącego pakietu:
 
 ```
-[ -n "${CLAUDE_PLUGIN_ROOT:-}" ] || { echo "BŁĄD: CLAUDE_PLUGIN_ROOT nie jest ustawiony" >&2; exit 1; }
-EURLEX="${CLAUDE_PLUGIN_ROOT}/skills/prawo-eu-eurlex/scripts/eurlex.py"
+# Podstaw dokładną bezwzględną ścieżkę bieżącego SKILL.md z lokalizatora skilla.
+SKILL_MD="/bezwzględna/ścieżka/do/bieżącego/SKILL.md"
+SKILL_DIR="${SKILL_MD%/SKILL.md}"
+if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
+  EURLEX="${CLAUDE_PLUGIN_ROOT}/skills/prawo-eu-eurlex/scripts/eurlex.py"
+else
+  EURLEX="${SKILL_DIR}/scripts/eurlex.py"
+fi
 [ -f "$EURLEX" ] || { echo "BŁĄD: brak helpera bieżącego pakietu: $EURLEX" >&2; exit 1; }
 python3 "$EURLEX" <komenda> [...]
 ```
+
+Nie pobieraj helpera z sieci i nie szukaj go przez `find` po katalogach użytkownika ani systemu.
 
 (W przykładach niżej `python3 scripts/eurlex.py` oznacza `python3 "$EURLEX"`, jeśli nie jesteś
 w katalogu skilla.)

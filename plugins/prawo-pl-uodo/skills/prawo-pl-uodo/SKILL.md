@@ -40,11 +40,19 @@ Skrypt leży **obok tego pliku SKILL.md** (`<katalog skilla>/scripts/uodo.py`) �
 Code: `${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-uodo`). Uruchamiaj wyłącznie helper z bieżącego pakietu:
 
 ```
-[ -n "${CLAUDE_PLUGIN_ROOT:-}" ] || { echo "BŁĄD: CLAUDE_PLUGIN_ROOT nie jest ustawiony" >&2; exit 1; }
-UODO="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-uodo/scripts/uodo.py"
+# Podstaw dokładną bezwzględną ścieżkę bieżącego SKILL.md z lokalizatora skilla.
+SKILL_MD="/bezwzględna/ścieżka/do/bieżącego/SKILL.md"
+SKILL_DIR="${SKILL_MD%/SKILL.md}"
+if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
+  UODO="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-uodo/scripts/uodo.py"
+else
+  UODO="${SKILL_DIR}/scripts/uodo.py"
+fi
 [ -f "$UODO" ] || { echo "BŁĄD: brak helpera bieżącego pakietu: $UODO" >&2; exit 1; }
 python3 "$UODO" <komenda> [...]
 ```
+
+Nie pobieraj helpera z sieci i nie szukaj go przez `find` po katalogach użytkownika ani systemu.
 
 (W przykładach niżej `python3 scripts/uodo.py` oznacza `python3 "$UODO"`, jeśli nie jesteś w katalogu skilla.)
 

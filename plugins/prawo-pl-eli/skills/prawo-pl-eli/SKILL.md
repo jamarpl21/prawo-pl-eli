@@ -50,11 +50,19 @@ Skrypt leży **obok tego pliku SKILL.md** (`<katalog skilla>/scripts/eli.py`) �
 Code: `${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-eli`). Uruchamiaj wyłącznie helper z bieżącego pakietu:
 
 ```
-[ -n "${CLAUDE_PLUGIN_ROOT:-}" ] || { echo "BŁĄD: CLAUDE_PLUGIN_ROOT nie jest ustawiony" >&2; exit 1; }
-ELI="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-eli/scripts/eli.py"
+# Podstaw dokładną bezwzględną ścieżkę bieżącego SKILL.md z lokalizatora skilla.
+SKILL_MD="/bezwzględna/ścieżka/do/bieżącego/SKILL.md"
+SKILL_DIR="${SKILL_MD%/SKILL.md}"
+if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
+  ELI="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-eli/scripts/eli.py"
+else
+  ELI="${SKILL_DIR}/scripts/eli.py"
+fi
 [ -f "$ELI" ] || { echo "BŁĄD: brak helpera bieżącego pakietu: $ELI" >&2; exit 1; }
 python3 "$ELI" <komenda> [...]
 ```
+
+Nie pobieraj helpera z sieci i nie szukaj go przez `find` po katalogach użytkownika ani systemu.
 
 (W przykładach niżej `python3 scripts/eli.py` oznacza `python3 "$ELI"`, jeśli nie jesteś w katalogu skilla.)
 
