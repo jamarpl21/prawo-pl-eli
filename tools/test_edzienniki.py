@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Offline unit tests for edzienniki.py pure functions (no network). Run: python3 tools/test_edzienniki.py"""
+import contextlib
+import io
 import sys
 import importlib.util
 import pathlib
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 _spec = importlib.util.spec_from_file_location(
@@ -158,6 +161,55 @@ class TestFlagaJson(unittest.TestCase):
 
     def test_bez_flagi(self):
         self.assertFalse(self._parsuj(self.ARGV)["json"])
+
+
+class TestStrict(unittest.TestCase):
+    """--strict: rocznik bez listy aktów = wynik NIEKOMPLETNY → blokada; domyślnie głośne ostrzeżenie.
+    Zero trafień kończy się komunikatem także z --json."""
+    ROCZNIK = {"items": [{"pos": 10, "title": "Uchwała w sprawie statutu gminy X", "year": 2026}],
+               "totalcount": 1}
+
+    def _fake_get(self, host, path, params=None, raw=False):
+        if path.endswith("/2026"):
+            return self.ROCZNIK
+        return None  # rocznik 2025 → nieoczekiwana odpowiedź
+
+    def _uruchom(self, argv):
+        out = io.StringIO()
+        with mock.patch.object(edz, "_get", side_effect=self._fake_get), \
+                mock.patch.object(edz, "_roczniki", return_value={"years": [2026, 2025]}), \
+                mock.patch.object(sys, "argv", ["edzienniki.py", *argv]), \
+                contextlib.redirect_stdout(out):
+            try:
+                edz.main()
+            except SystemExit as e:
+                return out.getvalue(), e
+        return out.getvalue(), None
+
+    def test_strict_blokuje_gdy_rocznik_pominiety_i_stdout_jest_pusty(self):
+        out, e = self._uruchom(["szukaj", "statut", "--woj", "DS", "--strict"])
+        self.assertIsNotNone(e)
+        self.assertIn("rocznika 2025", str(e))
+        self.assertEqual(out, "")
+
+    def test_domyslnie_ostrzega_o_pominietym_roczniku(self):
+        out, e = self._uruchom(["szukaj", "statut", "--woj", "DS"])
+        self.assertIsNone(e)
+        self.assertIn("2025 POMINIĘTE", out)
+        self.assertIn("statutu gminy X", out)
+
+    def test_json_zero_trafien_konczy_sie_komunikatem(self):
+        out, e = self._uruchom(["szukaj", "zzqq", "--woj", "DS", "--rok", "2026", "--json"])
+        self.assertIsNotNone(e)
+        self.assertIn("Brak wyników", str(e))
+        self.assertEqual(out, "")
+
+    def test_strict_po_komendzie_i_przed(self):
+        for argv in (["szukaj", "statut", "--woj", "DS", "--rok", "2026", "--strict"],
+                     ["--strict", "szukaj", "statut", "--woj", "DS", "--rok", "2026"]):
+            out, e = self._uruchom(argv)
+            self.assertIsNone(e, argv)
+            self.assertIn("statutu gminy X", out)
 
 
 if __name__ == "__main__":

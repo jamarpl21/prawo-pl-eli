@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Offline unit tests for rejestrumow.py pure functions (no network). Run: python3 tools/test_rejestrumow.py"""
+import contextlib
+import io
 import sys
 import importlib.util
 import pathlib
 import types
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 _spec = importlib.util.spec_from_file_location(
@@ -143,6 +146,51 @@ class TestFlagaJson(unittest.TestCase):
 
     def test_bez_flagi(self):
         self.assertFalse(self._parsuj(self.ARGV)["json"])
+
+
+class TestStrict(unittest.TestCase):
+    """--strict: więcej trafień niż okno API = zbiór NIEKOMPLETNY → blokada (domyślnie ostrzeżenie).
+    Zero trafień kończy się komunikatem także z --json."""
+    UMOWA = {"idUmowy": "0f3c1c3e-1111-4222-8333-444455556666", "nazwa": "Gmina X", "regon": "1",
+             "dataZawarciaUmowy": "2026-07-02", "statusUmowy": "obowiązująca",
+             "wartoscPrzedmiotuUmowy": 1000, "przedmiotUmowy": "remont drogi"}
+
+    def _uruchom(self, argv, odp):
+        out = io.StringIO()
+        with mock.patch.object(rejestrumow, "_req", return_value=odp), \
+                mock.patch.object(sys, "argv", ["rejestrumow.py", *argv]), \
+                contextlib.redirect_stdout(out):
+            try:
+                rejestrumow.main()
+            except SystemExit as e:
+                return out.getvalue(), e
+        return out.getvalue(), None
+
+    def test_strict_blokuje_zbior_ponad_oknem_api_i_stdout_jest_pusty(self):
+        odp = {"content": [self.UMOWA], "totalMatchingElements": rejestrumow.OKNO + 1}
+        for argv in (["szukaj", "remont", "--strict"], ["szukaj", "remont", "--json", "--strict"]):
+            out, e = self._uruchom(argv, odp)
+            self.assertIsNotNone(e, argv)
+            self.assertIn("zawęź", str(e).lower())
+            self.assertEqual(out, "")
+
+    def test_domyslnie_zbior_ponad_oknem_ostrzega(self):
+        odp = {"content": [self.UMOWA], "totalMatchingElements": rejestrumow.OKNO + 1}
+        out, e = self._uruchom(["szukaj", "remont"], odp)
+        self.assertIsNone(e)
+        self.assertIn("UWAGA: API przegląda maks.", out)
+
+    def test_strict_w_granicach_okna_przechodzi(self):
+        odp = {"content": [self.UMOWA], "totalMatchingElements": 1}
+        out, e = self._uruchom(["szukaj", "remont", "--strict"], odp)
+        self.assertIsNone(e)
+        self.assertIn("remont drogi", out)
+
+    def test_json_zero_trafien_konczy_sie_komunikatem(self):
+        out, e = self._uruchom(["szukaj", "zzqq", "--json"], {"content": [], "totalMatchingElements": 0})
+        self.assertIsNotNone(e)
+        self.assertIn("Brak wyników", str(e))
+        self.assertEqual(out, "")
 
 
 if __name__ == "__main__":

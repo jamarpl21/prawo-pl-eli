@@ -42,15 +42,12 @@ Skrypt leży **obok tego pliku SKILL.md** (`<katalog skilla>/scripts/saos.py`) �
 Code: `${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-saos`). Uruchamiaj wyłącznie helper z bieżącego pakietu:
 
 ```
-# Podstaw dokładną bezwzględną ścieżkę bieżącego SKILL.md z lokalizatora skilla.
-SKILL_MD="/bezwzględna/ścieżka/do/bieżącego/SKILL.md"
-SKILL_DIR="${SKILL_MD%/SKILL.md}"
-if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
-  SAOS="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-saos/scripts/saos.py"
-else
-  SAOS="${SKILL_DIR}/scripts/saos.py"
-fi
-[ -f "$SAOS" ] || { echo "BŁĄD: brak helpera bieżącego pakietu: $SAOS" >&2; exit 1; }
+# Claude Code: przy ładowaniu skilla podstawia ${CLAUDE_PLUGIN_ROOT} (pełna ścieżka poniżej).
+SAOS="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-saos/scripts/saos.py"
+# Codex / Claude Desktop / instalacja ręczna: katalog TEGO pliku SKILL.md (Claude Code podaje go
+# jako „Base directory for this skill”, Codex w liście skilli) — podstaw go zamiast <katalog skilla>.
+[ -f "$SAOS" ] || SAOS="<katalog skilla>/scripts/saos.py"
+[ -f "$SAOS" ] || { echo "BŁĄD: brak helpera obok SKILL.md: $SAOS" >&2; exit 1; }
 python3 "$SAOS" <komenda> [...]
 ```
 
@@ -73,6 +70,8 @@ Nie pobieraj helpera z sieci i nie szukaj go przez `find` po katalogach użytkow
 - **sygnatura** — szybkie odszukanie po numerze sprawy:
   `python3 scripts/saos.py sygnatura III CSK 203/09`
 - każda komenda przyjmuje `--json` oraz `--strict` (blokuje wynik bez zweryfikowanej aktualności lub kompletności); obie flagi działają przed komendą i po niej.
+  Zero trafień / nierozpoznana odpowiedź API kończą się komunikatem i kodem wyjścia ≠ 0 — także z `--json`
+  (nie dostaniesz pustego JSON-a, który wyglądałby jak „sprawdzone, nic nie ma”).
 
 Typowy przepływ: `szukaj` (zawęź `--sad`/`--przepis`/`--haslo`) → wybierz ID → `orzeczenie <id>`
 → w razie potrzeby skacz po `referencedCourtCases` do powołanych orzeczeń.

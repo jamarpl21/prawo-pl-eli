@@ -44,15 +44,12 @@ Skrypt leży **obok tego pliku SKILL.md** (`<katalog skilla>/scripts/cbosa.py`) 
 Code: `${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-cbosa`). Uruchamiaj wyłącznie helper z bieżącego pakietu:
 
 ```
-# Podstaw dokładną bezwzględną ścieżkę bieżącego SKILL.md z lokalizatora skilla.
-SKILL_MD="/bezwzględna/ścieżka/do/bieżącego/SKILL.md"
-SKILL_DIR="${SKILL_MD%/SKILL.md}"
-if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
-  CBOSA="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-cbosa/scripts/cbosa.py"
-else
-  CBOSA="${SKILL_DIR}/scripts/cbosa.py"
-fi
-[ -f "$CBOSA" ] || { echo "BŁĄD: brak helpera bieżącego pakietu: $CBOSA" >&2; exit 1; }
+# Claude Code: przy ładowaniu skilla podstawia ${CLAUDE_PLUGIN_ROOT} (pełna ścieżka poniżej).
+CBOSA="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-cbosa/scripts/cbosa.py"
+# Codex / Claude Desktop / instalacja ręczna: katalog TEGO pliku SKILL.md (Claude Code podaje go
+# jako „Base directory for this skill”, Codex w liście skilli) — podstaw go zamiast <katalog skilla>.
+[ -f "$CBOSA" ] || CBOSA="<katalog skilla>/scripts/cbosa.py"
+[ -f "$CBOSA" ] || { echo "BŁĄD: brak helpera obok SKILL.md: $CBOSA" >&2; exit 1; }
 python3 "$CBOSA" <komenda> [...]
 ```
 
@@ -77,6 +74,8 @@ Nie pobieraj helpera z sieci i nie szukaj go przez `find` po katalogach użytkow
 - **sygnatura** — szybkie odszukanie po sygnaturze:
   `python3 scripts/cbosa.py sygnatura II FSK 2870/18`
 - każda komenda przyjmuje `--json` oraz `--strict` (blokuje wynik bez zweryfikowanej aktualności lub kompletności); obie flagi działają przed komendą i po niej.
+  Zero trafień / nierozpoznana odpowiedź API kończą się komunikatem i kodem wyjścia ≠ 0 — także z `--json`
+  (nie dostaniesz pustego JSON-a, który wyglądałby jak „sprawdzone, nic nie ma”).
 
 Typowy przepływ: `szukaj` (zawęź `--sad`/`--od`/`--symbol`) → wybierz doc_id → `orzeczenie <doc_id>`
 → w razie potrzeby skacz po sygnaturach powiązanych (WSA ↔ NSA w tej samej sprawie).

@@ -17,6 +17,7 @@ Komendy:
   akt <woj> <rok> <poz>               metadane aktu (+ linki do PDF/HTML)
   tekst <woj> <rok> <poz> [--fragment "<fraza>"] [--pdf ŚCIEŻKA]
 Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
+           --strict  (blokuje wynik, gdy nie udało się zweryfikować jego kompletności)
 """
 import sys, json, re, time, argparse, urllib.request, urllib.parse, urllib.error
 from html.parser import HTMLParser
@@ -225,10 +226,15 @@ def cmd_szukaj(a):
     # API dzienników IGNORUJE serwerowe filtry (title/type/keyword) — pobieramy cały rocznik
     # jednym żądaniem (brak limitu strony po stronie serwera) i filtrujemy lokalnie po tytule.
     fraza = _ascii(a.fraza) if a.fraza else None
-    zebrane, total_info = [], {}
+    zebrane, total_info, pominiete = [], {}, []
     for rok in lata:
         d = _get(host, f"/acts/{pub}/{rok}", {"limit": 100000})
         if not isinstance(d, dict):
+            # rocznik bez listy aktów = wynik NIEKOMPLETNY: strict blokuje, domyślnie głośno ostrzegamy
+            if getattr(a, "strict", False):
+                sys.exit(f"BŁĄD: {host} zwrócił nieoczekiwaną odpowiedź dla rocznika {rok} — tryb strict "
+                         "nie zwróci niekompletnego wyniku. Spróbuj ponownie albo zawęź: --rok RRRR.")
+            pominiete.append(rok)
             continue
         items = d.get("items") or []
         trafione = [it for it in items if not fraza or fraza in _ascii(it.get("title") or "")]
@@ -239,18 +245,24 @@ def cmd_szukaj(a):
         if not fraza and len(zebrane) >= a.strona * a.limit:
             break
     okno, start, strony = _stronicuj(zebrane, a.limit, a.strona)
-    if a.json:
-        print(json.dumps({"wojewodztwo": nazwa, "publisher": pub, "lata": lata,
-                          "total": total_info, "trafien": len(zebrane), "strona": a.strona,
-                          "stron": strony, "items": okno},
-                         ensure_ascii=False, indent=2)); return
-    if not zebrane:
+    if not zebrane:  # zweryfikowane zero — także z --json komunikat, nie pusty JSON
         sys.exit(f"Brak wyników w {nazwa} ({', '.join(map(str, lata))}). Filtr frazy działa po "
                  "TYTULE aktu (podłańcuch, bez diakrytyków) — spróbuj krótszej frazy albo innego "
-                 "roku (--rok).")
+                 "roku (--rok)." + (f"\nUWAGA: rocznik(i) {', '.join(map(str, pominiete))} POMINIĘTE "
+                                    f"({host} zwrócił nieoczekiwaną odpowiedź) — to NIE jest pełne zero."
+                                    if pominiete else ""))
     if not okno:
         sys.exit(f"Strona {a.strona} poza zakresem: {len(zebrane)} trafień = {strony} "
                  f"stron(y) przy --limit {a.limit}.")
+    if a.json:
+        print(json.dumps({"wojewodztwo": nazwa, "publisher": pub, "lata": lata,
+                          "roczniki_pominiete": pominiete,
+                          "total": total_info, "trafien": len(zebrane), "strona": a.strona,
+                          "stron": strony, "items": okno},
+                         ensure_ascii=False, indent=2)); return
+    if pominiete:
+        print(f"UWAGA: rocznik(i) {', '.join(map(str, pominiete))} POMINIĘTE — {host} zwrócił nieoczekiwaną "
+              "odpowiedź; wynik może być niekompletny (ponów albo podaj --rok RRRR).")
     laty = f"{lata[-1]}–{lata[0]}" if len(lata) > 1 else str(lata[0])
     print(f"Województwo {nazwa}, roczniki {laty} "
           f"(trafienia/akty wg lat: {', '.join(f'{r}: {t}' for r, t in total_info.items())})\n")
@@ -342,6 +354,8 @@ def main():
                     "prawo miejscowe 16 województw. Prawo krajowe (Dz.U./M.P.): scripts/eli.py.")
     ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     ap.add_argument("--json", action="store_true", help="zrzut surowego JSON")
+    ap.add_argument("--strict", action="store_true",
+                    help="zakończ błędem, gdy nie udało się zweryfikować kompletności wyniku")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     dz = sub.add_parser("dzienniki")
@@ -372,11 +386,13 @@ def main():
     t.add_argument("--pdf", help="zapisz urzędowy PDF do pliku")
     t.set_defaults(func=cmd_tekst)
 
-    # --json działa też PO komendzie (modele piszą flagi właśnie tam); SUPPRESS sprawia,
+    # Flagi globalne działają też PO komendzie (modele piszą je właśnie tam); SUPPRESS sprawia,
     # że brak flagi w subparserze nie kasuje wartości podanej przed komendą
     for p in sub.choices.values():
         p.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
                        help="zrzut surowego JSON")
+        p.add_argument("--strict", action="store_true", default=argparse.SUPPRESS,
+                       help="zakończ błędem, gdy nie udało się zweryfikować kompletności wyniku")
 
     a = ap.parse_args()
     a.func(a)

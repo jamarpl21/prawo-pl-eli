@@ -541,13 +541,92 @@ class TestT03PrzekierowaniaHttps(unittest.TestCase):
 
 
 class TestT04RecznaInstalacjaSkilli(unittest.TestCase):
+    WYDANE = ("prawo-pl-eli", "prawo-pl-edzienniki", "prawo-eu-eurlex", "prawo-pl-saos",
+              "prawo-pl-cbosa", "prawo-pl-uodo", "prawo-pl-rejestr-umow")
+
     def test_wszystkie_skille_maja_lokalny_fallback_bez_sieci_i_find(self):
-        for skill in ROOT.glob("plugins/*/skills/*/SKILL.md"):
+        # helper wyłącznie z bieżącego pakietu: ścieżka podstawiana przez Claude Code
+        # (${CLAUDE_PLUGIN_ROOT}) albo katalog tego SKILL.md — bez find po dysku i bez curl z main
+        for plugin in self.WYDANE:
+            skill = ROOT / f"plugins/{plugin}/skills/{plugin}/SKILL.md"
             text = skill.read_text(encoding="utf-8")
             with self.subTest(skill=skill):
-                self.assertIn('SKILL_DIR="${SKILL_MD%/SKILL.md}"', text)
+                self.assertIn(f'="${{CLAUDE_PLUGIN_ROOT}}/skills/{plugin}/scripts/', text)
+                self.assertIn('="<katalog skilla>/scripts/', text)
                 self.assertIn("Nie pobieraj helpera z sieci", text)
                 self.assertIn("nie szukaj go przez `find`", text)
+                self.assertNotIn("curl -fsSL", text)
+                self.assertNotIn('find "$HOME', text)
+                self.assertIn("`--strict`", text)
+
+
+class TestT11NowszyTjNaStarszymTj(unittest.TestCase):
+    """Akt, który SAM jest (starszym) t.j., nie ma listy t.j. we własnych odniesieniach —
+    aktualność trzeba sprawdzić na akcie bazowym, inaczej przestarzały t.j. wygląda jak aktualny."""
+    REFS_TJ = {"Tekst jednolity dla aktu": [
+        {"act": {"ELI": "DU/1964/93", "displayAddress": "Dz.U. 1964 nr 16 poz. 93"}}]}
+    REFS_BAZOWE = {"Inf. o tekście jednolitym": [
+        {"act": {"ELI": "DU/2024/1061", "displayAddress": "Dz.U. 2024 poz. 1061"}},
+        {"act": {"ELI": "DU/2026/795", "displayAddress": "Dz.U. 2026 poz. 795"}}]}
+
+    def _fake_get(self, path, params=None, soft=False):
+        if path == "/acts/DU/2024/1061/references" or path == "/acts/DU/2026/795/references":
+            return self.REFS_TJ
+        if path == "/acts/DU/1964/93/references":
+            return self.REFS_BAZOWE
+        if path.endswith("/text.html"):
+            return "<p>Art. 1. Kodeks niniejszy reguluje stosunki cywilnoprawne.</p>"
+        raise AssertionError(path)
+
+    def test_strict_blokuje_tekst_starszego_tj_i_stdout_jest_pusty(self):
+        out = io.StringIO()
+        with mock.patch.object(eli, "_get", side_effect=self._fake_get), \
+                mock.patch.object(sys, "argv", ["eli.py", "tekst", "DU", "2024", "1061", "--strict"]), \
+                contextlib.redirect_stdout(out):
+            with self.assertRaisesRegex(SystemExit, "nowszy tekst jednolity: Dz.U. 2026 poz. 795"):
+                eli.main()
+        self.assertEqual(out.getvalue(), "")
+
+    def test_domyslnie_tekst_starszego_tj_ma_ostrzezenie_o_nowszym(self):
+        out = io.StringIO()
+        with mock.patch.object(eli, "_get", side_effect=self._fake_get), \
+                mock.patch.object(sys, "argv", ["eli.py", "tekst", "DU", "2024", "1061"]), \
+                contextlib.redirect_stdout(out):
+            eli.main()
+        self.assertIn("NIEAKTUALNY tekst jednolity", out.getvalue())
+        self.assertIn("Dz.U. 2026 poz. 795", out.getvalue())
+        self.assertIn("tekst DU 2026 795", out.getvalue())
+        self.assertIn("Art. 1.", out.getvalue())
+
+    def test_najnowszy_tj_przechodzi_w_strict_bez_ostrzezenia(self):
+        out = io.StringIO()
+        with mock.patch.object(eli, "_get", side_effect=self._fake_get), \
+                mock.patch.object(sys, "argv", ["eli.py", "tekst", "DU", "2026", "795", "--strict"]), \
+                contextlib.redirect_stdout(out):
+            eli.main()
+        self.assertNotIn("NIEAKTUALNY", out.getvalue())
+        self.assertIn("Art. 1.", out.getvalue())
+
+    def test_awaria_kontroli_na_akcie_bazowym_strict_blokuje_a_domyslnie_ostrzega(self):
+        def fake(path, params=None, soft=False):
+            if path == "/acts/DU/1964/93/references":
+                raise eli.VerificationUnknown("timeout")
+            return self._fake_get(path, params, soft)
+        out = io.StringIO()
+        with mock.patch.object(eli, "_get", side_effect=fake), \
+                mock.patch.object(sys, "argv", ["eli.py", "tekst", "DU", "2024", "1061", "--strict"]), \
+                contextlib.redirect_stdout(out):
+            with self.assertRaises(SystemExit) as caught:
+                eli.main()
+        self.assertNotEqual(caught.exception.code, 0)
+        self.assertEqual(out.getvalue(), "")
+        out = io.StringIO()
+        with mock.patch.object(eli, "_get", side_effect=fake), \
+                mock.patch.object(sys, "argv", ["eli.py", "tekst", "DU", "2024", "1061"]), \
+                contextlib.redirect_stdout(out):
+            eli.main()
+        self.assertIn("nie udało się sprawdzić, czy istnieje nowszy tekst jednolity", out.getvalue())
+        self.assertIn("Art. 1.", out.getvalue())
 
 
 if __name__ == "__main__":

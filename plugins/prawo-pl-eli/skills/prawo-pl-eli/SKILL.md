@@ -50,15 +50,12 @@ Skrypt leży **obok tego pliku SKILL.md** (`<katalog skilla>/scripts/eli.py`) �
 Code: `${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-eli`). Uruchamiaj wyłącznie helper z bieżącego pakietu:
 
 ```
-# Podstaw dokładną bezwzględną ścieżkę bieżącego SKILL.md z lokalizatora skilla.
-SKILL_MD="/bezwzględna/ścieżka/do/bieżącego/SKILL.md"
-SKILL_DIR="${SKILL_MD%/SKILL.md}"
-if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
-  ELI="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-eli/scripts/eli.py"
-else
-  ELI="${SKILL_DIR}/scripts/eli.py"
-fi
-[ -f "$ELI" ] || { echo "BŁĄD: brak helpera bieżącego pakietu: $ELI" >&2; exit 1; }
+# Claude Code: przy ładowaniu skilla podstawia ${CLAUDE_PLUGIN_ROOT} (pełna ścieżka poniżej).
+ELI="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-eli/scripts/eli.py"
+# Codex / Claude Desktop / instalacja ręczna: katalog TEGO pliku SKILL.md (Claude Code podaje go
+# jako „Base directory for this skill”, Codex w liście skilli) — podstaw go zamiast <katalog skilla>.
+[ -f "$ELI" ] || ELI="<katalog skilla>/scripts/eli.py"
+[ -f "$ELI" ] || { echo "BŁĄD: brak helpera obok SKILL.md: $ELI" >&2; exit 1; }
 python3 "$ELI" <komenda> [...]
 ```
 
@@ -95,11 +92,15 @@ Sygnaturę można podać w wielu formach: `DU 2000 1037`, `DU/2024/18`, `"Dz.U. 
 - **odniesienia** — powiązania: nowelizacje, podstawa prawna, tekst jednolity, akty wykonawcze:
   `python3 scripts/eli.py odniesienia DU 2024 18`
 - każda komenda przyjmuje `--json` oraz `--strict` (blokuje wynik bez zweryfikowanej aktualności lub kompletności); obie flagi działają przed komendą i po niej.
+  Zero trafień / nierozpoznana odpowiedź API kończą się komunikatem i kodem wyjścia ≠ 0 — także z `--json`
+  (nie dostaniesz pustego JSON-a, który wyglądałby jak „sprawdzone, nic nie ma”).
 
 Narzędzie samo ostrzega: `tekst` na akcie, który ma tekst jednolity, każe cytować z najnowszego t.j.;
-na tekście jednolitym wypisuje „Nowelizacje po tekście jednolitym". Gdy `text.html` świeżego t.j. jest
-jeszcze puste w API, narzędzie automatycznie czyta poprzedni t.j. i każe nałożyć zmiany pomiędzy nimi.
-Nie ignoruj tych ostrzeżeń.
+na tekście jednolitym wypisuje „Nowelizacje po tekście jednolitym", a na STARSZYM t.j. (np. z pamięci)
+— „NIEAKTUALNY tekst jednolity, istnieje NOWSZY" (sprawdza to na akcie bazowym). Gdy `text.html`
+świeżego t.j. jest jeszcze puste w API, narzędzie automatycznie czyta poprzedni t.j. i każe nałożyć
+zmiany pomiędzy nimi. Nie ignoruj tych ostrzeżeń. Z `--strict` każda z tych sytuacji (i awaria kontroli)
+kończy się błędem zamiast ostrzeżenia — wtedy sięgnij po `tj` i aktualny t.j. albo `--pdf`.
 
 ### Akty bazowe głównych kodeksów (pomiń `szukaj`)
 

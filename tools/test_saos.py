@@ -279,6 +279,41 @@ class SaosVerificationContractTests(unittest.TestCase):
                 self.assertEqual(out.getvalue(), "")
 
 
+class TestT13StrictZasiegKomunikat(unittest.TestCase):
+    """Blokada zakresu jest deterministyczna — komunikat nie może sugerować ponowienia,
+    tylko jak zawęzić zakres (--do) albo gdzie szukać nowszych orzeczeń."""
+
+    def _blokada(self, argv):
+        out = io.StringIO()
+        with mock.patch.object(sys, "argv", ["saos.py", *argv, "--strict"]), \
+                mock.patch.object(saos, "_get") as get, contextlib.redirect_stdout(out):
+            with self.assertRaises(SystemExit) as caught:
+                saos.main()
+        get.assert_not_called()
+        self.assertEqual(out.getvalue(), "")
+        return str(caught.exception)
+
+    def test_bez_gornej_granicy_podpowiada_do(self):
+        msg = self._blokada(["szukaj", "--sad", "SN", "--przepis", "art. 415"])
+        self.assertIn("--do 2016-12-31", msg)
+        self.assertNotIn("ponownie", msg)
+
+    def test_zakres_od_po_koncu_zbioru_wskazuje_portal(self):
+        msg = self._blokada(["szukaj", "--sad", "TK", "--od", "2024-01-01"])
+        self.assertIn("zaczyna się w 2024 r.", msg)
+        self.assertIn("ipo.trybunal.gov.pl", msg)
+        self.assertNotIn("ponownie", msg)
+
+    def test_zakres_w_granicach_zbioru_przechodzi(self):
+        out = io.StringIO()
+        odp = {"items": [], "info": {"totalResults": 0}}
+        with mock.patch.object(sys, "argv", ["saos.py", "szukaj", "--sad", "KIO",
+                                             "--od", "2017-01-01", "--do", "2018-12-31", "--strict"]), \
+                mock.patch.object(saos, "_get", return_value=odp), contextlib.redirect_stdout(out):
+            saos.main()
+        self.assertIn("Znaleziono: 0", out.getvalue())
+
+
 class TestT10PrzekierowaniaHttps(unittest.TestCase):
     def test_host_tresci_jest_podnoszony_a_obcy_host_odrzucany(self):
         req = saos.urllib.request.Request("https://www.saos.org.pl/api/search/judgments")

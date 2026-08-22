@@ -40,15 +40,12 @@ to `~/.claude/skills/prawo-pl-edzienniki` (skill zainstalowany jako plugin leży
 w Claude Code: `${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-edzienniki`). Uruchamiaj wyłącznie helper z bieżącego pakietu:
 
 ```
-# Podstaw dokładną bezwzględną ścieżkę bieżącego SKILL.md z lokalizatora skilla.
-SKILL_MD="/bezwzględna/ścieżka/do/bieżącego/SKILL.md"
-SKILL_DIR="${SKILL_MD%/SKILL.md}"
-if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
-  EDZ="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-edzienniki/scripts/edzienniki.py"
-else
-  EDZ="${SKILL_DIR}/scripts/edzienniki.py"
-fi
-[ -f "$EDZ" ] || { echo "BŁĄD: brak helpera bieżącego pakietu: $EDZ" >&2; exit 1; }
+# Claude Code: przy ładowaniu skilla podstawia ${CLAUDE_PLUGIN_ROOT} (pełna ścieżka poniżej).
+EDZ="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-edzienniki/scripts/edzienniki.py"
+# Codex / Claude Desktop / instalacja ręczna: katalog TEGO pliku SKILL.md (Claude Code podaje go
+# jako „Base directory for this skill”, Codex w liście skilli) — podstaw go zamiast <katalog skilla>.
+[ -f "$EDZ" ] || EDZ="<katalog skilla>/scripts/edzienniki.py"
+[ -f "$EDZ" ] || { echo "BŁĄD: brak helpera obok SKILL.md: $EDZ" >&2; exit 1; }
 python3 "$EDZ" <komenda> [...]
 ```
 
@@ -77,7 +74,9 @@ Nie pobieraj helpera z sieci i nie szukaj go przez `find` po katalogach użytkow
   `python3 scripts/edzienniki.py akt DS 2026 3299`
 - **tekst** — treść aktu; `--fragment` wycina okna wokół frazy; `--pdf` zapisuje urzędowy PDF:
   `python3 scripts/edzienniki.py tekst DS 2026 3299 --fragment "§ 2"`
-- każda komenda przyjmuje `--json` (surowa odpowiedź API; działa przed komendą i po niej).
+- każda komenda przyjmuje `--json` oraz `--strict` (blokuje wynik bez zweryfikowanej kompletności); obie flagi działają przed komendą i po niej.
+  Zero trafień / nierozpoznana odpowiedź API kończą się komunikatem i kodem wyjścia ≠ 0 — także z `--json`
+  (nie dostaniesz pustego JSON-a, który wyglądałby jak „sprawdzone, nic nie ma”).
 
 Typowy przepływ: ustal województwo → `szukaj --woj <kod> "<gmina lub przedmiot>"` →
 `akt <woj> <rok> <poz>` → `tekst … --fragment` albo `--pdf` do dosłownego cytatu.

@@ -280,6 +280,39 @@ def _tj_acts(refs):
     return sorted(acts, key=_eli_rok_poz, reverse=True)
 
 
+def _akt_bazowy(refs):
+    """Akt BAZOWY z kategorii 'Tekst jednolity dla aktu' (tylko gdy akt sam jest t.j.), inaczej None."""
+    key = next((k for k in refs if k.lower().startswith("tekst jednolity dla aktu")), None)
+    if not key:
+        return None
+    items = refs[key] if isinstance(refs[key], list) else [refs[key]]
+    return next((r.get("act") for r in items if isinstance(r, dict) and isinstance(r.get("act"), dict)), None)
+
+
+def _nowszy_tj(path, refs):
+    """Tekst jednolity NOWSZY niż akt pod `path`, jeśli istnieje — inaczej None.
+
+    Akt bazowy ma listę swoich t.j. we własnych odniesieniach ('Inf. o tekście jednolitym').
+    Akt, który SAM jest t.j., ma w odniesieniach tylko wskazanie aktu bazowego — listę t.j.
+    trzeba pobrać z odniesień aktu bazowego (dodatkowe zapytanie; awaria → VerificationUnknown,
+    o reakcji decyduje wywołujący). Bez tego `tekst` na przestarzałym t.j. wyglądał jak aktualny.
+    """
+    m = re.match(r"^/acts/(?:DU|MP)/(\d+)/(\d+)$", path)
+    if not m:
+        return None
+    wlasne = (int(m.group(1)), int(m.group(2)))
+    tj = _tj_acts(refs)
+    if not tj:
+        base = _akt_bazowy(refs)
+        if not (base and base.get("ELI")):
+            return None
+        base_refs = _get(f"/acts/{base['ELI']}/references", soft=True)
+        tj = _tj_acts(base_refs) if isinstance(base_refs, dict) else []
+    if tj and _eli_rok_poz(tj[0]) > wlasne:
+        return tj[0]
+    return None
+
+
 def _ostrzezenia(refs):
     """Ostrzeżenia o aktualności (lista linii) na podstawie odniesień aktu."""
     out = []
@@ -424,13 +457,24 @@ def cmd_tekst(a):
                  "sprawdź nowelizacje i teksty jednolite ręcznie, zanim zacytujesz."]
     else:
         ostrz = _ostrzezenia(refs) if isinstance(refs, dict) else []
-        tj = _tj_acts(refs) if isinstance(refs, dict) else []
-        m = re.match(r"^/acts/(?:DU|MP)/(\d+)/(\d+)$", path)
-        nowszy_tj = tj and m and _eli_rok_poz(tj[0]) > (int(m.group(1)), int(m.group(2)))
-        if getattr(a, "strict", False) and nowszy_tj:
-            aktualny = tj[0].get("displayAddress") or tj[0].get("ELI", "")
-            sys.exit(f"BŁĄD: istnieje nowszy tekst jednolity: {aktualny}. "
-                     "Tryb strict blokuje starszą treść.")
+        # nowszy t.j. — zarówno dla aktu bazowego, jak i dla aktu, który SAM jest (starszym) t.j.
+        try:
+            nowszy = _nowszy_tj(path, refs) if isinstance(refs, dict) else None
+        except VerificationUnknown as e:
+            if getattr(a, "strict", False):
+                raise
+            nowszy = None
+            ostrz.append(f"UWAGA: nie udało się sprawdzić, czy istnieje nowszy tekst jednolity ({e}) — "
+                         f"zweryfikuj: tj {label}, zanim zacytujesz.")
+        if nowszy:
+            aktualny = nowszy.get("displayAddress") or nowszy.get("ELI", "")
+            if getattr(a, "strict", False):
+                sys.exit(f"BŁĄD: istnieje nowszy tekst jednolity: {aktualny}. "
+                         "Tryb strict blokuje starszą treść.")
+            if not _tj_acts(refs):  # akt bazowy ma już ostrzeżenie „cytuj z najnowszego" z _ostrzezenia()
+                sig = (nowszy.get("ELI") or "").replace("/", " ")
+                ostrz.insert(0, f"UWAGA: {label} to NIEAKTUALNY tekst jednolity — istnieje NOWSZY: "
+                                f"{aktualny}. Cytuj z niego: tekst {sig}")
     if a.pdf:
         # pobierz urzędowy PDF (preferuj tekst jednolity, typ 'U'/'T', inaczej oryginał 'O')
         meta = _expect_dict(_get(path), "metadane aktu")
@@ -588,28 +632,23 @@ def cmd_tj(a):
     # akt sam jest tekstem jednolitym: kategoria 'Tekst jednolity dla aktu' wskazuje akt BAZOWY
     base_key = next((k for k in d if k.lower().startswith("tekst jednolity dla aktu")), None)
     if base_key:
-        items = d[base_key] if isinstance(d[base_key], list) else [d[base_key]]
-        base = next((r.get("act") for r in items if isinstance(r, dict) and isinstance(r.get("act"), dict)), None)
+        base = _akt_bazowy(d)
         # sprawdź na akcie bazowym, czy nie ma już NOWSZEGO tekstu jednolitego
-        m = re.match(r"^/acts/(DU|MP)/(\d+)/(\d+)$", path)
         kontrola = None
-        if base and base.get("ELI") and m:
-            try:
-                base_refs = _get(f"/acts/{base['ELI']}/references", soft=True)
-            except VerificationUnknown as e:
+        try:
+            newer = _nowszy_tj(path, d)
+        except VerificationUnknown as e:
+            if getattr(a, "strict", False):
+                raise
+            kontrola = (f"UWAGA: nie udało się sprawdzić, czy istnieje nowszy tekst jednolity ({e}) — "
+                        "zweryfikuj ręcznie, zanim zacytujesz.")
+        else:
+            if newer:
+                aktualny = newer.get("displayAddress") or newer.get("ELI", "")
                 if getattr(a, "strict", False):
-                    raise
-                kontrola = (f"UWAGA: nie udało się sprawdzić, czy istnieje nowszy tekst jednolity ({e}) — "
-                            "zweryfikuj ręcznie, zanim zacytujesz.")
-            else:
-                newer = _tj_acts(base_refs) if isinstance(base_refs, dict) else []
-                if newer and _eli_rok_poz(newer[0]) > (int(m.group(2)), int(m.group(3))):
-                    if getattr(a, "strict", False):
-                        aktualny = newer[0].get("displayAddress") or newer[0].get("ELI", "")
-                        sys.exit(f"BŁĄD: istnieje nowszy tekst jednolity: {aktualny}. "
-                                 "Tryb strict blokuje starszy wynik.")
-                    kontrola = (f"UWAGA: istnieje NOWSZY tekst jednolity: "
-                                f"{newer[0].get('displayAddress') or newer[0].get('ELI','')} — cytuj z niego.")
+                    sys.exit(f"BŁĄD: istnieje nowszy tekst jednolity: {aktualny}. "
+                             "Tryb strict blokuje starszy wynik.")
+                kontrola = f"UWAGA: istnieje NOWSZY tekst jednolity: {aktualny} — cytuj z niego."
         if a.json:
             print(json.dumps(d, ensure_ascii=False, indent=2)); return
         print(f"{label} SAM JEST tekstem jednolitym" + (f" (dla: {base.get('displayAddress','')} — {base.get('title','')[:90]})" if base else "") + ".")

@@ -47,15 +47,12 @@ bez klucza API). Skrypt leży **obok tego pliku SKILL.md** — NIE zakładaj, ż
 `${CLAUDE_PLUGIN_ROOT}/skills/prawo-eu-eurlex`). Uruchamiaj wyłącznie helper z bieżącego pakietu:
 
 ```
-# Podstaw dokładną bezwzględną ścieżkę bieżącego SKILL.md z lokalizatora skilla.
-SKILL_MD="/bezwzględna/ścieżka/do/bieżącego/SKILL.md"
-SKILL_DIR="${SKILL_MD%/SKILL.md}"
-if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
-  EURLEX="${CLAUDE_PLUGIN_ROOT}/skills/prawo-eu-eurlex/scripts/eurlex.py"
-else
-  EURLEX="${SKILL_DIR}/scripts/eurlex.py"
-fi
-[ -f "$EURLEX" ] || { echo "BŁĄD: brak helpera bieżącego pakietu: $EURLEX" >&2; exit 1; }
+# Claude Code: przy ładowaniu skilla podstawia ${CLAUDE_PLUGIN_ROOT} (pełna ścieżka poniżej).
+EURLEX="${CLAUDE_PLUGIN_ROOT}/skills/prawo-eu-eurlex/scripts/eurlex.py"
+# Codex / Claude Desktop / instalacja ręczna: katalog TEGO pliku SKILL.md (Claude Code podaje go
+# jako „Base directory for this skill”, Codex w liście skilli) — podstaw go zamiast <katalog skilla>.
+[ -f "$EURLEX" ] || EURLEX="<katalog skilla>/scripts/eurlex.py"
+[ -f "$EURLEX" ] || { echo "BŁĄD: brak helpera obok SKILL.md: $EURLEX" >&2; exit 1; }
 python3 "$EURLEX" <komenda> [...]
 ```
 
@@ -89,6 +86,8 @@ wersje skonsolidowane `02016R0679-20160504`, sprostowania `32016R0679R(01)`, tra
 - **odniesienia** — nowelizacje, sprostowania, podstawa prawna:
   `python3 scripts/eurlex.py odniesienia 32016R0679`
 - każda komenda przyjmuje `--json` oraz `--strict` (blokuje wynik bez zweryfikowanej aktualności lub kompletności); obie flagi działają przed komendą i po niej.
+  Zero trafień / nierozpoznana odpowiedź API kończą się komunikatem i kodem wyjścia ≠ 0 — także z `--json`
+  (nie dostaniesz pustego JSON-a, który wyglądałby jak „sprawdzone, nic nie ma”).
 
 Narzędzie samo ostrzega: na akcie bazowym podpowiada najnowszą wersję skonsolidowaną; na wersji
 skonsolidowanej przypomina o jej dokumentacyjnym charakterze i o nowszych wersjach. Nie ignoruj

@@ -257,6 +257,46 @@ class EurlexVerificationContractTests(unittest.TestCase):
                 self.assertEqual(out.getvalue(), "")
 
 
+class TestT12StrictMetaAktuBazowego(unittest.TestCase):
+    """Metadane aktu bazowego nie są nieaktualne przez to, że istnieje konsolidacja — strict
+    blokuje tam tylko AWARIĘ kontroli; treść (tekst) aktu bazowego z konsolidacjami blokuje."""
+    WIERSZ = [{"type": {"value": "http://publications.europa.eu/resource/authority/resource-type/REG"},
+               "date": {"value": "2016-04-27"}, "inf": {"value": "2016-05-24"},
+               "title": {"value": "Rozporządzenie 2016/679"}}]
+
+    def test_meta_strict_z_konsolidacja_przechodzi_z_ostrzezeniem(self):
+        out = io.StringIO()
+        with mock.patch.object(eurlex, "_sparql", return_value=self.WIERSZ), \
+                mock.patch.object(eurlex, "_konsolidacje", return_value=["02016R0679-20160504"]), \
+                mock.patch.object(sys, "argv", ["eurlex.py", "meta", "32016R0679", "--strict"]), \
+                contextlib.redirect_stdout(out):
+            eurlex.main()
+        self.assertIn("Akt: CELEX 32016R0679", out.getvalue())
+        self.assertIn("użyj najnowszej: 02016R0679-20160504", out.getvalue())
+
+    def test_meta_strict_awaria_kontroli_blokuje_bez_stdout(self):
+        out = io.StringIO()
+        with mock.patch.object(eurlex, "_sparql", return_value=self.WIERSZ), \
+                mock.patch.object(eurlex, "_konsolidacje",
+                                  side_effect=eurlex.VerificationUnknown("timeout")), \
+                mock.patch.object(sys, "argv", ["eurlex.py", "meta", "32016R0679", "--strict"]), \
+                contextlib.redirect_stdout(out):
+            with self.assertRaises(SystemExit) as caught:
+                eurlex.main()
+        self.assertNotEqual(caught.exception.code, 0)
+        self.assertEqual(out.getvalue(), "")
+
+    def test_tekst_aktu_bazowego_z_konsolidacja_strict_blokuje_i_wskazuje_wersje(self):
+        out = io.StringIO()
+        with mock.patch.object(eurlex, "_http", return_value=(b"<p>Artykul 1.</p>", "text/html")), \
+                mock.patch.object(eurlex, "_konsolidacje", return_value=["02016R0679-20160504"]), \
+                mock.patch.object(sys, "argv", ["eurlex.py", "tekst", "32016R0679", "--strict"]), \
+                contextlib.redirect_stdout(out):
+            with self.assertRaisesRegex(SystemExit, "tekst 02016R0679-20160504"):
+                eurlex.main()
+        self.assertEqual(out.getvalue(), "")
+
+
 class TestT07WymusHttps(unittest.TestCase):
     """CELLAR nazywa zasoby przez http:// URI, ale pobierac mamy po https."""
 

@@ -243,12 +243,17 @@ SELECT DISTINCT ?celex WHERE {{
     return [c for c in (_v(b, "celex") for b in rows) if re.search(r"-\d{8}$", c)]
 
 
-def _ostrzezenia_konsolidacja(celex, strict=False):
+def _ostrzezenia_konsolidacja(celex, strict=False, tresc=True):
     """Ostrzeżenia o wersjach skonsolidowanych dla aktu/wersji (lista linii).
 
     To informacja POBOCZNA przy tekście/metadanych — awaria SPARQL nie może odebrać
     użytkownikowi treści głównej, więc UNKNOWN staje się tu głośnym ostrzeżeniem
-    (pełną weryfikację wymusza komenda skonsolidowany, gdzie to treść główna)."""
+    (pełną weryfikację wymusza komenda skonsolidowany, gdzie to treść główna).
+
+    strict: awaria kontroli → VerificationUnknown (wywołujący blokuje wynik).
+    tresc:  wynik komendy to TREŚĆ aktu — w strict wykryta nowsza wersja skonsolidowana
+            blokuje starszą treść. Metadane (daty, obowiązywanie, tytuł) aktu bazowego nie
+            są „nieaktualne" przez to, że istnieje konsolidacja — tam tylko ostrzegamy."""
     try:
         kons = _konsolidacje(celex)
     except VerificationUnknown as e:
@@ -257,18 +262,21 @@ def _ostrzezenia_konsolidacja(celex, strict=False):
         return [f"UWAGA: nie udało się zweryfikować, czy akt {celex} ma wersje skonsolidowane "
                 f"({e}) — sprawdź komendą: skonsolidowany {celex}, zanim zacytujesz."]
     out = []
+    blokuj = strict and tresc
     if celex.startswith("0"):
         out.append("UWAGA: wersja skonsolidowana ma charakter DOKUMENTACYJNY (nie jest autentyczna) — "
                    "do urzędowego cytatu wskaż akt bazowy + zmiany.")
         if kons and kons[0] > celex:
-            if strict:
+            if blokuj:
                 sys.exit(f"BŁĄD: istnieje nowsza wersja skonsolidowana: {kons[0]}. "
                          "Tryb strict blokuje starszą treść.")
             out.append(f"UWAGA: istnieje NOWSZA wersja skonsolidowana: {kons[0]} — używaj jej.")
     elif kons:
-        if strict:
-            sys.exit(f"BŁĄD: istnieje nowsza wersja skonsolidowana: {kons[0]}. "
-                     "Tryb strict blokuje treść aktu bazowego.")
+        if blokuj:
+            sys.exit(f"BŁĄD: akt ma wersje skonsolidowane — aktualny stan prawny to {kons[0]}. "
+                     f"Tryb strict blokuje treść aktu bazowego; do analizy: tekst {kons[0]} "
+                     "(wersja skonsolidowana jest dokumentacyjna — do urzędowego cytatu wskaż akt "
+                     "bazowy + zmiany; bez --strict tekst aktu bazowego jest dostępny).")
         out.append(f"UWAGA: akt ma wersje skonsolidowane — do analizy aktualnego stanu użyj najnowszej: "
                    f"{kons[0]} (pełna lista: skonsolidowany {celex}).")
     return out
@@ -331,10 +339,12 @@ SELECT ?type ?date ?inf ?eli ?eiv ?eov ?title WHERE {{
               ?exp cdm:expression_uses_language <{LANG_AUTH}{lang}> .
               ?exp cdm:expression_title ?title }}
 }}""")
-    strict = getattr(a, "strict", False)
-    ostrz = _ostrzezenia_konsolidacja(celex, True) if strict else None
     if not rows:
         sys.exit(f"Nie znaleziono aktu o CELEX {celex} w CELLAR.")
+    # metadane aktu bazowego nie są nieaktualne przez to, że istnieje konsolidacja (tresc=False):
+    # w strict blokuje tylko AWARIA kontroli; wykryta konsolidacja zostaje ostrzeżeniem
+    strict = getattr(a, "strict", False)
+    ostrz = _ostrzezenia_konsolidacja(celex, True, tresc=False) if strict else None
     if a.json:
         print(json.dumps(rows, ensure_ascii=False, indent=2)); return
     zb = {k: sorted({_v(b, k) for b in rows if _v(b, k)}) for k in

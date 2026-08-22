@@ -46,15 +46,12 @@ leży w katalogu pluginów; w Claude Code: `${CLAUDE_PLUGIN_ROOT}/skills/prawo-p
 Uruchamiaj wyłącznie helper z bieżącego pakietu:
 
 ```
-# Podstaw dokładną bezwzględną ścieżkę bieżącego SKILL.md z lokalizatora skilla.
-SKILL_MD="/bezwzględna/ścieżka/do/bieżącego/SKILL.md"
-SKILL_DIR="${SKILL_MD%/SKILL.md}"
-if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
-  REJ="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-rejestr-umow/scripts/rejestrumow.py"
-else
-  REJ="${SKILL_DIR}/scripts/rejestrumow.py"
-fi
-[ -f "$REJ" ] || { echo "BŁĄD: brak helpera bieżącego pakietu: $REJ" >&2; exit 1; }
+# Claude Code: przy ładowaniu skilla podstawia ${CLAUDE_PLUGIN_ROOT} (pełna ścieżka poniżej).
+REJ="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-rejestr-umow/scripts/rejestrumow.py"
+# Codex / Claude Desktop / instalacja ręczna: katalog TEGO pliku SKILL.md (Claude Code podaje go
+# jako „Base directory for this skill”, Codex w liście skilli) — podstaw go zamiast <katalog skilla>.
+[ -f "$REJ" ] || REJ="<katalog skilla>/scripts/rejestrumow.py"
+[ -f "$REJ" ] || { echo "BŁĄD: brak helpera obok SKILL.md: $REJ" >&2; exit 1; }
 python3 "$REJ" <komenda> [...]
 ```
 
@@ -84,7 +81,9 @@ jesteś w katalogu skilla.)
 - **slownik** — słowniki API: `python3 scripts/rejestrumow.py slownik rodzaje_zmian_umowy`
   (`kraje`, `strony_umowy`, `rodzaje_zmian_umowy`, `podstawy_wylaczenia_jawnosci`,
   `zakres_wylaczenia_jawnosci`).
-- każda komenda przyjmuje `--json` (surowa odpowiedź API; działa przed komendą i po niej).
+- każda komenda przyjmuje `--json` oraz `--strict` (blokuje wynik bez zweryfikowanej kompletności); obie flagi działają przed komendą i po niej.
+  Zero trafień / nierozpoznana odpowiedź API kończą się komunikatem i kodem wyjścia ≠ 0 — także z `--json`
+  (nie dostaniesz pustego JSON-a, który wyglądałby jak „sprawdzone, nic nie ma”).
 
 Typowy przepływ: `szukaj <filtry>` → wybierz idUmowy → `umowa <idUmowy>` → strony,
 kwoty, aneksy do odpowiedzi.

@@ -109,12 +109,20 @@ def _sprawdz_zasieg_strict(a, ct):
     """Blokuje zakres sięgający poza znany koniec zamkniętego zbioru SAOS."""
     if not getattr(a, "strict", False) or ct not in ZASIEG:
         return
-    ostatni_rok = ZASIEG[ct][0]
-    rok_do = int(a.do[:4]) if a.do and re.match(r"^\d{4}", a.do) else None
+    ostatni_rok, gdzie = ZASIEG[ct]
+    rok = lambda d: int(d[:4]) if d and re.match(r"^\d{4}", d) else None
+    rok_od, rok_do = rok(getattr(a, "od", None)), rok(a.do)
     if rok_do is None or rok_do > ostatni_rok:
-        raise VerificationUnknown(
-            f"zbiór {CT_PL.get(ct, ct)} kończy się na {ostatni_rok} r., "
-            "a żądany zakres wykracza poza znaną kompletność SAOS")
+        # blokada jest DETERMINISTYCZNA (znana granica zbioru), nie awarią transportu —
+        # komunikat nie może sugerować ponowienia, tylko jak zawęzić zakres albo gdzie szukać
+        if rok_od and rok_od > ostatni_rok:
+            zakres, rada = f"zaczyna się w {rok_od} r.", gdzie
+        else:
+            zakres = "nie ma górnej granicy" if rok_do is None else f"sięga {rok_do} r."
+            rada = f"zawęź zakres: --do {ostatni_rok}-12-31; {gdzie}"
+        sys.exit(f"BŁĄD: zbiór {CT_PL.get(ct, ct)} w SAOS kończy się na {ostatni_rok} r., a żądany zakres "
+                 f"{zakres} — tryb strict nie zwróci wyniku, którego kompletności nie da się "
+                 f"zweryfikować. {rada[0].upper() + rada[1:]}.")
 
 
 def _get(path, params=None, soft=False):

@@ -227,6 +227,23 @@ cd plugins/prawo-pl-uodo/skills/prawo-pl-uodo && python3 scripts/uodo.py <komend
 cd plugins/prawo-pl-rejestr-umow/skills/prawo-pl-rejestr-umow && python3 scripts/rejestrumow.py <komenda> [...]
 ```
 
+Dwie flagi globalne, w każdym silniku, działają przed komendą i po niej:
+
+- `--json` — surowa odpowiedź API / sparsowane dane do dalszego przetwarzania. Zero trafień i nierozpoznana
+  odpowiedź kończą się komunikatem z kodem wyjścia ≠ 0 **także z `--json`** — pusty JSON wyglądałby jak
+  „sprawdzone, nic nie ma", a to najgroźniejszy fałszywy negatyw w pracy prawnika.
+- `--strict` — tryb „do pisma procesowego": wynik, którego **aktualności lub kompletności** nie dało się
+  zweryfikować, nie jest drukowany z ostrzeżeniem, tylko odrzucany (kod wyjścia ≠ 0, pusty stdout).
+  Domyślny tryb (research) jest bez zmian — te same sytuacje dają głośne `UWAGA:`. Co blokuje strict:
+  awaria kontroli aktualności (ELI `/references`, SPARQL konsolidacji), starszy tekst jednolity, gdy
+  istnieje nowszy (ELI — także gdy podasz sygnaturę starego t.j.), treść aktu bazowego / starszej wersji,
+  gdy istnieje nowsza konsolidacja (EUR-Lex; metadane `meta` przechodzą), zakres dat poza znanym końcem
+  zbioru SN/TK/KIO (SAOS — bez żadnego żądania do sieci), treść pobrana bez weryfikacji TLS (CBOSA),
+  decyzja bez pełnej treści (UODO), pominięty rocznik (e-dzienniki), zbiór większy niż okno API (rejestr
+  umów). Wszystkie kontrole wykonują się PRZED emisją wyniku, również dla `--json`.
+  Strict nie zastępuje oceny prawnika: t.j. z późniejszymi nowelizacjami nadal przechodzi (z ostrzeżeniem
+  „Nowelizacje po tekście jednolitym"), bo nowszego t.j. po prostu nie ma.
+
 ### eli.py (prawo polskie)
 
 | Komenda | Opis | Przykład |
@@ -241,7 +258,7 @@ cd plugins/prawo-pl-rejestr-umow/skills/prawo-pl-rejestr-umow && python3 scripts
 Komendy `tekst` i `tj` same ostrzegają, gdy cytujesz z nieaktualnej wersji (istnieje nowszy tekst
 jednolity / są nowelizacje po t.j.).
 
-Każda komenda przyjmuje `--json` (surowa odpowiedź API). Sygnaturę można podać w wielu formach:
+Każda komenda przyjmuje `--json` i `--strict` (wyżej). Sygnaturę można podać w wielu formach:
 `DU 2000 1037`, `DU/2024/18`, `"Dz.U. 2024 poz. 18"`, `WDU20240000018`, albo `DU/2000/1037` (ELI).
 
 ### edzienniki.py (prawo miejscowe — dzienniki wojewódzkie)
@@ -276,7 +293,8 @@ rocznik i filtruje tytuły lokalnie.
 | `sygnatura` | szybkie odszukanie po numerze sprawy | `sygnatura III CSK 203/09` |
 
 `--sad`: `SN | TK | powszechne | admin | KIO`. SAOS to baza **wtórna** — `--sad admin` zwykle zwraca 0
-(orzecznictwo administracyjne: skill **prawo-pl-cbosa** niżej). Każda komenda przyjmuje `--json`.
+(orzecznictwo administracyjne: skill **prawo-pl-cbosa** niżej). Każda komenda przyjmuje `--json` i `--strict`
+(w strict `--sad SN/TK/KIO` wymaga `--do` w granicach zbioru, np. `--do 2016-12-31` dla SN).
 
 ### cbosa.py (orzecznictwo sądów administracyjnych — NSA/WSA)
 

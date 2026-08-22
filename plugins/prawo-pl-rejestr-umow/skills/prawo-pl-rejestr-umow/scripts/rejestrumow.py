@@ -21,6 +21,7 @@ Komendy:
   umowa <idUmowy>                                pełne szczegóły umowy (strony, adresy, zmiany)
   slownik <nazwa>                                słownik API (kraje, strony_umowy, …)
 Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
+           --strict  (blokuje wynik, gdy nie udało się zweryfikować jego kompletności)
 """
 import sys, json, re, time, argparse, urllib.request, urllib.parse, urllib.error
 
@@ -176,6 +177,16 @@ def _wiersz(it):
     print()
 
 
+def _sprawdz_okno_strict(a, d):
+    """Strict: zbiór trafień większy niż okno API jest NIEKOMPLETNY (części wyników nie da się
+    obejrzeć żadną stroną) — nie zwracamy go jako pełnego, tylko każemy zawęzić filtry."""
+    ile = d.get("totalMatchingElements") if isinstance(d, dict) else None
+    if getattr(a, "strict", False) and isinstance(ile, int) and ile > OKNO:
+        sys.exit(f"BŁĄD: {ile} pasujących umów, a API przegląda maks. {OKNO} na zapytanie — tryb strict "
+                 "nie zwróci niekompletnego zbioru. Zawęź filtrami: --od/--do, --pub-od/--pub-do, "
+                 "--woj, --wartosc-od (albo uruchom bez --strict, świadomie biorąc tylko okno).")
+
+
 def _lista(d, limit, strona):
     tresc = d.get("content") or []
     ile = d.get("totalMatchingElements", len(tresc))
@@ -196,6 +207,8 @@ def _lista(d, limit, strona):
 def cmd_najnowsze(a):
     a.limit = _limit(a.limit)
     d = _szukaj({}, a.limit, sort="publicationDateDesc")
+    if not isinstance(d, dict):
+        sys.exit("BŁĄD: API rejestru zwróciło nieoczekiwaną odpowiedź (lista umów).")
     if a.json:
         print(json.dumps(d, ensure_ascii=False, indent=2)); return
     print(f"Ostatnio opublikowane w Centralnym Rejestrze Umów "
@@ -218,6 +231,11 @@ def cmd_szukaj(a):
                  "Pełną listę bez filtra daje komenda 'najnowsze'.")
     a.limit = _limit(a.limit)
     d = _szukaj(body, a.limit, a.strona, a.sort)
+    if not isinstance(d, dict):
+        sys.exit("BŁĄD: API rejestru zwróciło nieoczekiwaną odpowiedź (wyniki wyszukiwania).")
+    _sprawdz_okno_strict(a, d)
+    if not d.get("content"):  # zweryfikowane zero — także z --json komunikat, nie pusty JSON
+        _lista(d, a.limit, a.strona)
     if a.json:
         print(json.dumps(d, ensure_ascii=False, indent=2)); return
     _lista(d, a.limit, a.strona)
@@ -314,6 +332,8 @@ def main():
                     "umowy jednostek sektora finansów publicznych zawierane od 1.07.2026.")
     ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     ap.add_argument("--json", action="store_true", help="zrzut surowego JSON")
+    ap.add_argument("--strict", action="store_true",
+                    help="zakończ błędem, gdy nie udało się zweryfikować kompletności wyniku")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     n = sub.add_parser("najnowsze")
@@ -357,11 +377,13 @@ def main():
     sl.add_argument("nazwa", help=f"nazwa słownika: {', '.join(SLOWNIKI)}")
     sl.set_defaults(func=cmd_slownik)
 
-    # --json działa też PO komendzie (modele piszą flagi właśnie tam); SUPPRESS sprawia,
+    # Flagi globalne działają też PO komendzie (modele piszą je właśnie tam); SUPPRESS sprawia,
     # że brak flagi w subparserze nie kasuje wartości podanej przed komendą
     for p in sub.choices.values():
         p.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
                        help="zrzut surowego JSON")
+        p.add_argument("--strict", action="store_true", default=argparse.SUPPRESS,
+                       help="zakończ błędem, gdy nie udało się zweryfikować kompletności wyniku")
 
     a = ap.parse_args()
     a.func(a)
