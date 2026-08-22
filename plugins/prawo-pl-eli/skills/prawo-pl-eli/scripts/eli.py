@@ -22,6 +22,7 @@ from html.parser import HTMLParser
 
 __version__ = "1.6.6"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://api.sejm.gov.pl/eli"
+CONTENT_HOSTS = ("api.sejm.gov.pl",)
 
 
 class VerificationUnknown(RuntimeError):
@@ -31,6 +32,30 @@ class VerificationUnknown(RuntimeError):
 def _nie_zweryfikowano(co, blad):
     sys.exit(f"BŁĄD: nie udało się zweryfikować {co} ({blad}). "
              "Spróbuj ponownie za chwilę.")
+
+
+def _wymus_https(url):
+    parsed = urllib.parse.urlsplit(url)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    dozwolony = any(host == allowed or host.endswith("." + allowed)
+                    for allowed in CONTENT_HOSTS)
+    if parsed.scheme.lower() == "http" and dozwolony:
+        return "https" + url[len(parsed.scheme):]
+    return url
+
+
+class _PrzekierowaniaHttps(urllib.request.HTTPRedirectHandler):
+    """Podnosi HTTP na hostach treści ELI, a obce cele HTTP odrzuca."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        bezpieczny_url = _wymus_https(newurl)
+        if urllib.parse.urlsplit(bezpieczny_url).scheme.lower() == "http":
+            raise urllib.error.URLError(
+                f"odrzucono przekierowanie treści na niezaufany host po HTTP: {newurl}")
+        return super().redirect_request(req, fp, code, msg, headers, bezpieczny_url)
+
+
+_opener = urllib.request.build_opener(_PrzekierowaniaHttps())
 
 
 def _get(path, params=None, soft=False):
@@ -50,7 +75,7 @@ def _get(path, params=None, soft=False):
     raw, ctype = None, ""
     for attempt in (1, 2):
         try:
-            with urllib.request.urlopen(req, timeout=30) as r:
+            with _opener.open(req, timeout=30) as r:
                 ctype = r.headers.get("Content-Type", "")
                 raw = r.read().decode("utf-8", "replace")
             break
@@ -85,7 +110,7 @@ def _get(path, params=None, soft=False):
 def _get_bytes(url):
     req = urllib.request.Request(url, headers={"User-Agent": f"eli-skill/{__version__}"})
     try:
-        with urllib.request.urlopen(req, timeout=60) as r:
+        with _opener.open(req, timeout=60) as r:
             return r.read()
     except Exception as e:
         sys.exit(f"BŁĄD pobierania: {url} ({e})")
@@ -344,9 +369,9 @@ def cmd_szukaj(a):
     if a.obowiazujace:
         params["inForce"] = 1
     d = _get("/acts/search", params)
+    d = _expect_dict(d, "wyniki wyszukiwania")
     if a.json:
         print(json.dumps(d, ensure_ascii=False, indent=2)); return
-    d = _expect_dict(d, "wyniki wyszukiwania")
     items = d.get("items", [])
     print(f"Znaleziono: {d.get('count', '?')} (pokazuję {len(items)}, offset {a.offset})\n")
     for it in items:
@@ -360,9 +385,9 @@ def cmd_szukaj(a):
 def cmd_meta(a):
     path, label = act_path(a.sygnatura)
     d = _get(path)
+    d = _expect_dict(d, "metadane aktu")
     if a.json:
         print(json.dumps(d, ensure_ascii=False, indent=2)); return
-    d = _expect_dict(d, "metadane aktu")
     print(f"Akt: {label}")
     print(f"  Tytuł:   {d.get('title','').strip()}")
     print(f"  Adres:   {d.get('displayAddress','')}")
@@ -399,6 +424,13 @@ def cmd_tekst(a):
                  "sprawdź nowelizacje i teksty jednolite ręcznie, zanim zacytujesz."]
     else:
         ostrz = _ostrzezenia(refs) if isinstance(refs, dict) else []
+        tj = _tj_acts(refs) if isinstance(refs, dict) else []
+        m = re.match(r"^/acts/(?:DU|MP)/(\d+)/(\d+)$", path)
+        nowszy_tj = tj and m and _eli_rok_poz(tj[0]) > (int(m.group(1)), int(m.group(2)))
+        if getattr(a, "strict", False) and nowszy_tj:
+            aktualny = tj[0].get("displayAddress") or tj[0].get("ELI", "")
+            sys.exit(f"BŁĄD: istnieje nowszy tekst jednolity: {aktualny}. "
+                     "Tryb strict blokuje starszą treść.")
     if a.pdf:
         # pobierz urzędowy PDF (preferuj tekst jednolity, typ 'U'/'T', inaczej oryginał 'O')
         meta = _expect_dict(_get(path), "metadane aktu")
@@ -475,11 +507,11 @@ def cmd_tekst(a):
 def cmd_struktura(a):
     path, label = act_path(a.sygnatura)
     d = _get(path + "/struct")
-    if a.json:
-        print(json.dumps(d, ensure_ascii=False, indent=2)); return
     nodes = d if isinstance(d, list) else [d] if isinstance(d, dict) else None
     if not nodes:
         sys.exit("Brak struktury dla tego aktu (API udostępnia /struct głównie dla tekstów jednolitych i starszych aktów).")
+    if a.json:
+        print(json.dumps(d, ensure_ascii=False, indent=2)); return
     filtr = (a.filtr or "").lower()
     poziom = a.poziom if a.poziom is not None else (None if filtr else 3)
     print(f"Struktura: {label}  (frazę z 'title' podaj w: tekst {label} --fragment \"...\")\n")
@@ -522,11 +554,10 @@ def _fmt_ref(ref):
 def cmd_odniesienia(a):
     path, label = act_path(a.sygnatura)
     d = _get(path + "/references")
+    d = _expect_dict(d, "odniesienia aktu")
     if a.json:
         print(json.dumps(d, ensure_ascii=False, indent=2)); return
     print(f"Odniesienia dla: {label}\n")
-    if not isinstance(d, dict):
-        print(d); return
     for kind, lst in d.items():
         items = lst if isinstance(lst, list) else [lst]
         print(f"## {kind}  ({len(items)})")
@@ -538,12 +569,12 @@ def cmd_odniesienia(a):
 def cmd_tj(a):
     path, label = act_path(a.sygnatura)
     d = _get(path + "/references")
-    if a.json:
-        print(json.dumps(d, ensure_ascii=False, indent=2)); return
     d = _expect_dict(d, "odniesienia aktu")
     # akt bazowy: kategoria 'Inf. o tekście jednolitym' listuje obwieszczenia z t.j.
     tj = _tj_acts(d)
     if tj:
+        if a.json:
+            print(json.dumps(d, ensure_ascii=False, indent=2)); return
         print(f"TEKSTY JEDNOLITE dla {label} (najnowszy pierwszy):")
         for i, act in enumerate(tj):
             marker = "  ← AKTUALNY" if i == 0 else ""
@@ -573,14 +604,22 @@ def cmd_tj(a):
             else:
                 newer = _tj_acts(base_refs) if isinstance(base_refs, dict) else []
                 if newer and _eli_rok_poz(newer[0]) > (int(m.group(2)), int(m.group(3))):
+                    if getattr(a, "strict", False):
+                        aktualny = newer[0].get("displayAddress") or newer[0].get("ELI", "")
+                        sys.exit(f"BŁĄD: istnieje nowszy tekst jednolity: {aktualny}. "
+                                 "Tryb strict blokuje starszy wynik.")
                     kontrola = (f"UWAGA: istnieje NOWSZY tekst jednolity: "
                                 f"{newer[0].get('displayAddress') or newer[0].get('ELI','')} — cytuj z niego.")
+        if a.json:
+            print(json.dumps(d, ensure_ascii=False, indent=2)); return
         print(f"{label} SAM JEST tekstem jednolitym" + (f" (dla: {base.get('displayAddress','')} — {base.get('title','')[:90]})" if base else "") + ".")
         for w in _ostrzezenia(d):
             print(w)
         if kontrola:
             print(kontrola)
         return
+    if a.json:
+        print(json.dumps(d, ensure_ascii=False, indent=2)); return
     print(f"Dla {label} brak tekstu jednolitego w odniesieniach — akt może nie mieć t.j. (cytuj z aktu, "
           f"ale sprawdź „Akty zmieniające\" w: odniesienia {label}).")
 

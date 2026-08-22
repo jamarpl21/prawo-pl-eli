@@ -25,10 +25,32 @@ import urllib.request, urllib.parse, urllib.error, http.cookiejar
 
 __version__ = "1.6.6"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://orzeczenia.nsa.gov.pl"
+CONTENT_HOSTS = ("orzeczenia.nsa.gov.pl",)
 
 
 class VerificationUnknown(RuntimeError):
     """Zapytanie nie pozwoliło ustalić, czy dane istnieją."""
+
+
+def _wymus_https(url):
+    parsed = urllib.parse.urlsplit(url)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    dozwolony = any(host == allowed or host.endswith("." + allowed)
+                    for allowed in CONTENT_HOSTS)
+    if parsed.scheme.lower() == "http" and dozwolony:
+        return "https" + url[len(parsed.scheme):]
+    return url
+
+
+class _PrzekierowaniaHttps(urllib.request.HTTPRedirectHandler):
+    """Podnosi HTTP na hostach treści CBOSA, a obce cele HTTP odrzuca."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        bezpieczny_url = _wymus_https(newurl)
+        if urllib.parse.urlsplit(bezpieczny_url).scheme.lower() == "http":
+            raise urllib.error.URLError(
+                f"odrzucono przekierowanie treści na niezaufany host po HTTP: {newurl}")
+        return super().redirect_request(req, fp, code, msg, headers, bezpieczny_url)
 
 # Miasta WSA (klucz bez diakrytyków) → końcówka pełnej nazwy z formularza CBOSA.
 # Wartości pola 'sad' to PEŁNE nazwy sądów — wartość spoza listy CBOSA po cichu zwraca 0 wyników.
@@ -129,6 +151,12 @@ def _z_uwaga_o_transporcie(komunikat):
     return f"{uwaga}\n{komunikat}" if uwaga else komunikat
 
 
+def _sprawdz_transport_strict(a):
+    if getattr(a, "strict", False) and not _transport_tls_verified:
+        raise VerificationUnknown(
+            "tryb strict odrzuca wynik pobrany bez weryfikacji certyfikatu TLS")
+
+
 def _fetch(path, data=None):
     """GET/POST strony CBOSA (HTML). Throttling >=0,5 s; ponowienia z rosnącym odstępem.
     Zwraca pobrany HTML jako FOUND; UNKNOWN przekazuje przez VerificationUnknown.
@@ -163,6 +191,7 @@ def _fetch(path, data=None):
                 time.sleep(czekaj)
             _ostatnie[0] = time.time()
             opener = urllib.request.build_opener(
+                _PrzekierowaniaHttps(),
                 urllib.request.HTTPSHandler(context=ssl_ctx),
                 urllib.request.HTTPCookieProcessor(_jar))
             req = urllib.request.Request(url, data=body, headers=headers)
@@ -375,19 +404,20 @@ def cmd_szukaj(a):
         sys.exit("Podaj kryterium: frazę albo --sad / --sygnatura / --rodzaj / --symbol / --sedzia / zakres dat.")
     strona = max(1, a.strona)
     total, pozycje, komunikat = _szukaj(_formularz(a), strona)
+    _sprawdz_transport_strict(a)
     if total is None and not pozycje:
         if komunikat:  # formularz odrzucił zapytanie (np. zła data) — to błąd wejścia, nie serwera
             sys.exit(f"CBOSA odrzuciło zapytanie: {komunikat}\nPopraw parametry i ponów "
                      "(daty w formacie RRRR-MM-DD).")
+    if total == 0 or not pozycje:
+        sys.exit(_z_uwaga_o_transporcie(
+            "Brak wyników (zweryfikowane zero). Uwaga: wyszukiwarka CBOSA wymaga dokładnych "
+            "wartości — spróbuj prostszej frazy, bez --sad, albo sprawdź sygnaturę/symbol."))
     if a.json:
         print(json.dumps(_dane_z_transportem(
                          {"total": total, "strona": strona, "komunikat": komunikat,
                           "wyniki": pozycje}),
                          ensure_ascii=False, indent=2)); return
-    if total == 0 or not pozycje:
-        sys.exit(_z_uwaga_o_transporcie(
-            "Brak wyników (zweryfikowane zero). Uwaga: wyszukiwarka CBOSA wymaga dokładnych "
-            "wartości — spróbuj prostszej frazy, bez --sad, albo sprawdź sygnaturę/symbol."))
     _drukuj_uwage_o_transporcie()
     _drukuj_liste(total, pozycje, strona)
 
@@ -397,13 +427,14 @@ def cmd_orzeczenie(a):
     if not re.fullmatch(r"[A-F0-9]{6,}", doc_id):
         sys.exit(f"Nieprawidłowy doc_id: {a.doc_id!r} (identyfikator ze strony wyników, np. 8889489BE0).")
     d = _orzeczenie(_fetch(f"/doc/{doc_id}"), doc_id)
-    if a.json:
-        print(json.dumps(_dane_z_transportem(d), ensure_ascii=False, indent=2)); return
+    _sprawdz_transport_strict(a)
     if not d.get("tytul") and not d.get("metadane"):
         # strona pobrana, ale nierozpoznana (przebudowa HTML? strona błędu z HTTP 200?) —
-        # UNKNOWN z podpowiedzią; częściowy parse obejrzysz przez --json
+        # UNKNOWN z podpowiedzią; także --json nie może emitować pozornie poprawnego wyniku
         raise VerificationUnknown(f"nie udało się rozpoznać strony orzeczenia {doc_id} — "
                                   f"sprawdź w przeglądarce: {d['url']}")
+    if a.json:
+        print(json.dumps(_dane_z_transportem(d), ensure_ascii=False, indent=2)); return
     _drukuj_uwage_o_transporcie()
     print(f"# {d.get('tytul', doc_id)}   [{doc_id}]")
     for k in ("Data orzeczenia", "Sąd", "Sędziowie", "Symbol z opisem", "Hasła tematyczne",
@@ -445,19 +476,20 @@ def cmd_sygnatura(a):
             "sygnatura": sig, "sad": "dowolny", "rodzaj": "dowolny", "symbole": "",
             "odDaty": "", "doDaty": "", "sedziowie": "", "funkcja": "", "submit": "Szukaj"}
     total, pozycje, komunikat = _szukaj(form)
+    _sprawdz_transport_strict(a)
     if total is None and not pozycje:
         if komunikat:
             sys.exit(f"CBOSA odrzuciło zapytanie: {komunikat}")
-    if a.json:
-        print(json.dumps(_dane_z_transportem(
-                         {"total": total, "komunikat": komunikat, "wyniki": pozycje}),
-                         ensure_ascii=False, indent=2)); return
     glowne = [p for p in pozycje if not p["powiazane"]]
     if not glowne:
         sys.exit(_z_uwaga_o_transporcie(
             f"Nie znaleziono orzeczenia o sygnaturze {sig!r} w CBOSA.\n"
             "Sygnatury sądów administracyjnych mają formę np. \"II FSK 2870/18\" (NSA) "
             "albo \"I SA/Bk 226/18\" (WSA). SN/TK/sądy powszechne/KIO → skill prawo-pl-saos."))
+    if a.json:
+        print(json.dumps(_dane_z_transportem(
+                         {"total": total, "komunikat": komunikat, "wyniki": pozycje}),
+                         ensure_ascii=False, indent=2)); return
     _drukuj_uwage_o_transporcie()
     print(f"Sygnatura {sig!r}: dopasowań {total}\n")
     for p in pozycje:

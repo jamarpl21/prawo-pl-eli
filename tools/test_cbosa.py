@@ -379,6 +379,57 @@ class CbosaVerificationContractTests(unittest.TestCase):
             with self.assertRaises(cbosa.VerificationUnknown):
                 cbosa._fetch("/cbo/search")
 
+    def test_t11_strict_blokuje_niezweryfikowany_transport_i_stdout_jest_pusty(self):
+        def fake_fetch(path, data=None):
+            cbosa._transport_tls_verified = False
+            return TestOrzeczenie.HTML
+
+        out = io.StringIO()
+        with mock.patch.object(cbosa, "_fetch", side_effect=fake_fetch), \
+                mock.patch.object(sys, "argv", ["cbosa.py", "orzeczenie", "8889489BE0", "--strict"]), \
+                redirect_stdout(out):
+            with self.assertRaises(SystemExit) as caught:
+                cbosa.main()
+        self.assertNotEqual(caught.exception.code, 0)
+        self.assertEqual(out.getvalue(), "")
+
+    def test_t12_json_strict_nie_emituje_wyniku_gdy_kontrola_nie_przeszla(self):
+        out = io.StringIO()
+        with mock.patch.object(cbosa, "_szukaj", side_effect=cbosa.VerificationUnknown("timeout")), \
+                mock.patch.object(sys, "argv", ["cbosa.py", "szukaj", "RODO", "--json", "--strict"]), \
+                redirect_stdout(out):
+            with self.assertRaises(SystemExit):
+                cbosa.main()
+        self.assertEqual(out.getvalue(), "")
+
+        out = io.StringIO()
+        with mock.patch.object(cbosa, "_fetch", return_value="<html><body>Błąd</body></html>"), \
+                mock.patch.object(sys, "argv", ["cbosa.py", "orzeczenie", "DEADBEEF", "--json", "--strict"]), \
+                redirect_stdout(out):
+            with self.assertRaises(SystemExit):
+                cbosa.main()
+        self.assertEqual(out.getvalue(), "")
+
+        out = io.StringIO()
+        with mock.patch.object(cbosa, "_szukaj", return_value=(0, [], "Nie znaleziono")), \
+                mock.patch.object(sys, "argv", ["cbosa.py", "sygnatura", "II", "FSK", "1/24",
+                                                       "--json", "--strict"]), \
+                redirect_stdout(out):
+            with self.assertRaises(SystemExit):
+                cbosa.main()
+        self.assertEqual(out.getvalue(), "")
+
+
+class TestT13PrzekierowaniaHttps(unittest.TestCase):
+    def test_host_tresci_jest_podnoszony_a_obcy_host_odrzucany(self):
+        req = cbosa.urllib.request.Request("https://orzeczenia.nsa.gov.pl/doc/8889489BE0")
+        handler = cbosa._PrzekierowaniaHttps()
+        nowy = handler.redirect_request(
+            req, None, 302, "Found", {}, "http://orzeczenia.nsa.gov.pl/doc/8889489BE0")
+        self.assertEqual(nowy.full_url, "https://orzeczenia.nsa.gov.pl/doc/8889489BE0")
+        with self.assertRaisesRegex(urllib.error.URLError, "niezaufany host"):
+            handler.redirect_request(req, None, 302, "Found", {}, "http://example.test/doc/1")
+
 
 class TestZgodaNaObnizenieTls(unittest.TestCase):
     """Downgrade TLS wymaga jawnej zgody: tresc CBOSA trafia do cytatow w pismach."""
@@ -490,7 +541,7 @@ class TestZgodaNaObnizenieTls(unittest.TestCase):
             return self._Odpowiedz(body)
 
         proby, transport = self._transport(zachowanie)
-        args = mock.Mock(doc_id="8889489BE0", json=True, fragment=None)
+        args = mock.Mock(doc_id="8889489BE0", json=True, strict=False, fragment=None)
         stdout = io.StringIO()
         with mock.patch.dict(os.environ, {"CBOSA_INSECURE_TLS": "1"}, clear=True), \
                 transport, mock.patch.object(cbosa.time, "sleep"), \
@@ -502,7 +553,7 @@ class TestZgodaNaObnizenieTls(unittest.TestCase):
 
     def test_tekst_ma_adnotacje_przy_tresci(self):
         cbosa._transport_tls_verified = False
-        args = mock.Mock(doc_id="8889489BE0", json=False, fragment=None)
+        args = mock.Mock(doc_id="8889489BE0", json=False, strict=False, fragment=None)
         stdout = io.StringIO()
         with mock.patch.object(cbosa, "_fetch", return_value=TestOrzeczenie.HTML), \
                 redirect_stdout(stdout):

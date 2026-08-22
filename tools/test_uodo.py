@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Offline unit tests for uodo.py pure functions (no network). Run: python3 tools/test_uodo.py"""
+import contextlib
+import io
 import sys
 import importlib.util
 import pathlib
 import unittest
+import urllib.error
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 _spec = importlib.util.spec_from_file_location(
@@ -120,6 +124,66 @@ class TestFlagaJson(unittest.TestCase):
 
     def test_bez_strict(self):
         self.assertFalse(self._parsuj(self.ARGV)["strict"])
+
+
+class UodoStrictContractTests(unittest.TestCase):
+    META = {"refname": "DKN.1.1.2025", "title": {"pl": "Przedmiot"}}
+
+    def test_t14_strict_blokuje_brak_pelnej_tresci_i_stdout_jest_pusty(self):
+        out = io.StringIO()
+        with mock.patch.object(uodo, "_get", side_effect=[dict(self.META), ""]), \
+                mock.patch.object(sys, "argv", ["uodo.py", "decyzja", "DKN.1.1.2025", "--strict"]), \
+                contextlib.redirect_stdout(out):
+            with self.assertRaises(SystemExit) as caught:
+                uodo.main()
+        self.assertNotEqual(caught.exception.code, 0)
+        self.assertEqual(out.getvalue(), "")
+
+    def test_awaria_pobrania_tresci_nie_zostawia_czesciowego_stdout(self):
+        out = io.StringIO()
+        with mock.patch.object(uodo, "_get", side_effect=[dict(self.META), SystemExit("awaria body.txt")]), \
+                mock.patch.object(sys, "argv", ["uodo.py", "decyzja", "DKN.1.1.2025"]), \
+                contextlib.redirect_stdout(out):
+            with self.assertRaises(SystemExit):
+                uodo.main()
+        self.assertEqual(out.getvalue(), "")
+
+    def test_t15_json_strict_nie_emituje_wyniku_gdy_kontrola_nie_przeszla(self):
+        out = io.StringIO()
+        with mock.patch.object(uodo, "_szukaj", return_value={"error": "maintenance"}), \
+                mock.patch.object(sys, "argv", ["uodo.py", "najnowsze", "--json", "--strict"]), \
+                contextlib.redirect_stdout(out):
+            with self.assertRaises(SystemExit):
+                uodo.main()
+        self.assertEqual(out.getvalue(), "")
+
+        out = io.StringIO()
+        with mock.patch.object(uodo, "_szukaj", return_value={"error": "maintenance"}), \
+                mock.patch.object(sys, "argv", ["uodo.py", "szukaj", "biometr", "--json", "--strict"]), \
+                contextlib.redirect_stdout(out):
+            with self.assertRaises(SystemExit):
+                uodo.main()
+        self.assertEqual(out.getvalue(), "")
+
+        out = io.StringIO()
+        with mock.patch.object(uodo, "_get", side_effect=[dict(self.META), SystemExit("awaria body.txt")]), \
+                mock.patch.object(sys, "argv", ["uodo.py", "decyzja", "DKN.1.1.2025",
+                                                       "--json", "--strict"]), \
+                contextlib.redirect_stdout(out):
+            with self.assertRaises(SystemExit):
+                uodo.main()
+        self.assertEqual(out.getvalue(), "")
+
+
+class TestT16PrzekierowaniaHttps(unittest.TestCase):
+    def test_host_tresci_jest_podnoszony_a_obcy_host_odrzucany(self):
+        req = uodo.urllib.request.Request("https://orzeczenia.uodo.gov.pl/api/documents/public")
+        handler = uodo._PrzekierowaniaHttps()
+        nowy = handler.redirect_request(
+            req, None, 302, "Found", {}, "http://orzeczenia.uodo.gov.pl/api/body.txt")
+        self.assertEqual(nowy.full_url, "https://orzeczenia.uodo.gov.pl/api/body.txt")
+        with self.assertRaisesRegex(urllib.error.URLError, "niezaufany host"):
+            handler.redirect_request(req, None, 302, "Found", {}, "http://example.test/body.txt")
 
 
 if __name__ == "__main__":

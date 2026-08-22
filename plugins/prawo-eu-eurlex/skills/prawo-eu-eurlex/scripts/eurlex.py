@@ -261,8 +261,14 @@ def _ostrzezenia_konsolidacja(celex, strict=False):
         out.append("UWAGA: wersja skonsolidowana ma charakter DOKUMENTACYJNY (nie jest autentyczna) — "
                    "do urzędowego cytatu wskaż akt bazowy + zmiany.")
         if kons and kons[0] > celex:
+            if strict:
+                sys.exit(f"BŁĄD: istnieje nowsza wersja skonsolidowana: {kons[0]}. "
+                         "Tryb strict blokuje starszą treść.")
             out.append(f"UWAGA: istnieje NOWSZA wersja skonsolidowana: {kons[0]} — używaj jej.")
     elif kons:
+        if strict:
+            sys.exit(f"BŁĄD: istnieje nowsza wersja skonsolidowana: {kons[0]}. "
+                     "Tryb strict blokuje treść aktu bazowego.")
         out.append(f"UWAGA: akt ma wersje skonsolidowane — do analizy aktualnego stanu użyj najnowszej: "
                    f"{kons[0]} (pełna lista: skonsolidowany {celex}).")
     return out
@@ -327,10 +333,10 @@ SELECT ?type ?date ?inf ?eli ?eiv ?eov ?title WHERE {{
 }}""")
     strict = getattr(a, "strict", False)
     ostrz = _ostrzezenia_konsolidacja(celex, True) if strict else None
-    if a.json:
-        print(json.dumps(rows, ensure_ascii=False, indent=2)); return
     if not rows:
         sys.exit(f"Nie znaleziono aktu o CELEX {celex} w CELLAR.")
+    if a.json:
+        print(json.dumps(rows, ensure_ascii=False, indent=2)); return
     zb = {k: sorted({_v(b, k) for b in rows if _v(b, k)}) for k in
           ("type", "date", "inf", "eli", "eiv", "eov", "title")}
     print(f"Akt: CELEX {celex}")

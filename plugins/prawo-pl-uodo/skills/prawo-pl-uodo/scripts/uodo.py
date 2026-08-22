@@ -22,7 +22,32 @@ import sys, json, re, time, argparse, urllib.request, urllib.parse, urllib.error
 
 __version__ = "1.6.6"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://orzeczenia.uodo.gov.pl/api"
+CONTENT_HOSTS = ("orzeczenia.uodo.gov.pl",)
 POLA = "id,refid,refname,title,dates,kind"  # domyślne pola listy wyników
+
+
+def _wymus_https(url):
+    parsed = urllib.parse.urlsplit(url)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    dozwolony = any(host == allowed or host.endswith("." + allowed)
+                    for allowed in CONTENT_HOSTS)
+    if parsed.scheme.lower() == "http" and dozwolony:
+        return "https" + url[len(parsed.scheme):]
+    return url
+
+
+class _PrzekierowaniaHttps(urllib.request.HTTPRedirectHandler):
+    """Podnosi HTTP na hostach treści UODO, a obce cele HTTP odrzuca."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        bezpieczny_url = _wymus_https(newurl)
+        if urllib.parse.urlsplit(bezpieczny_url).scheme.lower() == "http":
+            raise urllib.error.URLError(
+                f"odrzucono przekierowanie treści na niezaufany host po HTTP: {newurl}")
+        return super().redirect_request(req, fp, code, msg, headers, bezpieczny_url)
+
+
+_opener = urllib.request.build_opener(_PrzekierowaniaHttps())
 
 
 def _get(path, params=None, raw=False):
@@ -37,7 +62,7 @@ def _get(path, params=None, raw=False):
         "Accept": "text/plain" if raw else "application/json"})
     for attempt in (1, 2):
         try:
-            with urllib.request.urlopen(req, timeout=40) as r:
+            with _opener.open(req, timeout=40) as r:
                 tresc = r.read().decode("utf-8", "replace")
             break
         except urllib.error.HTTPError as e:
@@ -69,6 +94,18 @@ def _pl(v):
     if isinstance(v, dict):
         return v.get("pl") or next(iter(v.values()), "")
     return v or ""
+
+
+def _expect_list(d, what):
+    if not isinstance(d, list):
+        sys.exit(f"BŁĄD: API UODO zwróciło nieoczekiwaną odpowiedź ({what}).")
+    return d
+
+
+def _expect_dict(d, what):
+    if not isinstance(d, dict):
+        sys.exit(f"BŁĄD: API UODO zwróciło nieoczekiwaną odpowiedź ({what}).")
+    return d
 
 
 def _daty(item):
@@ -121,11 +158,11 @@ def _wiersz(item):
 
 
 def cmd_najnowsze(a):
-    d = _szukaj(_timespan(None, None), limit=a.limit)
+    d = _expect_list(_szukaj(_timespan(None, None), limit=a.limit), "najnowsze dokumenty")
+    if not d:
+        sys.exit("Brak wyników — spróbuj ponownie za chwilę.")
     if a.json:
         print(json.dumps(d, ensure_ascii=False, indent=2)); return
-    if not isinstance(d, list) or not d:
-        sys.exit("Brak wyników — spróbuj ponownie za chwilę.")
     print(f"Ostatnio opublikowane w portalu orzeczeń UODO ({len(d)}):\n")
     for it in d:
         _wiersz(it)
@@ -145,15 +182,14 @@ def cmd_szukaj(a):
         print(f"UWAGA: API UODO stosuje JEDEN warunek na zapytanie — używam: {warunki[0]!r} "
               f"(pomijam: {', '.join(repr(w) for w in warunki[1:])}).\n", file=sys.stderr)
     d = _szukaj(_timespan(a.od, a.do), warunki[0] if warunki else None, a.limit, a.strona)
-    if a.json:
-        print(json.dumps(d, ensure_ascii=False, indent=2)); return
-    if not isinstance(d, list):
-        sys.exit("BŁĄD: API UODO zwróciło nieoczekiwaną odpowiedź.")
+    d = _expect_list(d, "wyniki wyszukiwania")
     if not d:
         sys.exit("Brak wyników. Fraza działa jak regex (bez rozróżniania wielkości liter) i szuka "
                  "DOSŁOWNIE — a tytuły i treści są po polsku ODMIENIONE ('nałożenie kary "
                  "pieniężnej', nie 'kara pieniężna'). Podaj RDZEŃ bez końcówki: 'pieniężn', "
                  "'biometr', 'monitoring'. To NIE dowód, że takich decyzji nie ma.")
+    if a.json:
+        print(json.dumps(d, ensure_ascii=False, indent=2)); return
     print(f"Znaleziono: {len(d)}  (strona {a.strona}, po {a.limit}; sortowanie od najnowszych)\n")
     for it in d:
         _wiersz(it)
@@ -163,10 +199,15 @@ def cmd_szukaj(a):
 
 def cmd_decyzja(a):
     refid = _refid(a.id)
-    meta = _get(f"/documents/public/items/{urllib.parse.quote(refid, safe=':')}/meta.json")
+    meta = _expect_dict(
+        _get(f"/documents/public/items/{urllib.parse.quote(refid, safe=':')}/meta.json"),
+        "metadane decyzji")
+    txt = _get(f"/documents/public/items/{urllib.parse.quote(refid + ':0', safe=':')}/body.txt",
+               params={"lang": "pl"}, raw=True).strip()
+    if getattr(a, "strict", False) and not txt:
+        sys.exit("BŁĄD: tryb strict blokuje decyzję bez zweryfikowanej pełnej treści.")
     if a.json:
-        meta["_body"] = _get(f"/documents/public/items/{urllib.parse.quote(refid + ':0', safe=':')}/body.txt",
-                             params={"lang": "pl"}, raw=True)
+        meta["_body"] = txt
         print(json.dumps(meta, ensure_ascii=False, indent=2)); return
     refname = meta.get("refname", a.id)
     daty = _daty(meta)
@@ -181,8 +222,6 @@ def cmd_decyzja(a):
     tytul = _pl(meta.get("title"))
     if tytul:
         print(f"\n## Przedmiot\n{tytul.strip()}")
-    txt = _get(f"/documents/public/items/{urllib.parse.quote(refid + ':0', safe=':')}/body.txt",
-               params={"lang": "pl"}, raw=True).strip()
     print(f"\n## Treść decyzji ({len(txt)} znaków)")
     if not txt:
         print("(brak treści w API — zob. portal wyżej)")

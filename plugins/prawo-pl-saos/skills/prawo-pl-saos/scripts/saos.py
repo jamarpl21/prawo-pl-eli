@@ -25,10 +25,35 @@ from html.parser import HTMLParser
 
 __version__ = "1.6.6"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://www.saos.org.pl/api"
+CONTENT_HOSTS = ("saos.org.pl",)
 
 
 class VerificationUnknown(RuntimeError):
     """Zapytanie nie pozwoliło ustalić, czy dane istnieją."""
+
+
+def _wymus_https(url):
+    parsed = urllib.parse.urlsplit(url)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    dozwolony = any(host == allowed or host.endswith("." + allowed)
+                    for allowed in CONTENT_HOSTS)
+    if parsed.scheme.lower() == "http" and dozwolony:
+        return "https" + url[len(parsed.scheme):]
+    return url
+
+
+class _PrzekierowaniaHttps(urllib.request.HTTPRedirectHandler):
+    """Podnosi HTTP na hostach treści SAOS, a obce cele HTTP odrzuca."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        bezpieczny_url = _wymus_https(newurl)
+        if urllib.parse.urlsplit(bezpieczny_url).scheme.lower() == "http":
+            raise urllib.error.URLError(
+                f"odrzucono przekierowanie treści na niezaufany host po HTTP: {newurl}")
+        return super().redirect_request(req, fp, code, msg, headers, bezpieczny_url)
+
+
+_opener = urllib.request.build_opener(_PrzekierowaniaHttps())
 
 # Aliasy typów sądów (courtType w API SAOS)
 SADY = {
@@ -80,6 +105,18 @@ def _ostrzezenie_zasiegu(ct, od=None):
     return tekst
 
 
+def _sprawdz_zasieg_strict(a, ct):
+    """Blokuje zakres sięgający poza znany koniec zamkniętego zbioru SAOS."""
+    if not getattr(a, "strict", False) or ct not in ZASIEG:
+        return
+    ostatni_rok = ZASIEG[ct][0]
+    rok_do = int(a.do[:4]) if a.do and re.match(r"^\d{4}", a.do) else None
+    if rok_do is None or rok_do > ostatni_rok:
+        raise VerificationUnknown(
+            f"zbiór {CT_PL.get(ct, ct)} kończy się na {ostatni_rok} r., "
+            "a żądany zakres wykracza poza znaną kompletność SAOS")
+
+
 def _get(path, params=None, soft=False):
     """GET z jednym ponowieniem.
 
@@ -95,7 +132,7 @@ def _get(path, params=None, soft=False):
     raw = None
     for attempt in (1, 2):
         try:
-            with urllib.request.urlopen(req, timeout=40) as r:
+            with _opener.open(req, timeout=40) as r:
                 raw = r.read().decode("utf-8", "replace")
             if "Przerwa techniczna" in raw:
                 # SAOS bywa w oknie serwisowym — zwraca stronę HTML zamiast JSON (HTTP 200)
@@ -281,6 +318,7 @@ def _wiersz(it):
 
 def cmd_szukaj(a):
     ct = _court_type(a.sad)
+    _sprawdz_zasieg_strict(a, ct)
     params = {
         "all": a.fraza,
         "caseNumber": a.sygnatura,
@@ -392,8 +430,6 @@ def cmd_sygnatura(a):
     d = _get("/search/judgments", {"caseNumber": sig, "pageSize": 20, "pageNumber": 0,
                                    "sortingField": "JUDGMENT_DATE", "sortingDirection": "DESC"})
     d = _expect_search(d, f"orzeczenia o sygnaturze {sig!r}")
-    if a.json:
-        print(json.dumps(d, ensure_ascii=False, indent=2)); return
     items = d.get("items", [])
     total = (d.get("info") or {}).get("totalResults", 0)
     if not items:
@@ -402,6 +438,8 @@ def cmd_sygnatura(a):
                  "sygnatury sądów administracyjnych (NSA/WSA) szukaj skillem prawo-pl-cbosa.\n"
                  "Granice zbiorów: SN kończy się na 2016 r., TK na 2015 r., KIO na 2018 r. "
                  "(sądy powszechne są na bieżąco) — nowszej sygnatury z tych sądów SAOS nie ma.")
+    if a.json:
+        print(json.dumps(d, ensure_ascii=False, indent=2)); return
     print(f"Sygnatura {sig!r}: dopasowań {total}\n")
     for it in items:
         cn = _case_numbers(it)
