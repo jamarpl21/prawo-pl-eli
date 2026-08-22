@@ -239,6 +239,17 @@ class TestWymusHttps(unittest.TestCase):
         url = "http://publications.europa.eu.evil.example/resource/celex/X"
         self.assertEqual(eurlex._wymus_https(url), url)
 
+    def test_data_europa_i_poddomena_sa_na_bialej_liscie(self):
+        cases = [
+            ("http://data.europa.eu/eli/reg/2016/679/oj",
+             "https://data.europa.eu/eli/reg/2016/679/oj"),
+            ("http://api.data.europa.eu/eli/reg/2016/679/oj",
+             "https://api.data.europa.eu/eli/reg/2016/679/oj"),
+        ]
+        for url, expected in cases:
+            with self.subTest(url=url):
+                self.assertEqual(eurlex._wymus_https(url), expected)
+
     def test_http_przekazuje_request_z_podniesionym_url(self):
         odpowiedz = mock.MagicMock()
         odpowiedz.__enter__.return_value = odpowiedz
@@ -259,11 +270,18 @@ class TestWymusHttps(unittest.TestCase):
         self.assertEqual(nowy.full_url,
                          "https://publications.europa.eu/resource/cellar/abc.0018.03/DOC_1")
 
-    def test_przekierowanie_na_obcy_host_zostaje_bez_zmian(self):
+    def test_przekierowanie_303_na_http_data_europa_jest_podnoszone(self):
         req = eurlex.urllib.request.Request("https://publications.europa.eu/resource/celex/X")
         nowy = eurlex._PrzekierowaniaHttps().redirect_request(
             req, None, 303, "See Other", {}, "http://data.europa.eu/eli/reg/2016/679/oj")
-        self.assertEqual(nowy.full_url, "http://data.europa.eu/eli/reg/2016/679/oj")
+        self.assertEqual(nowy.full_url, "https://data.europa.eu/eli/reg/2016/679/oj")
+
+    def test_przekierowanie_na_obcy_host_po_http_jest_odrzucone(self):
+        req = eurlex.urllib.request.Request("https://publications.europa.eu/resource/celex/X")
+        with self.assertRaisesRegex(eurlex.urllib.error.URLError,
+                                    "odrzucono przekierowanie.*niezaufany host"):
+            eurlex._PrzekierowaniaHttps().redirect_request(
+                req, None, 303, "See Other", {}, "http://example.test/legal-content")
 
     def test_uri_przestrzeni_nazw_zostaja_http(self):
         # Zmiana ich postaci zerwalaby dopasowanie w zapytaniach SPARQL.

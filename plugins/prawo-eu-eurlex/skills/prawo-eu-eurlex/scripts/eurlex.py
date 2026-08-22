@@ -28,6 +28,7 @@ CDM = "http://publications.europa.eu/ontology/cdm#"
 LANG_AUTH = "http://publications.europa.eu/resource/authority/language/"
 TYPE_AUTH = "http://publications.europa.eu/resource/authority/resource-type/"
 XSD_STR = "http://www.w3.org/2001/XMLSchema#string"
+CONTENT_HOSTS = ("publications.europa.eu", "data.europa.eu")
 
 JEZYKI = {"pl": "POL", "pol": "POL", "en": "ENG", "eng": "ENG", "de": "DEU", "deu": "DEU",
           "fr": "FRA", "fra": "FRA", "es": "SPA", "spa": "SPA", "it": "ITA", "ita": "ITA",
@@ -68,9 +69,9 @@ def _wymus_https(url):
     """
     parsed = urllib.parse.urlsplit(url)
     host = (parsed.hostname or "").lower().rstrip(".")
-    cellar_host = "publications.europa.eu"
-    if parsed.scheme.lower() == "http" and (
-            host == cellar_host or host.endswith("." + cellar_host)):
+    dozwolony = any(host == allowed or host.endswith("." + allowed)
+                    for allowed in CONTENT_HOSTS)
+    if parsed.scheme.lower() == "http" and dozwolony:
         # Zmieniamy wyłącznie schemat. Oryginalna pisownia hosta, user-info, port,
         # ścieżka, parametry, query i fragment pozostają bajt w bajt bez zmian.
         return "https" + url[len(parsed.scheme):]
@@ -78,13 +79,17 @@ def _wymus_https(url):
 
 
 class _PrzekierowaniaHttps(urllib.request.HTTPRedirectHandler):
-    """CELLAR odpowiada 303 z Location w formie http:// nawet na żądanie https —
-    bez podniesienia schematu także w celu przekierowania treść aktu i tak
-    popłynęłaby czystym HTTP, z pominięciem _wymus_https na URL wejściowym.
-    Adres cellar po https serwuje treść wprost (200), więc pętla nie grozi."""
+    """Podnosi przekierowania HTTP dla dozwolonych hostów treści, inne odrzuca.
+
+    CELLAR odpowiada 303 z Location w formie http:// nawet na żądanie https. Bez
+    kontroli celu przekierowania treść aktu mogłaby popłynąć czystym HTTP."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return super().redirect_request(req, fp, code, msg, headers, _wymus_https(newurl))
+        bezpieczny_url = _wymus_https(newurl)
+        if urllib.parse.urlsplit(bezpieczny_url).scheme.lower() == "http":
+            raise urllib.error.URLError(
+                f"odrzucono przekierowanie treści na niezaufany host po HTTP: {newurl}")
+        return super().redirect_request(req, fp, code, msg, headers, bezpieczny_url)
 
 
 _opener = urllib.request.build_opener(_PrzekierowaniaHttps())
