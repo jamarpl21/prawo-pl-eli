@@ -320,6 +320,15 @@ class TestFlagaJson(unittest.TestCase):
     def test_bez_flagi(self):
         self.assertFalse(self._parsuj(self.ARGV)["json"])
 
+    def test_strict_po_komendzie(self):
+        self.assertTrue(self._parsuj(self.ARGV + ["--strict"])["strict"])
+
+    def test_strict_przed_komenda(self):
+        self.assertTrue(self._parsuj(["--strict"] + self.ARGV)["strict"])
+
+    def test_bez_strict(self):
+        self.assertFalse(self._parsuj(self.ARGV)["strict"])
+
 
 class CbosaVerificationContractTests(unittest.TestCase):
     """found/verified_absent/unknown - blad transportu nie moze wygladac jak potwierdzony brak."""

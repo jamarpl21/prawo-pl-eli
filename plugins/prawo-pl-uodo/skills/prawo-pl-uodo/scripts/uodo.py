@@ -16,6 +16,7 @@ Komendy:
          [--warunek "indeks:operator:wartość"] [--limit N] [--strona N]
   decyzja <sygnatura|URN> [--fragment "<fraza>"]  metadane + pełna treść decyzji
 Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
+           --strict  (blokuje wynik, gdy nie udało się zweryfikować aktualności lub kompletności)
 """
 import sys, json, re, time, argparse, urllib.request, urllib.parse, urllib.error
 
@@ -226,6 +227,8 @@ def main():
                     "decyzje Prezesa UODO i powiązane orzeczenia sądów.")
     ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     ap.add_argument("--json", action="store_true", help="zrzut surowego JSON")
+    ap.add_argument("--strict", action="store_true",
+                    help="zakończ błędem, gdy nie udało się zweryfikować aktualności lub kompletności")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     n = sub.add_parser("najnowsze")
@@ -249,11 +252,13 @@ def main():
     d.add_argument("--fragment", help='wytnij okna wokół frazy w treści — podawaj RDZEŃ, np. "pieniężn"')
     d.set_defaults(func=cmd_decyzja)
 
-    # --json działa też PO komendzie (modele piszą flagi właśnie tam); SUPPRESS sprawia,
+    # Flagi globalne działają też PO komendzie (modele piszą je właśnie tam); SUPPRESS sprawia,
     # że brak flagi w subparserze nie kasuje wartości podanej przed komendą
     for p in sub.choices.values():
         p.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
                        help="zrzut surowego JSON")
+        p.add_argument("--strict", action="store_true", default=argparse.SUPPRESS,
+                       help="zakończ błędem, gdy nie udało się zweryfikować aktualności lub kompletności")
 
     a = ap.parse_args()
     a.func(a)
