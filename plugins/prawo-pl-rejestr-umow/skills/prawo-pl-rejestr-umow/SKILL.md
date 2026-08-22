@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-rejestr-umow
-version: 1.6.6
+version: 1.7.0
 description: >-
   Odpytuje publiczne API Centralnego Rejestru Umów JSFP (rejestrumow.gov.pl) — jawny
   rejestr umów zawieranych od 1.07.2026 przez jednostki sektora finansów publicznych:

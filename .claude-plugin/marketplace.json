@@ -9,7 +9,7 @@
       "name": "prawo-pl-eli",
       "source": "./plugins/prawo-pl-eli",
       "description": "Polskie prawo z oficjalnego API ELI Sejmu (Dz.U./M.P.) do każdego pytania z prawa polskiego oraz pracy nad umowami i pismami procesowymi: akty, pojedyncze artykuły, tekst jednolity, nowelizacje, podstawa prawna.",
-      "version": "1.6.6",
+      "version": "1.7.0",
       "author": {
         "name": "Krzysztof Gibek"
       }
@@ -18,7 +18,7 @@
       "name": "prawo-pl-edzienniki",
       "source": "./plugins/prawo-pl-edzienniki",
       "description": "Prawo miejscowe z API ELI 16 wojewódzkich dzienników urzędowych: uchwały rad gmin/powiatów/sejmików (podatki i opłaty lokalne, plany miejscowe MPZP, statuty), rozporządzenia wojewody. Wyszukiwanie po tytule i roczniku, metadane, pełna treść i urzędowy PDF. Read-only, bez klucza.",
-      "version": "1.6.6",
+      "version": "1.7.0",
       "author": {
         "name": "Krzysztof Gibek"
       }
@@ -27,7 +27,7 @@
       "name": "prawo-eu-eurlex",
       "source": "./plugins/prawo-eu-eurlex",
       "description": "Prawo UE z oficjalnego repozytorium CELLAR/EUR-Lex (CELEX, bez klucza) do każdego pytania o prawo unijne: rozporządzenia, dyrektywy, wersje skonsolidowane, pojedyncze artykuły po polsku, nowelizacje, podstawa prawna.",
-      "version": "1.6.6",
+      "version": "1.7.0",
       "author": {
         "name": "Krzysztof Gibek"
       }
@@ -36,7 +36,7 @@
       "name": "prawo-pl-saos",
       "source": "./plugins/prawo-pl-saos",
       "description": "Polskie orzecznictwo z publicznego API SAOS (saos.org.pl): wyroki, postanowienia i uchwały SN, TK, sądów powszechnych i KIO. Wyszukiwanie po frazie, sygnaturze, sądzie, sędzim, powołanym przepisie i dacie; pełne uzasadnienia, powołane przepisy i orzeczenia.",
-      "version": "1.6.6",
+      "version": "1.7.0",
       "author": {
         "name": "Krzysztof Gibek"
       }
@@ -45,7 +45,7 @@
       "name": "prawo-pl-cbosa",
       "source": "./plugins/prawo-pl-cbosa",
       "description": "Orzecznictwo sądów administracyjnych z CBOSA (orzeczenia.nsa.gov.pl): NSA i 16 WSA, ~2,4 mln orzeczeń od 2004 r. Wyszukiwanie po frazie, sygnaturze, sądzie, symbolu sprawy, sędzim i dacie; pełne sentencje i uzasadnienia, powołane przepisy. CBOSA nie ma API — read-only scraping publicznych stron z throttlingiem.",
-      "version": "1.6.6",
+      "version": "1.7.0",
       "author": {
         "name": "Krzysztof Gibek"
       }
@@ -54,7 +54,7 @@
       "name": "prawo-pl-uodo",
       "source": "./plugins/prawo-pl-uodo",
       "description": "Decyzje Prezesa UODO z oficjalnego API Portalu Orzeczeń UODO (orzeczenia.uodo.gov.pl): kary za naruszenia RODO, upomnienia, nakazy. Wyszukiwanie pełnotekstowe i po tytule/dacie; pełna treść decyzji po sygnaturze. Read-only, bez klucza.",
-      "version": "1.6.6",
+      "version": "1.7.0",
       "author": {
         "name": "Krzysztof Gibek"
       }
@@ -63,7 +63,7 @@
       "name": "prawo-pl-rejestr-umow",
       "source": "./plugins/prawo-pl-rejestr-umow",
       "description": "Umowy jednostek sektora finansów publicznych z publicznego API Centralnego Rejestru Umów (rejestrumow.gov.pl, jawny rejestr od 1.07.2026): zamawiający, wykonawca, przedmiot, wartość, aneksy, wyłączenia jawności. Wyszukiwanie po przedmiocie umowy, nazwie/REGON/NIP stron, województwie, dacie i wartości; pełne szczegóły umowy. Read-only, bez klucza.",
-      "version": "1.6.6",
+      "version": "1.7.0",
       "author": {
         "name": "Krzysztof Gibek"
       }

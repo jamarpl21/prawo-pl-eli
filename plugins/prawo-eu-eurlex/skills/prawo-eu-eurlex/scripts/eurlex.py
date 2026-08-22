@@ -21,7 +21,7 @@ CELEX np.: 32016R0679 (RODO), 02016R0679-20160504 (wersja skonsolidowana), reg/2
 import sys, json, re, time, argparse, urllib.request, urllib.parse, urllib.error
 from html.parser import HTMLParser
 
-__version__ = "1.6.6"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "1.7.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 SPARQL = "https://publications.europa.eu/webapi/rdf/sparql"
 CELLAR = "http://publications.europa.eu/resource/celex/"
 CDM = "http://publications.europa.eu/ontology/cdm#"

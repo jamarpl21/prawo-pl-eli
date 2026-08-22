@@ -1,7 +1,7 @@
 {
   "name": "prawo-pl-uodo",
   "description": "Decyzje Prezesa UODO z oficjalnego API Portalu Orzeczeń UODO (orzeczenia.uodo.gov.pl): kary pieniężne za naruszenia RODO, upomnienia, nakazy oraz powiązane orzeczenia sądów. Wyszukiwanie pełnotekstowe (regex) i po tytule/dacie; pełna treść decyzji po sygnaturze (np. DKN.5131.9.2025). Read-only, bez klucza. Treść RODO: prawo-eu-eurlex; kontrola sądowa decyzji (WSA/NSA): prawo-pl-cbosa.",
-  "version": "1.6.6",
+  "version": "1.7.0",
   "author": {
     "name": "Krzysztof Gibek"
   },
