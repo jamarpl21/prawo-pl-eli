@@ -377,6 +377,23 @@ class EliVerificationContractTests(unittest.TestCase):
                 eli.cmd_tekst(args)
         self.assertNotIn("Treść przepisu", out.getvalue())
 
+    def test_strict_nie_wypisuje_tj_przed_kontrola_aktualnosci(self):
+        refs = {"Tekst jednolity dla aktu": [
+            {"act": {"ELI": "DU/1964/296", "displayAddress": "Dz.U. 1964 poz. 296"}}]}
+
+        def fake_get(path, params=None, soft=False):
+            if path == "/acts/DU/2024/1568/references":
+                return refs
+            raise eli.VerificationUnknown("timeout")
+
+        args = argparse.Namespace(sygnatura=["DU", "2024", "1568"], json=False, strict=True)
+        out = io.StringIO()
+        with mock.patch.object(eli, "_get", side_effect=fake_get), \
+                contextlib.redirect_stdout(out):
+            with self.assertRaisesRegex(eli.VerificationUnknown, "timeout"):
+                eli.cmd_tj(args)
+        self.assertEqual(out.getvalue(), "")
+
     def test_fallback_pomija_kandydata_z_awaria(self):
         # awaria transportu na JEDNYM kandydacie t.j. nie zabija pętli zapasowej
         refs = {"Inf. o tekście jednolitym": [

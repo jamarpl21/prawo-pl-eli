@@ -559,23 +559,27 @@ def cmd_tj(a):
     if base_key:
         items = d[base_key] if isinstance(d[base_key], list) else [d[base_key]]
         base = next((r.get("act") for r in items if isinstance(r, dict) and isinstance(r.get("act"), dict)), None)
-        print(f"{label} SAM JEST tekstem jednolitym" + (f" (dla: {base.get('displayAddress','')} — {base.get('title','')[:90]})" if base else "") + ".")
-        for w in _ostrzezenia(d):
-            print(w)
         # sprawdź na akcie bazowym, czy nie ma już NOWSZEGO tekstu jednolitego
         m = re.match(r"^/acts/(DU|MP)/(\d+)/(\d+)$", path)
+        kontrola = None
         if base and base.get("ELI") and m:
             try:
                 base_refs = _get(f"/acts/{base['ELI']}/references", soft=True)
             except VerificationUnknown as e:
                 if getattr(a, "strict", False):
                     raise
-                print(f"UWAGA: nie udało się sprawdzić, czy istnieje nowszy tekst jednolity ({e}) — "
-                      "zweryfikuj ręcznie, zanim zacytujesz.")
-                return
-            newer = _tj_acts(base_refs) if isinstance(base_refs, dict) else []
-            if newer and _eli_rok_poz(newer[0]) > (int(m.group(2)), int(m.group(3))):
-                print(f"UWAGA: istnieje NOWSZY tekst jednolity: {newer[0].get('displayAddress') or newer[0].get('ELI','')} — cytuj z niego.")
+                kontrola = (f"UWAGA: nie udało się sprawdzić, czy istnieje nowszy tekst jednolity ({e}) — "
+                            "zweryfikuj ręcznie, zanim zacytujesz.")
+            else:
+                newer = _tj_acts(base_refs) if isinstance(base_refs, dict) else []
+                if newer and _eli_rok_poz(newer[0]) > (int(m.group(2)), int(m.group(3))):
+                    kontrola = (f"UWAGA: istnieje NOWSZY tekst jednolity: "
+                                f"{newer[0].get('displayAddress') or newer[0].get('ELI','')} — cytuj z niego.")
+        print(f"{label} SAM JEST tekstem jednolitym" + (f" (dla: {base.get('displayAddress','')} — {base.get('title','')[:90]})" if base else "") + ".")
+        for w in _ostrzezenia(d):
+            print(w)
+        if kontrola:
+            print(kontrola)
         return
     print(f"Dla {label} brak tekstu jednolitego w odniesieniach — akt może nie mieć t.j. (cytuj z aktu, "
           f"ale sprawdź „Akty zmieniające\" w: odniesienia {label}).")
