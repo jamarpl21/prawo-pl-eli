@@ -2,6 +2,8 @@
 # -*- coding: utf-8 -*-
 """Offline unit tests for saos.py pure functions (no network). Run: python3 tools/test_saos.py"""
 import argparse
+import contextlib
+import io
 import sys
 import importlib.util
 import pathlib
@@ -228,14 +230,14 @@ class SaosVerificationContractTests(unittest.TestCase):
     """found/verified_absent/unknown - blad transportu nie moze wygladac jak potwierdzony brak."""
 
     def test_soft_transport_error_is_unknown(self):
-        with mock.patch.object(saos.urllib.request, "urlopen", side_effect=urllib.error.URLError("offline")), \
+        with mock.patch.object(saos._opener, "open", side_effect=urllib.error.URLError("offline")), \
                 mock.patch.object(saos.time, "sleep"):
             with self.assertRaises(saos.VerificationUnknown):
                 saos._get("/search/judgments", soft=True)
 
     def test_successful_zero_results_is_verified_absent(self):
         response = _Response(b'{"items": [], "info": {"totalResults": 0}}')
-        with mock.patch.object(saos.urllib.request, "urlopen", return_value=response):
+        with mock.patch.object(saos._opener, "open", return_value=response):
             result = saos._get("/search/judgments", soft=True)
         self.assertEqual(result["items"], [])
         self.assertEqual(result["info"]["totalResults"], 0)
@@ -246,6 +248,46 @@ class SaosVerificationContractTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "nie udało się zweryfikować") as caught:
                 saos.cmd_sygnatura(args)
         self.assertNotIn("Nie znaleziono orzeczenia", str(caught.exception))
+
+    def test_t08_strict_blokuje_zakres_poza_zamknietym_zbiorem_i_stdout_jest_pusty(self):
+        out = io.StringIO()
+        with mock.patch.object(sys, "argv",
+                               ["saos.py", "szukaj", "--sad", "SN", "--od", "2024-01-01", "--strict"]), \
+                mock.patch.object(saos, "_get") as get, contextlib.redirect_stdout(out):
+            with self.assertRaises(SystemExit) as caught:
+                saos.main()
+        self.assertNotEqual(caught.exception.code, 0)
+        self.assertEqual(out.getvalue(), "")
+        get.assert_not_called()
+
+    def test_t09_json_strict_nie_emituje_wyniku_gdy_kontrola_nie_przeszla(self):
+        przypadki = [
+            (["szukaj", "--sad", "SN", "--od", "2024-01-01"], None),
+            (["orzeczenie", "123"], {"message": "maintenance"}),
+            (["sygnatura", "III", "CSK", "203/09"],
+             {"items": [], "info": {"totalResults": 0}}),
+        ]
+        for komenda, odpowiedz in przypadki:
+            with self.subTest(komenda=komenda):
+                out = io.StringIO()
+                with mock.patch.object(saos, "_get", return_value=odpowiedz), \
+                        mock.patch.object(sys, "argv", ["saos.py", *komenda, "--json", "--strict"]), \
+                        contextlib.redirect_stdout(out):
+                    with self.assertRaises(SystemExit) as caught:
+                        saos.main()
+                self.assertNotEqual(caught.exception.code, 0)
+                self.assertEqual(out.getvalue(), "")
+
+
+class TestT10PrzekierowaniaHttps(unittest.TestCase):
+    def test_host_tresci_jest_podnoszony_a_obcy_host_odrzucany(self):
+        req = saos.urllib.request.Request("https://www.saos.org.pl/api/search/judgments")
+        handler = saos._PrzekierowaniaHttps()
+        nowy = handler.redirect_request(
+            req, None, 302, "Found", {}, "http://www.saos.org.pl/api/judgments/123")
+        self.assertEqual(nowy.full_url, "https://www.saos.org.pl/api/judgments/123")
+        with self.assertRaisesRegex(urllib.error.URLError, "niezaufany host"):
+            handler.redirect_request(req, None, 302, "Found", {}, "http://example.test/judgment")
 
 
 if __name__ == "__main__":

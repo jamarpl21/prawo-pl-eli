@@ -220,8 +220,44 @@ class EurlexVerificationContractTests(unittest.TestCase):
                 eurlex.cmd_tekst(args)
         self.assertEqual(out.getvalue(), "")
 
+    def test_t05_strict_blokuje_poprawnie_wykryta_nowsza_konsolidacje(self):
+        out = io.StringIO()
+        with mock.patch.object(eurlex, "_http",
+                               return_value=(b"<p>Artykul 1. Starsza tresc.</p>", "text/html")), \
+                mock.patch.object(eurlex, "_konsolidacje",
+                                  return_value=["02016R0679-20250504", "02016R0679-20160504"]), \
+                mock.patch.object(sys, "argv", ["eurlex.py", "tekst", "02016R0679-20160504", "--strict"]), \
+                contextlib.redirect_stdout(out):
+            with self.assertRaises(SystemExit) as caught:
+                eurlex.main()
+        self.assertNotEqual(caught.exception.code, 0)
+        self.assertEqual(out.getvalue(), "")
 
-class TestWymusHttps(unittest.TestCase):
+    def test_t06_json_strict_nie_emituje_danych_gdy_kontrola_nie_przeszla(self):
+        komendy = [
+            ["szukaj", "dane"],
+            ["meta", "32016R0679"],
+            ["tekst", "32016R0679"],
+            ["skonsolidowany", "32016R0679"],
+            ["odniesienia", "32016R0679"],
+        ]
+        for komenda in komendy:
+            with self.subTest(komenda=komenda):
+                out = io.StringIO()
+                with mock.patch.object(eurlex, "_http",
+                                       return_value=(b"<p>Artykul 1. Tresc.</p>", "text/html")), \
+                        mock.patch.object(eurlex, "_sparql",
+                                          side_effect=eurlex.VerificationUnknown("timeout")), \
+                        mock.patch.object(sys, "argv",
+                                          ["eurlex.py", *komenda, "--json", "--strict"]), \
+                        contextlib.redirect_stdout(out):
+                    with self.assertRaises(SystemExit) as caught:
+                        eurlex.main()
+                self.assertNotEqual(caught.exception.code, 0)
+                self.assertEqual(out.getvalue(), "")
+
+
+class TestT07WymusHttps(unittest.TestCase):
     """CELLAR nazywa zasoby przez http:// URI, ale pobierac mamy po https."""
 
     def test_dziewiec_przypadkow_url(self):

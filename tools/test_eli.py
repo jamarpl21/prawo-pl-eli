@@ -330,21 +330,21 @@ class EliVerificationContractTests(unittest.TestCase):
     """found/verified_absent/unknown - blad transportu nie moze wygladac jak potwierdzony brak."""
 
     def test_soft_transport_error_is_unknown(self):
-        with mock.patch.object(eli.urllib.request, "urlopen", side_effect=urllib.error.URLError("offline")), \
+        with mock.patch.object(eli._opener, "open", side_effect=urllib.error.URLError("offline")), \
                 mock.patch.object(eli.time, "sleep"):
             with self.assertRaises(eli.VerificationUnknown):
                 eli._get("/acts/test/references", soft=True)
 
     def test_successful_empty_json_is_verified_absent(self):
         response = _Response(b"[]")
-        with mock.patch.object(eli.urllib.request, "urlopen", return_value=response):
+        with mock.patch.object(eli._opener, "open", return_value=response):
             self.assertEqual(eli._get("/acts/search", soft=True), [])
 
     def test_soft_404_is_verified_absent(self):
         # API ELI odpowiada 404 wyłącznie dla nieistniejącego zasobu — to zweryfikowany
         # brak (None), nie awaria; "spróbuj ponownie" byłoby tu fałszywym komunikatem
         err = urllib.error.HTTPError("u", 404, "Not Found", {}, None)
-        with mock.patch.object(eli.urllib.request, "urlopen", side_effect=err), \
+        with mock.patch.object(eli._opener, "open", side_effect=err), \
                 mock.patch.object(eli.time, "sleep"):
             self.assertIsNone(eli._get("/acts/DU/2024/999999/references", soft=True))
 
@@ -463,6 +463,91 @@ class EliVerificationContractTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "strict zabrania.*DU/2024/1568"):
                 eli.cmd_tekst(args)
         self.assertNotIn("Starsza treść", out.getvalue())
+
+    def test_t01_strict_blokuje_poprawnie_wykryty_nowszy_tj_i_stdout_jest_pusty(self):
+        refs = {"Inf. o tekście jednolitym": [
+            {"act": {"ELI": "DU/2026/500", "displayAddress": "Dz.U. 2026 poz. 500"}}]}
+
+        def fake_get(path, params=None, soft=False):
+            if path.endswith("/references"):
+                return refs
+            return "<p>Art. 1. Starsza, ale niepusta treść.</p>"
+
+        out = io.StringIO()
+        with mock.patch.object(eli, "_get", side_effect=fake_get), \
+                mock.patch.object(sys, "argv", ["eli.py", "tekst", "DU", "2024", "18", "--strict"]), \
+                contextlib.redirect_stdout(out):
+            with self.assertRaises(SystemExit) as caught:
+                eli.main()
+        self.assertNotEqual(caught.exception.code, 0)
+        self.assertEqual(out.getvalue(), "")
+
+    def test_t02_json_strict_nie_emituje_danych_gdy_kontrola_nie_przeszla(self):
+        komendy = [
+            ["szukaj", "kodeks"],
+            ["meta", "DU", "2024", "18"],
+            ["tekst", "DU", "2024", "18"],
+            ["struktura", "DU", "2024", "18"],
+            ["odniesienia", "DU", "2024", "18"],
+            ["tj", "DU", "2024", "18"],
+        ]
+        for komenda in komendy:
+            with self.subTest(komenda=komenda):
+                out = io.StringIO()
+                with mock.patch.object(eli, "_get", side_effect=eli.VerificationUnknown("timeout")), \
+                        mock.patch.object(sys, "argv", ["eli.py", *komenda, "--json", "--strict"]), \
+                        contextlib.redirect_stdout(out):
+                    with self.assertRaises(SystemExit) as caught:
+                        eli.main()
+                self.assertNotEqual(caught.exception.code, 0)
+                self.assertEqual(out.getvalue(), "")
+
+    def test_t02b_tj_json_strict_kontroluje_nowszy_tj_przed_emisja(self):
+        refs_tj = {"Tekst jednolity dla aktu": [
+            {"act": {"ELI": "DU/1964/296", "displayAddress": "Dz.U. 1964 poz. 296"}}]}
+        refs_bazowe = {"Inf. o tekście jednolitym": [
+            {"act": {"ELI": "DU/2026/500", "displayAddress": "Dz.U. 2026 poz. 500"}},
+            {"act": {"ELI": "DU/2024/1568", "displayAddress": "Dz.U. 2024 poz. 1568"}},
+        ]}
+
+        def fake_get(path, params=None, soft=False):
+            if path == "/acts/DU/2024/1568/references":
+                return refs_tj
+            if path == "/acts/DU/1964/296/references":
+                return refs_bazowe
+            raise AssertionError(path)
+
+        out = io.StringIO()
+        with mock.patch.object(eli, "_get", side_effect=fake_get), \
+                mock.patch.object(sys, "argv", ["eli.py", "tj", "DU", "2024", "1568",
+                                                       "--json", "--strict"]), \
+                contextlib.redirect_stdout(out):
+            with self.assertRaises(SystemExit) as caught:
+                eli.main()
+        self.assertNotEqual(caught.exception.code, 0)
+        self.assertEqual(out.getvalue(), "")
+
+
+class TestT03PrzekierowaniaHttps(unittest.TestCase):
+    def test_host_tresci_jest_podnoszony_a_obcy_host_odrzucany(self):
+        req = eli.urllib.request.Request("https://api.sejm.gov.pl/eli/acts/DU/2024/18")
+        handler = eli._PrzekierowaniaHttps()
+        nowy = handler.redirect_request(
+            req, None, 302, "Found", {}, "http://api.sejm.gov.pl/eli/acts/DU/2024/18/text.pdf")
+        self.assertEqual(nowy.full_url,
+                         "https://api.sejm.gov.pl/eli/acts/DU/2024/18/text.pdf")
+        with self.assertRaisesRegex(urllib.error.URLError, "niezaufany host"):
+            handler.redirect_request(req, None, 302, "Found", {}, "http://example.test/akt.pdf")
+
+
+class TestT04RecznaInstalacjaSkilli(unittest.TestCase):
+    def test_wszystkie_skille_maja_lokalny_fallback_bez_sieci_i_find(self):
+        for skill in ROOT.glob("plugins/*/skills/*/SKILL.md"):
+            text = skill.read_text(encoding="utf-8")
+            with self.subTest(skill=skill):
+                self.assertIn('SKILL_DIR="${SKILL_MD%/SKILL.md}"', text)
+                self.assertIn("Nie pobieraj helpera z sieci", text)
+                self.assertIn("nie szukaj go przez `find`", text)
 
 
 if __name__ == "__main__":
