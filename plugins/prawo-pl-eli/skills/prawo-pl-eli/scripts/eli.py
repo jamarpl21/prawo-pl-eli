@@ -15,6 +15,7 @@ Komendy:
   odniesienia <sygnatura...>     nowelizacje, tekst jednolity, podstawa prawna
   tj <sygnatura...>              znajduje AKTUALNY TEKST JEDNOLITY dla aktu i podaje jego sygnaturę
 Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
+           --strict  (blokuje wynik, gdy nie udało się zweryfikować aktualności lub kompletności)
 """
 import sys, json, re, time, argparse, urllib.request, urllib.parse, urllib.error
 from html.parser import HTMLParser
@@ -391,6 +392,8 @@ def cmd_tekst(a):
     try:
         refs = _get(path + "/references", soft=True)
     except VerificationUnknown as e:
+        if getattr(a, "strict", False):
+            raise
         refs = None
         ostrz = [f"UWAGA: nie udało się zweryfikować aktualności aktu {label} ({e}) — "
                  "sprawdź nowelizacje i teksty jednolite ręcznie, zanim zacytujesz."]
@@ -559,6 +562,8 @@ def cmd_tj(a):
             try:
                 base_refs = _get(f"/acts/{base['ELI']}/references", soft=True)
             except VerificationUnknown as e:
+                if getattr(a, "strict", False):
+                    raise
                 print(f"UWAGA: nie udało się sprawdzić, czy istnieje nowszy tekst jednolity ({e}) — "
                       "zweryfikuj ręcznie, zanim zacytujesz.")
                 return
@@ -574,6 +579,8 @@ def main():
     ap = argparse.ArgumentParser(description="API ELI Sejmu (read-only). Źródło pierwotne prawa polskiego.")
     ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     ap.add_argument("--json", action="store_true", help="zrzut surowego JSON")
+    ap.add_argument("--strict", action="store_true",
+                    help="zakończ błędem, gdy nie udało się zweryfikować aktualności lub kompletności")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("szukaj"); s.add_argument("fraza", nargs="?", default=None); s.add_argument("--typ"); s.add_argument("--rok")
@@ -593,11 +600,13 @@ def main():
     st.add_argument("--poziom", type=int, help="maks. głębokość drzewa (domyślnie 3; z --filtr bez limitu)")
     st.set_defaults(func=cmd_struktura)
 
-    # --json działa też PO komendzie (modele piszą flagi właśnie tam); SUPPRESS sprawia,
+    # Flagi globalne działają też PO komendzie (modele piszą je właśnie tam); SUPPRESS sprawia,
     # że brak flagi w subparserze nie kasuje wartości podanej przed komendą
     for p in sub.choices.values():
         p.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
                        help="zrzut surowego JSON")
+        p.add_argument("--strict", action="store_true", default=argparse.SUPPRESS,
+                       help="zakończ błędem, gdy nie udało się zweryfikować aktualności lub kompletności")
 
     a = ap.parse_args()
     try:

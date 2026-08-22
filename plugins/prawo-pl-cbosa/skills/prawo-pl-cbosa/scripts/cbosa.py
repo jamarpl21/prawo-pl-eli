@@ -17,7 +17,8 @@ Komendy:
   orzeczenie <doc_id> [--fragment "<fraza>"]   pełne orzeczenie: metadane, sentencja, uzasadnienie
   sygnatura <sygnatura...>                      znajdź orzeczenie po sygnaturze
 Globalnie: --json  (zrzut sparsowanych danych jako JSON zamiast podsumowania; działa przed
-komendą i po niej)
+                    komendą i po niej)
+           --strict  (blokuje wynik, gdy nie udało się zweryfikować aktualności lub kompletności)
 """
 import sys, os, json, re, time, argparse, ssl, calendar, html as html_mod
 import urllib.request, urllib.parse, urllib.error, http.cookiejar
@@ -473,6 +474,8 @@ def main():
                     "Orzecznictwo sądów administracyjnych: NSA + 16 WSA.")
     ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     ap.add_argument("--json", action="store_true", help="zrzut sparsowanych danych jako JSON")
+    ap.add_argument("--strict", action="store_true",
+                    help="zakończ błędem, gdy nie udało się zweryfikować aktualności lub kompletności")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("szukaj")
@@ -496,11 +499,13 @@ def main():
     sy.add_argument("sygnatura", nargs="+")
     sy.set_defaults(func=cmd_sygnatura)
 
-    # --json działa też PO komendzie (modele piszą flagi właśnie tam); SUPPRESS sprawia,
+    # Flagi globalne działają też PO komendzie (modele piszą je właśnie tam); SUPPRESS sprawia,
     # że brak flagi w subparserze nie kasuje wartości podanej przed komendą
     for p in sub.choices.values():
         p.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
                        help="zrzut sparsowanych danych jako JSON")
+        p.add_argument("--strict", action="store_true", default=argparse.SUPPRESS,
+                       help="zakończ błędem, gdy nie udało się zweryfikować aktualności lub kompletności")
 
     a = ap.parse_args()
     try:

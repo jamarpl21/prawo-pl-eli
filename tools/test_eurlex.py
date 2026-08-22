@@ -161,6 +161,15 @@ class TestFlagaJson(unittest.TestCase):
     def test_bez_flagi(self):
         self.assertFalse(self._parsuj(self.ARGV)["json"])
 
+    def test_strict_po_komendzie(self):
+        self.assertTrue(self._parsuj(self.ARGV + ["--strict"])["strict"])
+
+    def test_strict_przed_komenda(self):
+        self.assertTrue(self._parsuj(["--strict"] + self.ARGV)["strict"])
+
+    def test_bez_strict(self):
+        self.assertFalse(self._parsuj(self.ARGV)["strict"])
+
 
 class EurlexVerificationContractTests(unittest.TestCase):
     """found/verified_absent/unknown - blad transportu nie moze wygladac jak potwierdzony brak."""
@@ -190,6 +199,12 @@ class EurlexVerificationContractTests(unittest.TestCase):
         self.assertEqual(len(out), 1)
         self.assertIn("nie udało się zweryfikować", out[0])
         self.assertIn("skonsolidowany 32016R0679", out[0])
+
+    def test_strict_blokuje_wynik_przy_awarii_kontroli_konsolidacji(self):
+        with mock.patch.object(eurlex, "_konsolidacje",
+                               side_effect=eurlex.VerificationUnknown("timeout")):
+            with self.assertRaisesRegex(eurlex.VerificationUnknown, "timeout"):
+                eurlex._ostrzezenia_konsolidacja("32016R0679", strict=True)
 
 
 class TestWymusHttps(unittest.TestCase):

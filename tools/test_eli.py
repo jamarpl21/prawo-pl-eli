@@ -301,6 +301,15 @@ class TestFlagaJson(unittest.TestCase):
     def test_bez_flagi(self):
         self.assertFalse(self._parsuj(self.ARGV)["json"])
 
+    def test_strict_po_komendzie(self):
+        self.assertTrue(self._parsuj(self.ARGV + ["--strict"])["strict"])
+
+    def test_strict_przed_komenda(self):
+        self.assertTrue(self._parsuj(["--strict"] + self.ARGV)["strict"])
+
+    def test_bez_strict(self):
+        self.assertFalse(self._parsuj(self.ARGV)["strict"])
+
 
 class _Response:
     def __init__(self, body, content_type="application/json"):
@@ -353,6 +362,20 @@ class EliVerificationContractTests(unittest.TestCase):
             eli.cmd_tekst(args)
         self.assertIn("Art. 1. Treść przepisu.", out.getvalue())
         self.assertIn("nie udało się zweryfikować aktualności", out.getvalue())
+
+    def test_strict_blokuje_tekst_przy_awarii_odniesien(self):
+        def fake_get(path, params=None, soft=False):
+            if path.endswith("/references"):
+                raise eli.VerificationUnknown("timeout")
+            return "<html><body><p>Art. 1. Treść przepisu.</p></body></html>"
+        args = argparse.Namespace(sygnatura=["DU", "2024", "18"], json=False,
+                                  strict=True, pdf=None, fragment=None)
+        out = io.StringIO()
+        with mock.patch.object(eli, "_get", side_effect=fake_get), \
+                contextlib.redirect_stdout(out):
+            with self.assertRaisesRegex(eli.VerificationUnknown, "timeout"):
+                eli.cmd_tekst(args)
+        self.assertNotIn("Treść przepisu", out.getvalue())
 
     def test_fallback_pomija_kandydata_z_awaria(self):
         # awaria transportu na JEDNYM kandydacie t.j. nie zabija pętli zapasowej

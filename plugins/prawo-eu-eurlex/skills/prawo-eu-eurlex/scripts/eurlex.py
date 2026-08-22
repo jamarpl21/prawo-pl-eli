@@ -14,6 +14,7 @@ Komendy:
   skonsolidowany <CELEX>         wersje skonsolidowane aktu (odpowiednik tekstu jednolitego)
   odniesienia <CELEX>            nowelizacje, sprostowania, podstawa prawna
 Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
+           --strict  (blokuje wynik, gdy nie udało się zweryfikować aktualności lub kompletności)
 
 CELEX np.: 32016R0679 (RODO), 02016R0679-20160504 (wersja skonsolidowana), reg/2016/679 (ELI).
 """
@@ -237,7 +238,7 @@ SELECT DISTINCT ?celex WHERE {{
     return [c for c in (_v(b, "celex") for b in rows) if re.search(r"-\d{8}$", c)]
 
 
-def _ostrzezenia_konsolidacja(celex):
+def _ostrzezenia_konsolidacja(celex, strict=False):
     """Ostrzeżenia o wersjach skonsolidowanych dla aktu/wersji (lista linii).
 
     To informacja POBOCZNA przy tekście/metadanych — awaria SPARQL nie może odebrać
@@ -246,6 +247,8 @@ def _ostrzezenia_konsolidacja(celex):
     try:
         kons = _konsolidacje(celex)
     except VerificationUnknown as e:
+        if strict:
+            raise
         return [f"UWAGA: nie udało się zweryfikować, czy akt {celex} ma wersje skonsolidowane "
                 f"({e}) — sprawdź komendą: skonsolidowany {celex}, zanim zacytujesz."]
     out = []
@@ -340,7 +343,7 @@ SELECT ?type ?date ?inf ?eli ?eiv ?eov ?title WHERE {{
     if zb["eli"]:
         print(f"  ELI:     {zb['eli'][0]}")
     print(f"  Tekst:   python3 {sys.argv[0]} tekst {celex} --jezyk pol --fragment \"art. N\"")
-    for w in _ostrzezenia_konsolidacja(celex):
+    for w in _ostrzezenia_konsolidacja(celex, getattr(a, "strict", False)):
         print(w)
 
 
@@ -395,7 +398,7 @@ def cmd_tekst(a):
         with open(a.pdf, "wb") as f:
             f.write(data)
         print(f"Zapisano PDF ({len(data)} B): {a.pdf}\n(źródło: {pdf_url}, język {lang3})")
-        for w in _ostrzezenia_konsolidacja(celex):
+        for w in _ostrzezenia_konsolidacja(celex, getattr(a, "strict", False)):
             print(w)
         return
     raw, _ = _http(url, headers={"Accept": "application/xhtml+xml", "Accept-Language": lang3})
@@ -403,7 +406,7 @@ def cmd_tekst(a):
     if not txt:
         sys.exit(f"Pusty tekst XHTML dla {celex} (język {lang3}) — spróbuj --pdf albo inny --jezyk.")
     print(f"# CELEX {celex} ({lang3}) — tekst z CELLAR (XHTML→tekst; do dosłownego cytatu zweryfikuj z PDF)\n")
-    ostrz = _ostrzezenia_konsolidacja(celex)
+    ostrz = _ostrzezenia_konsolidacja(celex, getattr(a, "strict", False))
     for w in ostrz:
         print(w)
     if ostrz:
@@ -464,6 +467,8 @@ def main():
         description="CELLAR/EUR-Lex (read-only, bez klucza). Źródło pierwotne prawa UE.")
     ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     ap.add_argument("--json", action="store_true", help="zrzut surowego JSON")
+    ap.add_argument("--strict", action="store_true",
+                    help="zakończ błędem, gdy nie udało się zweryfikować aktualności lub kompletności")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("szukaj"); s.add_argument("fraza", nargs="?")
@@ -483,11 +488,13 @@ def main():
     t.add_argument("--fragment", help='wytnij tylko jednostki z frazą, np. "art. 6" albo "profilowanie"')
     t.set_defaults(func=cmd_tekst)
 
-    # --json działa też PO komendzie (modele piszą flagi właśnie tam); SUPPRESS sprawia,
+    # Flagi globalne działają też PO komendzie (modele piszą je właśnie tam); SUPPRESS sprawia,
     # że brak flagi w subparserze nie kasuje wartości podanej przed komendą
     for p in sub.choices.values():
         p.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
                        help="zrzut surowego JSON")
+        p.add_argument("--strict", action="store_true", default=argparse.SUPPRESS,
+                       help="zakończ błędem, gdy nie udało się zweryfikować aktualności lub kompletności")
 
     a = ap.parse_args()
     try:
