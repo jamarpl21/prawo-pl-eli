@@ -42,11 +42,19 @@ Skrypt leży **obok tego pliku SKILL.md** (`<katalog skilla>/scripts/saos.py`) �
 Code: `${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-saos`). Uruchamiaj wyłącznie helper z bieżącego pakietu:
 
 ```
-[ -n "${CLAUDE_PLUGIN_ROOT:-}" ] || { echo "BŁĄD: CLAUDE_PLUGIN_ROOT nie jest ustawiony" >&2; exit 1; }
-SAOS="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-saos/scripts/saos.py"
+# Podstaw dokładną bezwzględną ścieżkę bieżącego SKILL.md z lokalizatora skilla.
+SKILL_MD="/bezwzględna/ścieżka/do/bieżącego/SKILL.md"
+SKILL_DIR="${SKILL_MD%/SKILL.md}"
+if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
+  SAOS="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-saos/scripts/saos.py"
+else
+  SAOS="${SKILL_DIR}/scripts/saos.py"
+fi
 [ -f "$SAOS" ] || { echo "BŁĄD: brak helpera bieżącego pakietu: $SAOS" >&2; exit 1; }
 python3 "$SAOS" <komenda> [...]
 ```
+
+Nie pobieraj helpera z sieci i nie szukaj go przez `find` po katalogach użytkownika ani systemu.
 
 (W przykładach niżej `python3 scripts/saos.py` oznacza `python3 "$SAOS"`, jeśli nie jesteś w katalogu skilla.)
 

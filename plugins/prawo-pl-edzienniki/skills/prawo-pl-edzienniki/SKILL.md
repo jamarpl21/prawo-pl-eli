@@ -40,11 +40,19 @@ to `~/.claude/skills/prawo-pl-edzienniki` (skill zainstalowany jako plugin leży
 w Claude Code: `${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-edzienniki`). Uruchamiaj wyłącznie helper z bieżącego pakietu:
 
 ```
-[ -n "${CLAUDE_PLUGIN_ROOT:-}" ] || { echo "BŁĄD: CLAUDE_PLUGIN_ROOT nie jest ustawiony" >&2; exit 1; }
-EDZ="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-edzienniki/scripts/edzienniki.py"
+# Podstaw dokładną bezwzględną ścieżkę bieżącego SKILL.md z lokalizatora skilla.
+SKILL_MD="/bezwzględna/ścieżka/do/bieżącego/SKILL.md"
+SKILL_DIR="${SKILL_MD%/SKILL.md}"
+if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
+  EDZ="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-edzienniki/scripts/edzienniki.py"
+else
+  EDZ="${SKILL_DIR}/scripts/edzienniki.py"
+fi
 [ -f "$EDZ" ] || { echo "BŁĄD: brak helpera bieżącego pakietu: $EDZ" >&2; exit 1; }
 python3 "$EDZ" <komenda> [...]
 ```
+
+Nie pobieraj helpera z sieci i nie szukaj go przez `find` po katalogach użytkownika ani systemu.
 
 (W przykładach niżej `python3 scripts/edzienniki.py` oznacza `python3 "$EDZ"`, jeśli nie jesteś w katalogu skilla.)
 

@@ -46,11 +46,19 @@ leży w katalogu pluginów; w Claude Code: `${CLAUDE_PLUGIN_ROOT}/skills/prawo-p
 Uruchamiaj wyłącznie helper z bieżącego pakietu:
 
 ```
-[ -n "${CLAUDE_PLUGIN_ROOT:-}" ] || { echo "BŁĄD: CLAUDE_PLUGIN_ROOT nie jest ustawiony" >&2; exit 1; }
-REJ="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-rejestr-umow/scripts/rejestrumow.py"
+# Podstaw dokładną bezwzględną ścieżkę bieżącego SKILL.md z lokalizatora skilla.
+SKILL_MD="/bezwzględna/ścieżka/do/bieżącego/SKILL.md"
+SKILL_DIR="${SKILL_MD%/SKILL.md}"
+if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
+  REJ="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-rejestr-umow/scripts/rejestrumow.py"
+else
+  REJ="${SKILL_DIR}/scripts/rejestrumow.py"
+fi
 [ -f "$REJ" ] || { echo "BŁĄD: brak helpera bieżącego pakietu: $REJ" >&2; exit 1; }
 python3 "$REJ" <komenda> [...]
 ```
+
+Nie pobieraj helpera z sieci i nie szukaj go przez `find` po katalogach użytkownika ani systemu.
 
 (W przykładach niżej `python3 scripts/rejestrumow.py` oznacza `python3 "$REJ"`, jeśli nie
 jesteś w katalogu skilla.)
