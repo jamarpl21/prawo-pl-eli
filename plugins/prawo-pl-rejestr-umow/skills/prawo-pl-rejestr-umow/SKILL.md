@@ -43,11 +43,12 @@ Wszystko robi helper `scripts/rejestrumow.py` (tylko biblioteka standardowa Pyth
 instalacji). Skrypt leży **obok tego pliku SKILL.md** (`<katalog skilla>/scripts/rejestrumow.py`)
 — NIE zakładaj, że to `~/.claude/skills/prawo-pl-rejestr-umow` (skill zainstalowany jako plugin
 leży w katalogu pluginów; w Claude Code: `${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-rejestr-umow`).
-Gdy nie znasz ścieżki, najpierw ją ustal:
+Uruchamiaj wyłącznie helper z bieżącego pakietu:
 
 ```
-REJ=$(find "$HOME/.claude" "$HOME/.agents" /mnt /sessions -maxdepth 10 -name rejestrumow.py -path "*prawo-pl-rejestr-umow*" 2>/dev/null | head -1)
-[ -n "$REJ" ] || { curl -fsSL https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/main/plugins/prawo-pl-rejestr-umow/skills/prawo-pl-rejestr-umow/scripts/rejestrumow.py -o /tmp/rejestrumow.py && REJ=/tmp/rejestrumow.py; }
+[ -n "${CLAUDE_PLUGIN_ROOT:-}" ] || { echo "BŁĄD: CLAUDE_PLUGIN_ROOT nie jest ustawiony" >&2; exit 1; }
+REJ="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-rejestr-umow/scripts/rejestrumow.py"
+[ -f "$REJ" ] || { echo "BŁĄD: brak helpera bieżącego pakietu: $REJ" >&2; exit 1; }
 python3 "$REJ" <komenda> [...]
 ```
 

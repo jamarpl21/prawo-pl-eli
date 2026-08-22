@@ -37,11 +37,12 @@ zgłaszania naruszeń, powierzenia przetwarzania.
 Wszystko robi helper `scripts/uodo.py` (tylko biblioteka standardowa Pythona — bez instalacji).
 Skrypt leży **obok tego pliku SKILL.md** (`<katalog skilla>/scripts/uodo.py`) — NIE zakładaj, że to
 `~/.claude/skills/prawo-pl-uodo` (skill zainstalowany jako plugin leży w katalogu pluginów; w Claude
-Code: `${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-uodo`). Gdy nie znasz ścieżki, najpierw ją ustal:
+Code: `${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-uodo`). Uruchamiaj wyłącznie helper z bieżącego pakietu:
 
 ```
-UODO=$(find "$HOME/.claude" "$HOME/.agents" /mnt /sessions -maxdepth 10 -name uodo.py -path "*prawo-pl-uodo*" 2>/dev/null | head -1)
-[ -n "$UODO" ] || { curl -fsSL https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/main/plugins/prawo-pl-uodo/skills/prawo-pl-uodo/scripts/uodo.py -o /tmp/uodo.py && UODO=/tmp/uodo.py; }
+[ -n "${CLAUDE_PLUGIN_ROOT:-}" ] || { echo "BŁĄD: CLAUDE_PLUGIN_ROOT nie jest ustawiony" >&2; exit 1; }
+UODO="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-uodo/scripts/uodo.py"
+[ -f "$UODO" ] || { echo "BŁĄD: brak helpera bieżącego pakietu: $UODO" >&2; exit 1; }
 python3 "$UODO" <komenda> [...]
 ```
 
@@ -65,7 +66,7 @@ python3 "$UODO" <komenda> [...]
   `python3 scripts/uodo.py decyzja DKN.5131.9.2025`
   Pokazuje metadane (status, daty ogłoszenia/publikacji), przedmiot i pełną treść.
   Do długich decyzji: `--fragment "pieniężn"` (wycina okna wokół frazy; też podawaj rdzeń).
-- każda komenda przyjmuje `--json` (surowa odpowiedź API; działa przed komendą i po niej).
+- każda komenda przyjmuje `--json` oraz `--strict` (blokuje wynik bez zweryfikowanej aktualności lub kompletności); obie flagi działają przed komendą i po niej.
 
 Typowy przepływ: `szukaj "<rdzeń frazy>"` → wybierz sygnaturę → `decyzja <sygnatura>`
 → do sądowej kontroli tej decyzji: skill prawo-pl-cbosa (`szukaj "<sygnatura decyzji>"`).

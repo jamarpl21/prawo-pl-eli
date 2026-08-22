@@ -39,11 +39,12 @@ orzeczniczą** albo poprzeć argument w piśmie procesowym judykaturą.
 Wszystko robi helper `scripts/saos.py` (tylko biblioteka standardowa Pythona — bez instalacji).
 Skrypt leży **obok tego pliku SKILL.md** (`<katalog skilla>/scripts/saos.py`) — NIE zakładaj, że to
 `~/.claude/skills/prawo-pl-saos` (skill zainstalowany jako plugin leży w katalogu pluginów; w Claude
-Code: `${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-saos`). Gdy nie znasz ścieżki, najpierw ją ustal:
+Code: `${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-saos`). Uruchamiaj wyłącznie helper z bieżącego pakietu:
 
 ```
-SAOS=$(find "$HOME/.claude" "$HOME/.agents" /mnt /sessions -maxdepth 10 -name saos.py -path "*prawo-pl-saos*" 2>/dev/null | head -1)
-[ -n "$SAOS" ] || { curl -fsSL https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/main/plugins/prawo-pl-saos/skills/prawo-pl-saos/scripts/saos.py -o /tmp/saos.py && SAOS=/tmp/saos.py; }
+[ -n "${CLAUDE_PLUGIN_ROOT:-}" ] || { echo "BŁĄD: CLAUDE_PLUGIN_ROOT nie jest ustawiony" >&2; exit 1; }
+SAOS="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-saos/scripts/saos.py"
+[ -f "$SAOS" ] || { echo "BŁĄD: brak helpera bieżącego pakietu: $SAOS" >&2; exit 1; }
 python3 "$SAOS" <komenda> [...]
 ```
 
@@ -63,7 +64,7 @@ python3 "$SAOS" <komenda> [...]
   uzasadnienia. Do długich uzasadnień: `--fragment "rękojmia"` (wycina okna wokół frazy).
 - **sygnatura** — szybkie odszukanie po numerze sprawy:
   `python3 scripts/saos.py sygnatura III CSK 203/09`
-- każda komenda przyjmuje `--json` (surowa odpowiedź API; działa przed komendą i po niej).
+- każda komenda przyjmuje `--json` oraz `--strict` (blokuje wynik bez zweryfikowanej aktualności lub kompletności); obie flagi działają przed komendą i po niej.
 
 Typowy przepływ: `szukaj` (zawęź `--sad`/`--przepis`/`--haslo`) → wybierz ID → `orzeczenie <id>`
 → w razie potrzeby skacz po `referencedCourtCases` do powołanych orzeczeń.

@@ -37,11 +37,12 @@ podatki i opłaty lokalne, plany miejscowe (MPZP), statuty, organizacja szkół,
 Wszystko robi helper `scripts/edzienniki.py` (tylko biblioteka standardowa Pythona — bez instalacji).
 Skrypt leży **obok tego pliku SKILL.md** (`<katalog skilla>/scripts/edzienniki.py`) — NIE zakładaj, że
 to `~/.claude/skills/prawo-pl-edzienniki` (skill zainstalowany jako plugin leży w katalogu pluginów;
-w Claude Code: `${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-edzienniki`). Gdy nie znasz ścieżki, ustal ją:
+w Claude Code: `${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-edzienniki`). Uruchamiaj wyłącznie helper z bieżącego pakietu:
 
 ```
-EDZ=$(find "$HOME/.claude" "$HOME/.agents" /mnt /sessions -maxdepth 10 -name edzienniki.py -path "*prawo-pl-edzienniki*" 2>/dev/null | head -1)
-[ -n "$EDZ" ] || { curl -fsSL https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/main/plugins/prawo-pl-edzienniki/skills/prawo-pl-edzienniki/scripts/edzienniki.py -o /tmp/edzienniki.py && EDZ=/tmp/edzienniki.py; }
+[ -n "${CLAUDE_PLUGIN_ROOT:-}" ] || { echo "BŁĄD: CLAUDE_PLUGIN_ROOT nie jest ustawiony" >&2; exit 1; }
+EDZ="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-edzienniki/scripts/edzienniki.py"
+[ -f "$EDZ" ] || { echo "BŁĄD: brak helpera bieżącego pakietu: $EDZ" >&2; exit 1; }
 python3 "$EDZ" <komenda> [...]
 ```
 

@@ -41,11 +41,12 @@ administracyjnego; SAOS (skill prawo-pl-saos) sądów administracyjnych praktycz
 Wszystko robi helper `scripts/cbosa.py` (tylko biblioteka standardowa Pythona — bez instalacji).
 Skrypt leży **obok tego pliku SKILL.md** (`<katalog skilla>/scripts/cbosa.py`) — NIE zakładaj, że to
 `~/.claude/skills/prawo-pl-cbosa` (skill zainstalowany jako plugin leży w katalogu pluginów; w Claude
-Code: `${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-cbosa`). Gdy nie znasz ścieżki, najpierw ją ustal:
+Code: `${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-cbosa`). Uruchamiaj wyłącznie helper z bieżącego pakietu:
 
 ```
-CBOSA=$(find "$HOME/.claude" "$HOME/.agents" /mnt /sessions -maxdepth 10 -name cbosa.py -path "*prawo-pl-cbosa*" 2>/dev/null | head -1)
-[ -n "$CBOSA" ] || { curl -fsSL https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/main/plugins/prawo-pl-cbosa/skills/prawo-pl-cbosa/scripts/cbosa.py -o /tmp/cbosa.py && CBOSA=/tmp/cbosa.py; }
+[ -n "${CLAUDE_PLUGIN_ROOT:-}" ] || { echo "BŁĄD: CLAUDE_PLUGIN_ROOT nie jest ustawiony" >&2; exit 1; }
+CBOSA="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-cbosa/scripts/cbosa.py"
+[ -f "$CBOSA" ] || { echo "BŁĄD: brak helpera bieżącego pakietu: $CBOSA" >&2; exit 1; }
 python3 "$CBOSA" <komenda> [...]
 ```
 
@@ -67,7 +68,7 @@ python3 "$CBOSA" <komenda> [...]
   `--fragment "interpretacja"` (wycina okna wokół frazy).
 - **sygnatura** — szybkie odszukanie po sygnaturze:
   `python3 scripts/cbosa.py sygnatura II FSK 2870/18`
-- każda komenda przyjmuje `--json` (sparsowane dane jako JSON; działa przed komendą i po niej).
+- każda komenda przyjmuje `--json` oraz `--strict` (blokuje wynik bez zweryfikowanej aktualności lub kompletności); obie flagi działają przed komendą i po niej.
 
 Typowy przepływ: `szukaj` (zawęź `--sad`/`--od`/`--symbol`) → wybierz doc_id → `orzeczenie <doc_id>`
 → w razie potrzeby skacz po sygnaturach powiązanych (WSA ↔ NSA w tej samej sprawie).
