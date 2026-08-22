@@ -433,8 +433,14 @@ def cmd_tekst(a):
                      f"Pobierz urzędowy PDF: tekst {label} --pdf plik.pdf")
         act, txt = fb
         addr = act.get("displayAddress") or act.get("ELI", "")
-        sig = (act.get("ELI") or "").replace("/", " ")
-        ostrz = [f"UWAGA: text.html dla {label} jest PUSTE w API — poniżej tekst z innego t.j.: {addr}.",
+        actual_eli = act.get("ELI") or ""
+        if getattr(a, "strict", False):
+            sys.exit(f"BŁĄD: strict zabrania zwrócenia starszego tekstu jednolitego {actual_eli or addr} "
+                     f"zamiast pustego text.html dla {label}. Pobierz urzędowy PDF: "
+                     f"tekst {label} --pdf plik.pdf")
+        sig = actual_eli.replace("/", " ")
+        ostrz = [f"ELI_TEXT_SOURCE_FALLBACK={actual_eli}",
+                 f"UWAGA: text.html dla {label} jest PUSTE w API — poniżej tekst z innego t.j.: {addr}.",
                  f"Nałóż zmiany pomiędzy nimi: odniesienia {sig} (sekcja „Nowelizacje po tekście jednolitym\");"
                  f" do dosłownego cytatu: tekst {label} --pdf plik.pdf"] + ostrz
         label = f"{label} (tekst z: {addr})"

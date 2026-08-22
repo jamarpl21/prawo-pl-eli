@@ -403,6 +403,50 @@ class EliVerificationContractTests(unittest.TestCase):
             with self.assertRaises(eli.VerificationUnknown):
                 eli._tj_z_tekstem("/acts/DU/2024/18", refs)
 
+    def test_domyslnie_starszy_tj_ma_maszynowy_znacznik(self):
+        refs = {"Inf. o tekście jednolitym": [
+            {"act": {"ELI": "DU/2024/1568", "displayAddress": "Dz.U. 2024 poz. 1568"}}]}
+
+        def fake_get(path, params=None, soft=False):
+            if path.endswith("/references"):
+                return refs
+            if path == "/acts/DU/2026/468/text.html":
+                return ""
+            if path == "/acts/DU/2024/1568/text.html":
+                return "<p>Art. 1. Starsza treść.</p>"
+            raise AssertionError(path)
+
+        args = argparse.Namespace(sygnatura=["DU", "2026", "468"], json=False,
+                                  strict=False, pdf=None, fragment=None)
+        out = io.StringIO()
+        with mock.patch.object(eli, "_get", side_effect=fake_get), \
+                contextlib.redirect_stdout(out):
+            eli.cmd_tekst(args)
+        self.assertIn("ELI_TEXT_SOURCE_FALLBACK=DU/2024/1568", out.getvalue())
+        self.assertIn("Art. 1. Starsza treść.", out.getvalue())
+
+    def test_strict_blokuje_starszy_tj(self):
+        refs = {"Inf. o tekście jednolitym": [
+            {"act": {"ELI": "DU/2024/1568", "displayAddress": "Dz.U. 2024 poz. 1568"}}]}
+
+        def fake_get(path, params=None, soft=False):
+            if path.endswith("/references"):
+                return refs
+            if path == "/acts/DU/2026/468/text.html":
+                return ""
+            if path == "/acts/DU/2024/1568/text.html":
+                return "<p>Art. 1. Starsza treść.</p>"
+            raise AssertionError(path)
+
+        args = argparse.Namespace(sygnatura=["DU", "2026", "468"], json=False,
+                                  strict=True, pdf=None, fragment=None)
+        out = io.StringIO()
+        with mock.patch.object(eli, "_get", side_effect=fake_get), \
+                contextlib.redirect_stdout(out):
+            with self.assertRaisesRegex(SystemExit, "strict zabrania.*DU/2024/1568"):
+                eli.cmd_tekst(args)
+        self.assertNotIn("Starsza treść", out.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
