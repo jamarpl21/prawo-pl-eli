@@ -1,0 +1,18 @@
+{
+  "name": "prawo-pl-rejestr-umow",
+  "version": "2.0.0",
+  "description": "Umowy jednostek sektora finansów publicznych z publicznego API Centralnego Rejestru Umów (rejestrumow.gov.pl, od 1.07.2026): zamawiający, wykonawca, przedmiot, wartość, aneksy, wyłączenia jawności. Wyszukiwanie po przedmiocie, stronach (nazwa/REGON/NIP), województwie, dacie i wartości. Read-only, bez klucza.",
+  "author": {
+    "name": "Krzysztof Gibek"
+  },
+  "homepage": "https://github.com/jamarpl21/prawo-pl-eli",
+  "repository": "https://github.com/jamarpl21/prawo-pl-eli",
+  "license": "MIT",
+  "keywords": ["prawo", "polish-law", "rejestr-umow", "umowy", "jsfp", "finanse-publiczne", "transparency", "public-spending", "legal"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Prawo PL — Centralny Rejestr Umów (JSFP)",
+    "shortDescription": "Umowy jednostek sektora finansów publicznych z publicznego API rejestru.",
+    "category": "Productivity"
+  }
+}

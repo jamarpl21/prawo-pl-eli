@@ -1,0 +1,18 @@
+{
+  "name": "prawo-eu-eurlex",
+  "version": "2.0.0",
+  "description": "Prawo UE z oficjalnego repozytorium CELLAR/EUR-Lex Urzędu Publikacji (SPARQL + REST, bez klucza) do każdego pytania o prawo unijne: rozporządzenia, dyrektywy, wersje skonsolidowane, pojedyncze artykuły po polsku, nowelizacje i podstawa prawna. Read-only.",
+  "author": {
+    "name": "Krzysztof Gibek"
+  },
+  "homepage": "https://github.com/jamarpl21/prawo-pl-eli",
+  "repository": "https://github.com/jamarpl21/prawo-pl-eli",
+  "license": "MIT",
+  "keywords": ["prawo", "eu-law", "eur-lex", "cellar", "celex", "legal"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Prawo UE — EUR-Lex/CELLAR",
+    "shortDescription": "Prawo UE z oficjalnego CELLAR/EUR-Lex (CELEX, wersje skonsolidowane).",
+    "category": "Productivity"
+  }
+}

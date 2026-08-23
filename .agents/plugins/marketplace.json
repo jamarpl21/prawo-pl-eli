@@ -1,0 +1,71 @@
+{
+  "name": "gibek-skills",
+  "interface": {
+    "displayName": "Gibek Skills"
+  },
+  "plugins": [
+    {
+      "name": "prawo-pl-eli",
+      "version": "2.0.0",
+      "source": {
+        "source": "local",
+        "path": "./plugins/prawo-pl-eli"
+      },
+      "category": "Productivity"
+    },
+    {
+      "name": "prawo-pl-edzienniki",
+      "version": "2.0.0",
+      "source": {
+        "source": "local",
+        "path": "./plugins/prawo-pl-edzienniki"
+      },
+      "category": "Productivity"
+    },
+    {
+      "name": "prawo-eu-eurlex",
+      "version": "2.0.0",
+      "source": {
+        "source": "local",
+        "path": "./plugins/prawo-eu-eurlex"
+      },
+      "category": "Productivity"
+    },
+    {
+      "name": "prawo-pl-saos",
+      "version": "2.0.0",
+      "source": {
+        "source": "local",
+        "path": "./plugins/prawo-pl-saos"
+      },
+      "category": "Productivity"
+    },
+    {
+      "name": "prawo-pl-cbosa",
+      "version": "2.0.0",
+      "source": {
+        "source": "local",
+        "path": "./plugins/prawo-pl-cbosa"
+      },
+      "category": "Productivity"
+    },
+    {
+      "name": "prawo-pl-uodo",
+      "version": "2.0.0",
+      "source": {
+        "source": "local",
+        "path": "./plugins/prawo-pl-uodo"
+      },
+      "category": "Productivity"
+    },
+    {
+      "name": "prawo-pl-rejestr-umow",
+      "version": "2.0.0",
+      "source": {
+        "source": "local",
+        "path": "./plugins/prawo-pl-rejestr-umow"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
