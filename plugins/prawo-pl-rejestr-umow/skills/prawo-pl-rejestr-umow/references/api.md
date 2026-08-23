@@ -8,7 +8,7 @@ ale zwykłe żądania z dowolnym User-Agentem przechodzą). Rejestr jest jawny (
 ust. 11 u.f.p.); informacje udostępniane są do ponownego wykorzystywania bezpłatnie
 (art. 34b ust. 7 u.f.p.); dane wprowadzają i administrują nimi kierownicy JSFP.
 
-## Endpointy (zweryfikowane na żywo, 2026-07)
+## Endpointy (zweryfikowane na żywo, 2026-07; sekcje filtrów i okno ponownie 2026-08-23)
 
 | Ścieżka | Metoda | Zwraca |
 |---|---|---|
@@ -18,29 +18,54 @@ ust. 11 u.f.p.); informacje udostępniane są do ponownego wykorzystywania bezp�
 
 Odpowiedź wyszukiwania: `content[] totalElements totalMatchingElements offset limit`.
 **`totalElements` jest obcięte do 10 000** (okno wyszukiwania à la Elasticsearch);
-realną liczbę trafień pokazuje `totalMatchingElements`. `offset ≥ 10 000` zwraca pustą
-listę — pełny przegląd rób wycinkami po `dataPublikacjiOd/Do` lub `dataZawarciaOd/Do`.
+realną liczbę trafień pokazuje `totalMatchingElements` — ale **tylko przy `offset < 10 000`**:
+przy `offset ≥ 10 000` API zwraca pustą listę i ZANIŻA także `totalMatchingElements` do 10 000
+(woj. podlaskie: offset 9950 → 50 wierszy i total 11 076; offset 10 000 → `[]` i total 10 000).
+Pusta lista ma więc trzy znaczenia: prawdziwe zero (`totalMatchingElements` = 0), strona poza
+zbiorem (offset ≥ total) albo strona poza oknem (offset ≥ 10 000 przy total > 10 000) — silnik
+odróżnia je w komunikacie („Brak wyników" / „poza zakresem" / „poza oknem API"). Pełny przegląd
+zbiorów > 10 000 rób wycinkami po `dataPublikacjiOd/Do` lub `dataZawarciaOd/Do` (tryb `--strict`
+blokuje zbiór > 10 000 jako niekompletny). `offset` jest zaokrąglany w dół do wielokrotności
+`limit` (offset 455, limit 50 → strona od 450) — silnik wysyła zawsze `strona × limit`.
 
 ## Body wyszukiwania (sekcje → pola)
 
 Sekcje odpowiadają formularzowi UI; wszystkie pola opcjonalne, łączone spójnikiem I (AND).
-**Nieznane sekcje i pola są ignorowane PO CICHU** — literówka w nazwie pola = brak filtra,
-bez błędu. Daty w filtrach: `RRRR-MM-DD` (odpowiedzi zwracają `DD.MM.RRRR`).
+**Nieznane sekcje i pola są ignorowane PO CICHU** — literówka w nazwie pola lub sekcji = brak
+filtra, bez błędu: body `{"zmianyUmowie":{"zmianyUmowy":{"rodzajZmiany":"TSU02"}}}` zwraca
+364 470 umów (= cały rejestr, jak `{}`), a poprawne `{"zmianyUmowy":{"rodzajZmiany":"TSU02"}}`
+→ 1 056. **Zanim uznasz wynik za odfiltrowany, porównaj total z totalem `{}` (komenda
+`najnowsze`).** Daty w filtrach: `RRRR-MM-DD` (odpowiedzi zwracają `DD.MM.RRRR`).
+
+**Trzy sekcje stron umowy** (zweryfikowane 2026-08-23 na Uniwersytecie Wrocławskim,
+REGON 000001301 / NIP 8960005408; te same liczby dla `nazwa`, `regon` i `nip`):
+
+| Sekcja | Kogo filtruje | Trafień |
+|---|---|---|
+| `jsfp.nazwa/regon/nip` | **tylko zamawiający** (JSFP) | 455 |
+| `inneStronyUmowy.nazwa/regon/nip` | **tylko druga strona** (wykonawca — także gdy jest nią inna JSFP) | 17 |
+| `menuGlowne.nazwa/regon/nip` | **dowolna strona** (pole „szukaj" z UI) | 472 = 455 + 17 |
+
+`nip`/`regon` porównywane są dosłownie (`896-000-54-08` → 0 trafień) — podawaj same cyfry;
+`nazwa` działa pełnotekstowo, bez rozróżniania wielkości liter.
 
 | Sekcja | Pola |
 |---|---|
-| `menuGlowne` | `nazwa regon nip` (JSFP-zamawiający), `przedmiotUmowy`, `statusUmowy`, `wartoscOd wartoscDo`, `dataZawarciaOd/Do`, `dataPublikacjiOd/Do`, `dataZmianyOd/Do` |
-| `jsfp` | `nazwa regon nip wojewodztwo powiat gmina miejscowosc ulica numerNieruchomosci numerLokalu kodPocztowy` |
-| `daneUmowy` | `numerUmowy brakNumeruUmowy umowaNaCzasNieoznaczony finansowanaZeSrodkow opisWartosciPrzedmiotu okresLiczbaOd/Do okresJednostka dataZakonczeniaUmowyOd/Do czyWylaczenieJawnosci zakresWylaczenia podstawa organLubOsobaWylaczajaca` |
-| `zmianyUmowie` → `zmianyUmowy` | `rodzajZmiany` (KOD słownika, np. `TSU02` — patrz niżej), `dataZmianyOd/Do`, `komentarz`, `czyZmianyDanychUmowy` |
-| `inneStronyUmowy` (wykonawca) | `czyKonsorcjum rodzaj kraj regon nazwa nip imie nazwisko ulica numerNieruchomosci numerLokalu wojewodztwo powiat gmina miejscowosc kodPocztowy` |
+| `menuGlowne` | `nazwa regon nip` (DOWOLNA strona umowy), `przedmiotUmowy`, `statusUmowy`, `wartoscOd wartoscDo`, `dataZawarciaOd/Do`, `dataPublikacjiOd/Do` (NIE ma tu `dataZmianyOd/Do` — to sekcja `zmianyUmowy`) |
+| `jsfp` (zamawiający) | `nazwa regon nip wojewodztwo powiat gmina miejscowosc ulica numerNieruchomosci numerLokalu kodPocztowy` |
+| `inneStronyUmowy` (wykonawca) | `czyKonsorcjum rodzaj` (kod `SU01/SU02/SU03`, nie nazwa) `kraj regon nazwa nip imie nazwisko ulica numerNieruchomosci numerLokalu wojewodztwo powiat gmina miejscowosc kodPocztowy` |
+| `daneUmowy` | `numerUmowy brakNumeruUmowy umowaNaCzasNieoznaczony finansowanaZeSrodkow opisWartosciPrzedmiotu okresLiczbaOd/Do okresJednostka dataZakonczeniaUmowyOd/Do czyWylaczenieJawnosci zakresWylaczenia` (`SC02/SC03/SC04`) `podstawa organLubOsobaWylaczajaca` |
+| `zmianyUmowy` (sekcja NAJWYŻSZEGO poziomu, bez opakowania) | `rodzajZmiany` (KOD słownika, np. `TSU02` → 1 056, `TSU05` → 1 337, `TSU10` → 112 549, `inne` → 19 145; `TSU01` → 0), `dataZmianyOd/Do` (data wpisu zmiany; `2026-09-01` → 0), `czyZmianyDanychUmowy` (bool: `true` = umowa ma JAKĄKOLWIEK zmianę, 133 710; `false` 230 760), `komentarz` (pełnotekstowo) |
 | `inne` | `dataModyfikacjiOd/Do` |
 
 **Zweryfikowane pułapki:**
 - `statusUmowy` przyjmuje **dokładnie** `Aktywna` / `Nieaktywna` (case-sensitive;
   `AKTYWNA` → błąd 500 „Nieoczekiwany błąd”); `wojewodztwo` — dowolna wielkość liter;
-- `zmianyUmowy.rodzajZmiany` przyjmuje **kod** słownika (`TSU02`), nie nazwę
-  („Aneks do umowy” → 0 wyników);
+- `zmianyUmowy.rodzajZmiany` przyjmuje **kod** słownika (`TSU02`, wielkość liter obojętna),
+  nie nazwę („Aneks do umowy” → 0 wyników); `TSU01` (korekta danych) zawsze 0 — korekty nie
+  są publikowane jako zmiany;
+- filtry łączą się spójnikiem I także między sekcjami: `jsfp.regon` + `zmianyUmowy.rodzajZmiany`
+  = umowy tego zamawiającego z aneksem (UWr + `TSU02` → 0 — UWr nie ma aneksów, nie błąd);
 - `przedmiotUmowy` działa pełnotekstowo na przedmiocie umowy (wielowyrazowe frazy OK);
 - `limit` jest obcinany serwerowo do **50**; `sortKey` spoza listy → błąd walidacji
   (`Invalid sort key value`);
@@ -77,25 +102,37 @@ bez błędu. Daty w filtrach: `RRRR-MM-DD` (odpowiedzi zwracają `DD.MM.RRRR`).
 brakNumeruUmowy dataZawarciaUmowy dataZakonczeniaUmowy}`, `okresObowiazywania{
 umowaNaCzasNieoznaczony okres}` („154 dni”), `szczegolyUmowy{przedmiotUmowy
 niejawnoscPrzedmiotu wartoscPrzedmiotu niejawnoscWartosciPrzedmiotu
-opisWartosciPrzedmiotu}` (opis = kwota słownie), `stronyUmowy[{kraj rodzaj nazwa nip
+opisWartosciPrzedmiotu}` (**`opisWartosciPrzedmiotu` to dowolny tekst wpisany przez jednostkę
+— „opis wartości", np. „zakup środków czystości"; BYWA kwotą słownie, często `null`, także
+przy umowach na miliardy — nie traktuj go jak pola kontrolnego kwoty**), `stronyUmowy[{kraj rodzaj nazwa nip
 regon imie nazwisko czyKonsorcjum daneAdresowe{ulica numerNieruchomosci numerLokalu
 wojewodztwo powiat gminaMiastoDzielnica miejscowosc kodPocztowy} niejawnoscStrony}]`
 (`rodzaj` ∈ JSFP | Przedsiębiorca | Osoba fizyczna), `finansowanaZeSrodkow` (bool —
 środki z art. 5 ust. 1 pkt 2–3 u.f.p.), `zmianyUmowy[{rodzajZmiany dataZmiany
-komentarz}]`, `dataPublikacji`, `dataModyfikacji`.
+komentarz}]` (w szczegółach `rodzajZmiany` to NAZWA — „Aneks do umowy"; w filtrze — KOD
+`TSU02`), `dataPublikacji`, `dataModyfikacji`. Bloki wyłączenia jawności (`niejawnoscStrony`,
+`niejawnoscPrzedmiotu`, `niejawnoscWartosciPrzedmiotu`) mają kształt `{podstawa zakres
+organLubOsobaWylaczajaca komentarz}` (każde pole może być `null`; przy niejawnej stronie
+`nazwa/nip/regon/daneAdresowe` są puste) — silnik drukuje je jako „zakres: …; podstawa: …;
+wyłączający: …; komentarz: …".
 
 Link do umowy w przeglądarce: `https://rejestrumow.gov.pl/umowa/{idUmowy}`.
 
 ## Mapowanie komend `rejestrumow.py` → API
 
 `najnowsze` → `{}` + `sortKey=publicationDateDesc`; `szukaj FRAZA` →
-`menuGlowne.przedmiotUmowy`, `--jsfp/--regon/--nip` → `menuGlowne.nazwa/regon/nip`,
-`--wykonawca(-nip/-regon)` → `inneStronyUmowy.nazwa/nip/regon`,
-`--woj/--powiat/--gmina/--miejscowosc` → `jsfp.*`, `--od/--do` → `dataZawarciaOd/Do`,
-`--pub-od/--pub-do` → `dataPublikacjiOd/Do`, `--wartosc-od/-do` → `wartoscOd/Do`,
-`--status` → `statusUmowy`, `--zapytanie '<json>'` → body przekazane wprost;
-`--limit/--strona` → `limit/offset`; `umowa` → `/agreement/{uuid}`;
-`slownik` → `/dictionary?name=…`.
+`menuGlowne.przedmiotUmowy`; `--jsfp/--regon/--nip` → **`jsfp.nazwa/regon/nip`** (tylko
+zamawiający; `--rola dowolna` → `menuGlowne.*` = dowolna strona, `--rola wykonawca` →
+`inneStronyUmowy.*`); `--wykonawca(-nip/-regon)` → `inneStronyUmowy.nazwa/nip/regon`;
+`--woj/--powiat/--gmina/--miejscowosc` → `jsfp.*` (adres zamawiającego — także przy
+`--rola dowolna`); `--od/--do` → `dataZawarciaOd/Do`, `--pub-od/--pub-do` →
+`dataPublikacjiOd/Do`, `--wartosc-od/-do` → `wartoscOd/Do`, `--status` → `statusUmowy`;
+`--zmiana-rodzaj KOD` → `zmianyUmowy.rodzajZmiany`, `--zmiana-od/--zmiana-do` →
+`zmianyUmowy.dataZmianyOd/Do`; `--zapytanie '<json>'` → body przekazane wprost (bez walidacji
+nazw pól — patrz „ignorowane po cichu"); `--limit/--strona` → `limit/offset = strona × limit`
+(limit > 50 → obcięty do 50 z komunikatem na stderr; `--strona` ≥ 10 000/limit → silnik nie
+pyta o tę stronę, pobiera realny total i kończy komunikatem „poza oknem API"); `umowa` →
+`/agreement/{uuid}`; `slownik` → `/dictionary?name=…`.
 
 ## Wskazówki
 

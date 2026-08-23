@@ -15,13 +15,21 @@ ogłoszenia o zamówieniach publicznych są w BZP/TED (poza tym skillem).
 
 Komendy:
   najnowsze [--limit N]                          ostatnio opublikowane umowy
-  szukaj ["<fraza przedmiotu>"] [--jsfp N] [--regon R] [--nip N] [--wykonawca W]
+  szukaj ["<fraza przedmiotu>"] [--jsfp N] [--regon R] [--nip N] [--rola zamawiajacy|wykonawca|dowolna]
+         [--wykonawca W] [--wykonawca-nip N] [--wykonawca-regon R]
          [--woj W] [--status Aktywna|Nieaktywna] [--od RRRR-MM-DD] [--do RRRR-MM-DD]
-         [--wartosc-od N] [--wartosc-do N] [--sort KLUCZ] [--limit N] [--strona N]
+         [--wartosc-od N] [--wartosc-do N] [--zmiana-rodzaj KOD] [--zmiana-od D] [--zmiana-do D]
+         [--sort KLUCZ] [--limit N] [--strona N]
   umowa <idUmowy>                                pełne szczegóły umowy (strony, adresy, zmiany)
   slownik <nazwa>                                słownik API (kraje, strony_umowy, …)
 Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
            --strict  (blokuje wynik, gdy nie udało się zweryfikować jego kompletności)
+
+Sekcje body wyszukiwania (API ignoruje nieznane pola PO CICHU — zła nazwa = cały rejestr):
+  jsfp.*            zamawiający (JSFP): nazwa/regon/nip/adres      ← --jsfp/--regon/--nip/--woj…
+  inneStronyUmowy.* druga strona (wykonawca): nazwa/regon/nip      ← --wykonawca*
+  menuGlowne.*      nazwa/regon/nip DOWOLNEJ strony + przedmiot, status, daty, wartość
+  zmianyUmowy.*     rodzajZmiany (kod TSU02…), dataZmianyOd/Do, czyZmianyDanychUmowy
 """
 import sys, json, re, time, argparse, urllib.request, urllib.parse, urllib.error
 
@@ -37,6 +45,10 @@ SORTY = ["unitNameAsc", "unitNameDesc", "unitVoivodeshipAsc", "unitVoivodeshipDe
 SLOWNIKI = ["kraje", "strony_umowy", "rodzaje_zmian_umowy",
             "podstawy_wylaczenia_jawnosci", "zakres_wylaczenia_jawnosci"]
 OKNO = 10000  # API przegląda maks. 10 000 wyników na zapytanie (zawężaj filtrami dat)
+LIMIT_API = 50  # serwer tnie stronę do 50 niezależnie od żądanego limitu
+ROLE = ["zamawiajacy", "wykonawca", "dowolna"]  # --rola: w której sekcji szukać --jsfp/--regon/--nip
+KOD_ZMIANY = re.compile(r"TSU\d{2}|inne", re.I)  # kody słownika rodzaje_zmian_umowy
+ZAWEZ = "zawęź filtry (daty: --od/--do, --pub-od/--pub-do; --woj; --wartosc-od/--wartosc-do)"
 
 
 def _req(path, params=None, body=None):
@@ -122,12 +134,26 @@ def _pelne(d):
     return {k: v for k, v in d.items() if v not in (None, "")}
 
 
+def _ident(s):
+    """NIP/REGON: API porównuje dosłownie ('896-000-54-08' → 0 trafień) — zostawiamy same cyfry."""
+    return re.sub(r"[\s-]", "", s) if s else s
+
+
+def _kod_zmiany(k):
+    """Kod słownika rodzaje_zmian_umowy (TSU02, TSU05, inne…) — nazwa ('Aneks do umowy') daje 0."""
+    if not KOD_ZMIANY.fullmatch(k or ""):
+        sys.exit(f"--zmiana-rodzaj {k!r}: podaj KOD słownika (np. TSU02 = aneks, TSU05 = rozwiązanie, "
+                 "TSU10 = wygaśnięcie, inne), nie nazwę — lista: komenda 'slownik rodzaje_zmian_umowy'.")
+    return "inne" if k.lower() == "inne" else k.upper()
+
+
 def _filtry(a):
     """Argumenty CLI → body zapytania POST /agreements/search (sekcje wg formularza UI).
-    Nieznane sekcje/pola API ignoruje po cichu — trzymaj się nazw z references/api.md."""
+    Nieznane sekcje/pola API ignoruje po cichu — trzymaj się nazw z references/api.md.
+    Sekcje stron (zweryfikowane na REGON 000001301): jsfp.* = tylko zamawiający (455),
+    inneStronyUmowy.* = tylko druga strona (17), menuGlowne.* = dowolna strona (472 = 455 + 17)."""
     menu = _pelne({
         "przedmiotUmowy": a.fraza,
-        "nazwa": a.jsfp, "regon": a.regon, "nip": a.nip,
         "statusUmowy": a.status,
         "dataZawarciaOd": _data(a.od) if a.od else None,
         "dataZawarciaDo": _data(a.do) if a.do else None,
@@ -136,10 +162,26 @@ def _filtry(a):
         "wartoscOd": _liczba(a.wartosc_od) if a.wartosc_od is not None else None,
         "wartoscDo": _liczba(a.wartosc_do) if a.wartosc_do is not None else None,
     })
+    podmiot = _pelne({"nazwa": a.jsfp, "regon": _ident(a.regon), "nip": _ident(a.nip)})
     jsfp = _pelne({"wojewodztwo": a.woj, "powiat": a.powiat,
                    "gmina": a.gmina, "miejscowosc": a.miejscowosc})
-    wykonawca = _pelne({"nazwa": a.wykonawca, "nip": a.wykonawca_nip,
-                        "regon": a.wykonawca_regon})
+    wykonawca = _pelne({"nazwa": a.wykonawca, "nip": _ident(a.wykonawca_nip),
+                        "regon": _ident(a.wykonawca_regon)})
+    rola = getattr(a, "rola", None) or "zamawiajacy"
+    if rola == "dowolna":
+        menu.update(podmiot)          # menuGlowne.* = obie strony umowy
+    elif rola == "wykonawca":
+        if wykonawca and podmiot:
+            sys.exit("--rola wykonawca kieruje --jsfp/--regon/--nip do sekcji drugiej strony — "
+                     "nie łącz tego z --wykonawca/--wykonawca-nip/--wykonawca-regon (jedna para).")
+        wykonawca.update(podmiot)
+    else:
+        jsfp.update(podmiot)          # domyślnie: tylko zamawiający (JSFP)
+    zmiany = _pelne({
+        "rodzajZmiany": _kod_zmiany(a.zmiana_rodzaj) if getattr(a, "zmiana_rodzaj", None) else None,
+        "dataZmianyOd": _data(a.zmiana_od) if getattr(a, "zmiana_od", None) else None,
+        "dataZmianyDo": _data(a.zmiana_do) if getattr(a, "zmiana_do", None) else None,
+    })
     body = {}
     if menu:
         body["menuGlowne"] = menu
@@ -147,13 +189,19 @@ def _filtry(a):
         body["jsfp"] = jsfp
     if wykonawca:
         body["inneStronyUmowy"] = wykonawca
+    if zmiany:
+        body["zmianyUmowy"] = zmiany
     return body
 
 
-def _limit(n):
+def _limit(n, glosno=False):
     """API twardo tnie stronę do 50 — obcinamy JAWNIE, żeby nagłówek i numeracja stron nie kłamały
-    (przy --limit 100 silnik pobierał 50, a pisał „po 100")."""
-    return max(1, min(n, 50))
+    (przy --limit 100 silnik pobierał 50, a pisał „po 100"). glosno=True → komunikat na stderr
+    (stdout zostaje czysty także przy --json)."""
+    if glosno and n > LIMIT_API:
+        print(f"UWAGA: --limit {n} obcięty do {LIMIT_API} (maksimum API); kolejne wyniki: --strona N.",
+              file=sys.stderr)
+    return max(1, min(n, LIMIT_API))
 
 
 def _szukaj(body, limit=10, strona=0, sort=None):
@@ -187,25 +235,59 @@ def _sprawdz_okno_strict(a, d):
                  "--woj, --wartosc-od (albo uruchom bez --strict, świadomie biorąc tylko okno).")
 
 
-def _lista(d, limit, strona):
+def _stron(ile, limit):
+    """Liczba stron osiągalnych przez API (okno 10 000 ucina ogon większych zbiorów)."""
+    return -(-min(ile, OKNO) // limit) if ile else 0
+
+
+def _brak_wynikow():
+    sys.exit("Brak wyników. Fraza szuka w PRZEDMIOCIE umowy; nazwy JSFP wpisują jednostki "
+             "(bywają skróty/literówki) — spróbuj krótszej frazy, --regon/--nip albo --wykonawca; "
+             "--jsfp/--regon/--nip szukają tylko ZAMAWIAJĄCEGO (podmiot jako wykonawca: --wykonawca*, "
+             "w dowolnej roli: --rola dowolna).\n"
+             "Pamiętaj: rejestr obejmuje umowy zawarte od 1.07.2026.")
+
+
+def _sprawdz_strone(d, limit, strona):
+    """Pusta strona ≠ zero trafień: odróżniamy prawdziwe zero, stronę poza zbiorem i stronę
+    poza oknem API (offset ≥ 10 000, gdzie API zwraca pustą listę i ZANIŻA total do 10 000)."""
     tresc = d.get("content") or []
-    ile = d.get("totalMatchingElements", len(tresc))
-    if not tresc:
-        sys.exit("Brak wyników. Fraza szuka w PRZEDMIOCIE umowy; nazwy JSFP wpisują jednostki "
-                 "(bywają skróty/literówki) — spróbuj krótszej frazy, --regon/--nip albo --wykonawca.\n"
-                 "Pamiętaj: rejestr obejmuje umowy zawarte od 1.07.2026.")
+    ile = d.get("totalMatchingElements")
+    if not isinstance(ile, int):
+        ile = len(tresc)
+    if tresc:
+        return ile
+    if ile == 0:
+        _brak_wynikow()
+    stron = _stron(ile, limit)
+    if strona * limit >= OKNO and ile > strona * limit:
+        sys.exit(f"Strona {strona} poza oknem API: okno {OKNO} wyników wyczerpane (pasujących umów: {ile}, "
+                 f"osiągalne strony 0–{stron - 1} po {limit}) — {ZAWEZ}.")
+    if strona * limit >= ile:
+        sys.exit(f"Strona {strona} poza zakresem (stron: {stron}, numeracja od 0 — ostatnia to "
+                 f"--strona {stron - 1}; pasujących umów: {ile}).")
+    sys.exit(f"BŁĄD: API zwróciło pustą stronę {strona} mimo {ile} pasujących umów — spróbuj ponownie.")
+
+
+def _lista(d, limit, strona):
+    ile = _sprawdz_strone(d, limit, strona)
+    tresc = d.get("content") or []
     print(f"Pasujących umów: {ile}  (strona {strona}, po {limit})\n")
     for it in tresc:
         _wiersz(it)
+    nastepny = (strona + 1) * limit
     if ile > OKNO:
-        print(f"UWAGA: API przegląda maks. {OKNO} wyników na zapytanie — zawęź filtrami "
-              "(--od/--do, --pub-od/--pub-do, --woj, --wartosc-od).")
-    if len(tresc) == limit:
+        print(f"UWAGA: API przegląda maks. {OKNO} wyników na zapytanie — {ZAWEZ}.")
+    if nastepny < min(ile, OKNO):
         print(f"Kolejna strona: --strona {strona + 1}")
+    elif nastepny >= OKNO and ile > nastepny:
+        print(f"Okno {OKNO} wyników wyczerpane — {ZAWEZ}.")
+    else:
+        print(f"Ostatnia strona (stron: {_stron(ile, limit)}).")
 
 
 def cmd_najnowsze(a):
-    a.limit = _limit(a.limit)
+    a.limit = _limit(a.limit, glosno=True)
     d = _szukaj({}, a.limit, sort="publicationDateDesc")
     if not isinstance(d, dict):
         sys.exit("BŁĄD: API rejestru zwróciło nieoczekiwaną odpowiedź (lista umów).")
@@ -229,20 +311,29 @@ def cmd_szukaj(a):
         sys.exit("Podaj kryterium: frazę przedmiotu umowy, --jsfp/--regon/--nip, --wykonawca, "
                  "--woj, --status, zakres dat/wartości albo --zapytanie '<json>'.\n"
                  "Pełną listę bez filtra daje komenda 'najnowsze'.")
-    a.limit = _limit(a.limit)
-    d = _szukaj(body, a.limit, a.strona, a.sort)
+    a.limit = _limit(a.limit, glosno=True)
+    if a.strona < 0:
+        sys.exit("--strona: numer strony od 0.")
+    if a.strona * a.limit >= OKNO:
+        # offset ≥ 10 000: API zwraca pustą listę i ZANIŻA totalMatchingElements do 10 000 —
+        # realną liczbę trafień bierzemy z pierwszej strony (limit 1), żeby komunikat nie kłamał
+        d = _szukaj(body, 1, 0, a.sort)
+        if isinstance(d, dict):
+            d["content"] = []
+    else:
+        d = _szukaj(body, a.limit, a.strona, a.sort)
     if not isinstance(d, dict):
         sys.exit("BŁĄD: API rejestru zwróciło nieoczekiwaną odpowiedź (wyniki wyszukiwania).")
     _sprawdz_okno_strict(a, d)
-    if not d.get("content"):  # zweryfikowane zero — także z --json komunikat, nie pusty JSON
-        _lista(d, a.limit, a.strona)
+    _sprawdz_strone(d, a.limit, a.strona)  # zero / poza zakresem / poza oknem → komunikat + exit ≠ 0, także z --json
     if a.json:
         print(json.dumps(d, ensure_ascii=False, indent=2)); return
     _lista(d, a.limit, a.strona)
 
 
 def _strona_umowy(i, s):
-    kto = s.get("nazwa") or " ".join(x for x in (s.get("imie"), s.get("nazwisko")) if x) or "?"
+    kto = s.get("nazwa") or " ".join(x for x in (s.get("imie"), s.get("nazwisko")) if x) \
+        or ("(dane strony niejawne)" if s.get("niejawnoscStrony") else "?")
     idn = "  ".join(f"{k} {v}" for k, v in (("NIP", s.get("nip")), ("REGON", s.get("regon"))) if v)
     print(f"  {i}. [{s.get('rodzaj') or '?'}] {kto}{' (konsorcjum)' if s.get('czyKonsorcjum') else ''}"
           + (f"   {idn}" if idn else ""))
@@ -251,13 +342,27 @@ def _strona_umowy(i, s):
     if ulica and adr.get("numerLokalu"):
         ulica += f"/{adr['numerLokalu']}"
     czesci = [ulica, " ".join(x for x in (adr.get("kodPocztowy"), adr.get("miejscowosc")) if x),
+              f"gmina/dzielnica {adr['gminaMiastoDzielnica']}" if adr.get("gminaMiastoDzielnica") else "",
+              f"powiat {adr['powiat']}" if adr.get("powiat") else "",
               f"woj. {adr['wojewodztwo'].lower()}" if adr.get("wojewodztwo") else "",
               s.get("kraj") if s.get("kraj") not in (None, "Polska") else ""]
     linia = ", ".join(c for c in czesci if c)
     if linia:
         print(f"     {linia}")
     if s.get("niejawnoscStrony"):
-        print(f"     WYŁĄCZENIE JAWNOŚCI strony: {s['niejawnoscStrony']}")
+        print(f"     WYŁĄCZENIE JAWNOŚCI strony: {_niejawnosc(s['niejawnoscStrony'])}")
+
+
+def _niejawnosc(n):
+    """Blok wyłączenia jawności {podstawa zakres organLubOsobaWylaczajaca komentarz} → jedna linia
+    (pola puste pomijane; nigdy surowy dict / None)."""
+    if not isinstance(n, dict):
+        return str(n)
+    pola = (("zakres", "zakres"), ("podstawa", "podstawa"),
+            ("organLubOsobaWylaczajaca", "wyłączający"), ("komentarz", "komentarz"))
+    czesci = [f"{opis}: {n[k]}" for k, opis in pola if n.get(k) not in (None, "")]
+    inne = [f"{k}: {v}" for k, v in n.items() if k not in dict(pola) and v not in (None, "")]
+    return "; ".join(czesci + inne) or "(bez szczegółów)"
 
 
 def _zmiana(z):
@@ -303,7 +408,7 @@ def cmd_umowa(a):
     print(f"\n## Przedmiot umowy\n{przedmiot or '(brak / wyłączenie jawności)'}")
     for pole, opis in (("niejawnoscPrzedmiotu", "przedmiotu"), ("niejawnoscWartosciPrzedmiotu", "wartości")):
         if szcz.get(pole):
-            print(f"WYŁĄCZENIE JAWNOŚCI {opis}: {szcz[pole]}")
+            print(f"WYŁĄCZENIE JAWNOŚCI {opis}: {_niejawnosc(szcz[pole])}")
     strony = d.get("stronyUmowy") or []
     print(f"\n## Strony umowy ({len(strony)})")
     for i, s in enumerate(strony, 1):
@@ -343,9 +448,12 @@ def main():
     s = sub.add_parser("szukaj")
     s.add_argument("fraza", nargs="?", default=None,
                    help="fraza z PRZEDMIOTU umowy (np. 'remont drogi')")
-    s.add_argument("--jsfp", help="nazwa JSFP (zamawiającego), np. 'urząd gminy'")
-    s.add_argument("--regon", help="REGON JSFP")
-    s.add_argument("--nip", help="NIP JSFP")
+    s.add_argument("--jsfp", help="nazwa JSFP-zamawiającego, np. 'urząd gminy' (sekcja jsfp)")
+    s.add_argument("--regon", help="REGON JSFP-zamawiającego")
+    s.add_argument("--nip", help="NIP JSFP-zamawiającego")
+    s.add_argument("--rola", choices=ROLE, default="zamawiajacy",
+                   help="w jakiej roli szukać podmiotu z --jsfp/--regon/--nip: zamawiajacy (domyślnie, "
+                        "sekcja jsfp), wykonawca (sekcja inneStronyUmowy), dowolna (menuGlowne — obie strony)")
     s.add_argument("--wykonawca", help="nazwa drugiej strony umowy (wykonawcy)")
     s.add_argument("--wykonawca-nip", help="NIP wykonawcy")
     s.add_argument("--wykonawca-regon", help="REGON wykonawcy")
@@ -361,6 +469,10 @@ def main():
     s.add_argument("--pub-do", help="data publikacji do (RRRR-MM-DD)")
     s.add_argument("--wartosc-od", help="wartość umowy od (PLN)")
     s.add_argument("--wartosc-do", help="wartość umowy do (PLN)")
+    s.add_argument("--zmiana-rodzaj", help="umowy ze zmianą danego rodzaju — KOD słownika "
+                                           "rodzaje_zmian_umowy (TSU02 aneks, TSU05 rozwiązanie, TSU10 wygaśnięcie…)")
+    s.add_argument("--zmiana-od", help="data zmiany umowy od (RRRR-MM-DD)")
+    s.add_argument("--zmiana-do", help="data zmiany umowy do (RRRR-MM-DD)")
     s.add_argument("--sort", choices=SORTY, default=None,
                    help="sortowanie, np. priceDesc, publicationDateDesc, executionDateAsc")
     s.add_argument("--zapytanie", help="surowe body JSON zapytania (pełny dostęp do wszystkich "
