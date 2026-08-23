@@ -388,5 +388,23 @@ class TestUmowaFormat(unittest.TestCase):
         self.assertNotIn("None", out.getvalue())
 
 
+class TestPrzekierowaniaHttps(unittest.TestCase):
+    def test_host_rejestru_jest_podnoszony_a_obcy_odrzucany(self):
+        req = rejestrumow.urllib.request.Request("https://rejestrumow.gov.pl/api-dp/v1/agreements/search")
+        h = rejestrumow._PrzekierowaniaHttps()
+        nowy = h.redirect_request(req, None, 302, "Found", {}, "http://rejestrumow.gov.pl/api-dp/v1/agreement/x")
+        self.assertEqual(nowy.full_url, "https://rejestrumow.gov.pl/api-dp/v1/agreement/x")
+        with self.assertRaisesRegex(rejestrumow.urllib.error.URLError, "niezaufany host"):
+            h.redirect_request(req, None, 302, "Found", {}, "http://example.test/x")
+
+    def test_req_uzywa_openera_z_kontrola_przekierowan(self):
+        odp = mock.MagicMock()
+        odp.__enter__.return_value.read.return_value = b'{"content": []}'
+        odp.__enter__.return_value.headers = {"Content-Type": "application/json"}
+        with mock.patch.object(rejestrumow._opener, "open", return_value=odp) as op:
+            rejestrumow._req("/agreements/search", {"limit": 1}, {})
+        self.assertEqual(op.call_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

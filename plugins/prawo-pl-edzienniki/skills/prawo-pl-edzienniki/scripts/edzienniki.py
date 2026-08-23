@@ -49,6 +49,37 @@ WOJEWODZTWA = {
     "ZP": ("zachodniopomorskie", "e-dziennik.szczecin.uw.gov.pl", "POL_WOJ_ZP"),
 }
 
+CONTENT_HOSTS = tuple(h for _, h, _ in WOJEWODZTWA.values())
+
+
+def _wymus_https(url):
+    parsed = urllib.parse.urlsplit(url)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    dozwolony = any(host == allowed or host.endswith("." + allowed) for allowed in CONTENT_HOSTS)
+    if parsed.scheme.lower() == "http" and dozwolony:
+        return "https" + url[len(parsed.scheme):]
+    return url
+
+
+class _PrzekierowaniaHttps(urllib.request.HTTPRedirectHandler):
+    """Podnosi HTTP na hostach dzienników, a obce cele HTTP odrzuca (jak w pozostałych silnikach)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        bezpieczny_url = _wymus_https(newurl)
+        if urllib.parse.urlsplit(bezpieczny_url).scheme.lower() == "http":
+            raise urllib.error.URLError(
+                f"odrzucono przekierowanie treści na niezaufany host po HTTP: {newurl}")
+        return super().redirect_request(req, fp, code, msg, headers, bezpieczny_url)
+
+
+def _otworz(req, timeout, context):
+    """Opener z kontrolą przekierowań i (opcjonalnie) kontekstem SSL z dociągniętym pośrednim."""
+    handlers = [_PrzekierowaniaHttps()]
+    if context is not None:
+        handlers.append(urllib.request.HTTPSHandler(context=context))
+    return urllib.request.build_opener(*handlers).open(req, timeout=timeout)
+
+
 _UA = ("Mozilla/5.0 (compatible; prawo-pl-eli-edzienniki/"
        f"{__version__}; +https://github.com/jamarpl21/prawo-pl-eli)")
 
@@ -176,7 +207,7 @@ def _fetch(url, host, raw=False, timeout=25, soft=False):
     while True:
         attempt += 1
         try:
-            with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) as r:
+            with _otworz(req, timeout, _SSL_CTX) as r:
                 return r.read()
         except urllib.error.HTTPError as e:
             if e.code >= 500 and attempt == 1:

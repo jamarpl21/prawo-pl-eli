@@ -71,7 +71,9 @@ def _get(path, params=None, raw=False, brak_ok=False):
     brak_ok=True: HTTP 404 zwraca None zamiast kończyć program."""
     url = BASE + path
     if params:
-        q = urllib.parse.urlencode({k: v for k, v in params.items() if v not in (None, "", False)})
+        # `v not in (None, "", False)` odrzucałoby też int 0 (0 == False) — np. from=0 pierwszej strony
+        q = urllib.parse.urlencode({k: v for k, v in params.items()
+                                    if v is not None and v != "" and v is not False})
         if q:
             url += "?" + q
     req = urllib.request.Request(url, headers={
@@ -241,14 +243,27 @@ def _timespan(od, do):
     return f"{od or ''},{do or ''}"
 
 
+LIMIT_API = 100  # maksymalny rozmiar strony API UODO
+
+
+def _limit(n, glosno=False):
+    """API tnie stronę do 100 — obcinamy JAWNIE (i przed liczeniem offsetu), bo
+    from = strona × limit z surowym --limit 200 pomijałby rekordy 100–199 każdej strony."""
+    if glosno and n > LIMIT_API:
+        print(f"UWAGA: --limit {n} obcięty do {LIMIT_API} (maksimum API); kolejne wyniki: --strona N.",
+              file=sys.stderr)
+    return max(1, min(n, LIMIT_API))
+
+
 def _szukaj(timespan, warunek=None, limit=10, strona=0):
     """GET /documents/search/PublicDocument/{timespan}[/{warunek}] — lista dokumentów.
     timespan filtruje po dacie DECYZJI/orzeczenia (announcement), NIE po dacie publikacji."""
     sciezka = f"/documents/search/PublicDocument/{urllib.parse.quote(timespan, safe=',')}"
     if warunek:
         sciezka += "/" + urllib.parse.quote(warunek, safe=":,()")
+    limit = _limit(limit)
     return _get(sciezka, {"order": "-id", "from": max(0, strona) * limit,
-                          "count": max(1, min(limit, 100)), "fields": POLA})
+                          "count": limit, "fields": POLA})
 
 
 def _wiersz(item):
@@ -274,6 +289,7 @@ def _wiersz(item):
 
 
 def cmd_najnowsze(a):
+    a.limit = _limit(a.limit, glosno=True)
     d = _expect_list(_szukaj(_timespan(None, None), limit=a.limit), "najnowsze dokumenty")
     if not d:
         sys.exit("Brak wyników — spróbuj ponownie za chwilę.")
@@ -311,6 +327,7 @@ def cmd_szukaj(a):
     do = a.do
     if pub_do and (not do or pub_do < do):
         do = pub_do  # data decyzji ≤ data publikacji — bezpieczne zawężenie okna API
+    a.limit = _limit(a.limit, glosno=True)
     d = _szukaj(_timespan(a.od, do), warunki[0] if warunki else None, a.limit, a.strona)
     d = _expect_list(d, "wyniki wyszukiwania")
     pobrane = len(d)

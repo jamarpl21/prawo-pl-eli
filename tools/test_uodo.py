@@ -516,5 +516,38 @@ class TestT16PrzekierowaniaHttps(unittest.TestCase):
             handler.redirect_request(req, None, 302, "Found", {}, "http://example.test/body.txt")
 
 
+class TestLimitIOffset(unittest.TestCase):
+    def test_from_0_nie_jest_gubione_w_url(self):
+        with mock.patch.object(uodo, "_get", return_value=[]) as g:
+            uodo._szukaj("2026-01-01,2026-12-31", limit=10, strona=0)
+        self.assertEqual(g.call_args.args[1]["from"], 0)
+
+    def test_parametr_zero_trafia_do_query(self):
+        with mock.patch.object(uodo._opener, "open") as op:
+            op.return_value.__enter__.return_value.read.return_value = b"[]"
+            uodo._get("/x", {"from": 0, "count": 5, "puste": "", "nic": None, "flaga": False})
+        url = op.call_args.args[0].full_url
+        self.assertIn("from=0", url)
+        self.assertIn("count=5", url)
+        self.assertNotIn("puste", url)
+        self.assertNotIn("flaga", url)
+
+    def test_limit_ponad_100_obciety_przed_offsetem(self):
+        with mock.patch.object(uodo, "_get", return_value=[]) as g:
+            uodo._szukaj("2026-01-01,2026-12-31", limit=200, strona=1)
+        self.assertEqual(g.call_args.args[1]["from"], 100)
+        self.assertEqual(g.call_args.args[1]["count"], 100)
+
+    def test_cmd_szukaj_glosno_obcina_limit(self):
+        err = io.StringIO()
+        with mock.patch.object(uodo, "_szukaj", return_value=[]) as sz, \
+                mock.patch.object(sys, "argv", ["uodo.py", "szukaj", "biometr", "--limit", "200", "--strona", "1"]), \
+                contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                uodo.main()
+        self.assertIn("obcięty do 100", err.getvalue())
+        self.assertEqual(sz.call_args.args[2], 100)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

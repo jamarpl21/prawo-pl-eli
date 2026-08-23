@@ -649,6 +649,14 @@ class TestTls(unittest.TestCase):
         self.assertFalse(ctx.verify_flags & ssl.VERIFY_X509_PARTIAL_CHAIN)
         self.assertEqual(ctx.verify_mode, ssl.CERT_REQUIRED)
 
+    def test_przekierowanie_http_na_hoscie_dziennika_jest_podnoszone_a_obce_odrzucane(self):
+        req = edz.urllib.request.Request("https://edzienniki.duw.pl/api/eli/acts/POL_WOJ_DS/2026/1")
+        h = edz._PrzekierowaniaHttps()
+        nowy = h.redirect_request(req, None, 302, "Found", {}, "http://edzienniki.duw.pl/api/eli/acts/POL_WOJ_DS/2026/1/text.pdf")
+        self.assertEqual(nowy.full_url, "https://edzienniki.duw.pl/api/eli/acts/POL_WOJ_DS/2026/1/text.pdf")
+        with self.assertRaisesRegex(edz.urllib.error.URLError, "niezaufany host"):
+            h.redirect_request(req, None, 302, "Found", {}, "http://example.test/akt.pdf")
+
     def test_der_do_pem(self):
         pem = edz._der_do_pem(b"\x30\x03\x02\x01\x01")
         self.assertTrue(pem.startswith("-----BEGIN CERTIFICATE-----\nMAMCAQE=\n-----END CERTIFICATE-----"))
@@ -658,26 +666,26 @@ class TestTls(unittest.TestCase):
         ctx = ssl.create_default_context()
         odp = mock.MagicMock()
         odp.__enter__.return_value.read.return_value = b"[]"
-        urlopen = mock.Mock(side_effect=[self._blad_cert(), odp])
-        with mock.patch.object(edz.urllib.request, "urlopen", urlopen), \
+        otworz = mock.Mock(side_effect=[self._blad_cert(), odp])
+        with mock.patch.object(edz, "_otworz", otworz), \
                 mock.patch.object(edz, "_ctx_z_aia", return_value=ctx), \
                 mock.patch.object(edz, "_SSL_CTX", None):
             dane = edz._fetch("https://edziennik.malopolska.uw.gov.pl/api/eli/acts", "edziennik.malopolska.uw.gov.pl")
         self.assertEqual(dane, b"[]")
-        self.assertEqual(urlopen.call_count, 2)
-        self.assertIs(urlopen.call_args_list[1].kwargs["context"], ctx)
+        self.assertEqual(otworz.call_count, 2)
+        self.assertIs(otworz.call_args_list[1].args[2], ctx)
         self.assertEqual(ctx.verify_mode, ssl.CERT_REQUIRED)
 
     def test_brak_posredniego_komunikat_o_lancuchu(self):
-        urlopen = mock.Mock(side_effect=self._blad_cert())
-        with mock.patch.object(edz.urllib.request, "urlopen", urlopen), \
+        otworz = mock.Mock(side_effect=self._blad_cert())
+        with mock.patch.object(edz, "_otworz", otworz), \
                 mock.patch.object(edz, "_ctx_z_aia", return_value=None), \
                 mock.patch.object(edz, "_SSL_CTX", None), mock.patch.object(edz.time, "sleep"):
             with self.assertRaises(SystemExit) as cm:
                 edz._fetch("https://dzienniki.luw.pl/api/eli/acts", "dzienniki.luw.pl")
         self.assertIn("niepełny łańcuch certyfikatów po stronie serwera", str(cm.exception))
         self.assertNotIn("spoza PL", str(cm.exception))
-        self.assertEqual(urlopen.call_count, 1)
+        self.assertEqual(otworz.call_count, 1)
 
     def test_soft_zwraca_none(self):
         urlopen = mock.Mock(side_effect=self._blad_cert())

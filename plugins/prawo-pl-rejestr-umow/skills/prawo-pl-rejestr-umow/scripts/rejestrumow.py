@@ -35,6 +35,31 @@ import sys, json, re, time, argparse, urllib.request, urllib.parse, urllib.error
 
 __version__ = "2.0.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://rejestrumow.gov.pl/api-dp/v1"
+CONTENT_HOSTS = ("rejestrumow.gov.pl",)
+
+
+def _wymus_https(url):
+    parsed = urllib.parse.urlsplit(url)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    dozwolony = any(host == allowed or host.endswith("." + allowed) for allowed in CONTENT_HOSTS)
+    if parsed.scheme.lower() == "http" and dozwolony:
+        return "https" + url[len(parsed.scheme):]
+    return url
+
+
+class _PrzekierowaniaHttps(urllib.request.HTTPRedirectHandler):
+    """Podnosi HTTP na hoście rejestru, a obce cele HTTP odrzuca (dane trafiają do pism —
+    domyślny handler urllib poszedłby za przekierowaniem https→http bez sprzeciwu)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        bezpieczny_url = _wymus_https(newurl)
+        if urllib.parse.urlsplit(bezpieczny_url).scheme.lower() == "http":
+            raise urllib.error.URLError(
+                f"odrzucono przekierowanie treści na niezaufany host po HTTP: {newurl}")
+        return super().redirect_request(req, fp, code, msg, headers, bezpieczny_url)
+
+
+_opener = urllib.request.build_opener(_PrzekierowaniaHttps())
 
 SORTY = ["unitNameAsc", "unitNameDesc", "unitVoivodeshipAsc", "unitVoivodeshipDesc",
          "unitDistrictAsc", "unitDistrictDesc", "unitCommuneAsc", "unitCommuneDesc",
@@ -65,7 +90,7 @@ def _req(path, params=None, body=None):
         **({"Content-Type": "application/json"} if dane is not None else {})})
     for attempt in (1, 2):
         try:
-            with urllib.request.urlopen(req, timeout=40) as r:
+            with _opener.open(req, timeout=40) as r:
                 tresc = r.read().decode("utf-8", "replace")
             break
         except urllib.error.HTTPError as e:
