@@ -120,9 +120,11 @@ def _norma_data(d, koniec=False):
     if re.match(r"^\d{4}$", d):
         return f"{d}-12-31" if koniec else f"{d}-01-01"
     if re.match(r"^\d{4}-\d{2}$", d):
+        rok, mies = int(d[:4]), int(d[5:7])
+        if not 1 <= mies <= 12:
+            sys.exit(f"BŁĄD: data {d!r} ma zły miesiąc — użyj RRRR-MM-DD (albo RRRR / RRRR-MM).")
         if not koniec:
             return f"{d}-01"
-        rok, mies = int(d[:4]), int(d[5:7])
         dni = 29 if mies == 2 and (rok % 4 == 0 and (rok % 100 != 0 or rok % 400 == 0)) else \
             [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][mies - 1]
         return f"{d}-{dni:02d}"
@@ -243,9 +245,12 @@ def _get(path, params=None, soft=False):
     for attempt in (1, 2):
         try:
             with _opener.open(req, timeout=90) as r:
+                ctype = r.headers.get("Content-Type", "")
                 raw = r.read().decode("utf-8", "replace")
-            if "Przerwa techniczna" in raw:
-                # SAOS bywa w oknie serwisowym — zwraca stronę HTML zamiast JSON (HTTP 200)
+            # SAOS bywa w oknie serwisowym — zwraca stronę HTML zamiast JSON (HTTP 200). Sama fraza
+            # nie wystarcza: „Przerwa techniczna" bywa treścią orzeczenia (np. KIO o przerwanej
+            # aukcji) albo szukaną frazą — wtedy odpowiedź jest poprawnym JSON-em i musi przejść
+            if "Przerwa techniczna" in raw and ("json" not in ctype.lower() or raw.lstrip().startswith("<")):
                 if attempt == 1:
                     time.sleep(2); continue
                 if soft:

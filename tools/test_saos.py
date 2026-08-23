@@ -433,6 +433,24 @@ class SaosVerificationContractTests(unittest.TestCase):
                 saos._get("/search/judgments", {"courtType": "SUPREME"})
         self.assertEqual(op.call_args.kwargs.get("timeout"), 90)
 
+    def test_fraza_przerwa_techniczna_w_poprawnym_json_przechodzi(self):
+        # „Przerwa techniczna" bywa treścią orzeczenia (KIO o przerwanej aukcji) albo szukaną frazą —
+        # poprawny JSON z tą frazą nie może udawać okna serwisowego
+        body = _Response(b'{"data": {"textContent": "Przerwa techniczna w systemie aukcyjnym uniemo\xc5\xbcliwi\xc5\x82a..."}}')
+        with mock.patch.object(saos._opener, "open", return_value=body) as op, mock.patch.object(saos.time, "sleep") as sl:
+            d = saos._get("/judgments/354889", soft=True)
+        self.assertIn("Przerwa techniczna", d["data"]["textContent"])
+        self.assertEqual(op.call_count, 1)
+        sl.assert_not_called()
+
+    def test_przerwa_techniczna_html_bez_naglowka_json_to_unknown(self):
+        class _Html(_Response):
+            headers = {"Content-Type": "text/html; charset=utf-8"}
+        html = _Html(b"<html><body><h1>Przerwa techniczna</h1></body></html>")
+        with mock.patch.object(saos._opener, "open", return_value=html), mock.patch.object(saos.time, "sleep"):
+            with self.assertRaisesRegex(saos.VerificationUnknown, "przerw"):
+                saos._get("/search/judgments", soft=True)
+
     def test_przerwa_techniczna_html_to_unknown(self):
         html = _Response(b"<!DOCTYPE html><html><head><title>Przerwa techniczna</title></head></html>")
         with mock.patch.object(saos._opener, "open", return_value=html), mock.patch.object(saos.time, "sleep"):
@@ -724,6 +742,21 @@ class TestT10PrzekierowaniaHttps(unittest.TestCase):
         self.assertEqual(nowy.full_url, "https://www.saos.org.pl/api/judgments/123")
         with self.assertRaisesRegex(urllib.error.URLError, "niezaufany host"):
             handler.redirect_request(req, None, 302, "Found", {}, "http://example.test/judgment")
+
+
+class TestNormaDataMiesiac(unittest.TestCase):
+    def test_zly_miesiac_konczy_sie_komunikatem_nie_wyjatkiem(self):
+        for d in ("2020-13", "2020-00", "2020-99"):
+            with self.subTest(d=d):
+                with self.assertRaisesRegex(SystemExit, "zły miesiąc"):
+                    saos._norma_data(d, koniec=True)
+                with self.assertRaisesRegex(SystemExit, "zły miesiąc"):
+                    saos._norma_data(d)
+
+    def test_poprawny_miesiac(self):
+        self.assertEqual(saos._norma_data("2020-02", koniec=True), "2020-02-29")
+        self.assertEqual(saos._norma_data("2021-02", koniec=True), "2021-02-28")
+        self.assertEqual(saos._norma_data("2020-12"), "2020-12-01")
 
 
 if __name__ == "__main__":
