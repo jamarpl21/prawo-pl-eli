@@ -1,10 +1,10 @@
 ---
 name: prawo-eu-eurlex
-version: 1.7.0
+version: 2.0.0
 description: >-
   Odpytuje OFICJALNE repozytorium prawa UE — CELLAR/EUR-Lex Urzędu Publikacji (SPARQL + REST,
   bez klucza): wyszukiwanie aktów, pełny tekst PO POLSKU i w 23 innych językach, WERSJE
-  SKONSOLIDOWANE, pojedyncze artykuły, metadane, nowelizacje, sprostowania, podstawa prawna —
+  SKONSOLIDOWANE, pojedyncze artykuły, metadane, nowelizacje, uchylenia, sprostowania, podstawa prawna —
   po numerze CELEX lub ELI. Używaj przy KAŻDYM pytaniu o prawo UE: rozporządzenia (RODO/GDPR,
   AI Act, DORA, DSA, DMA, MiCA, eIDAS), dyrektywy (NIS2, konsumenckie, ePrivacy, PSD2),
   decyzje, traktaty i Karta — TAKŻE gdy przepis nie jest jeszcze znany. Wywołuj PRZED
@@ -74,8 +74,20 @@ wersje skonsolidowane `02016R0679-20160504`, sprostowania `32016R0679R(01)`, tra
   z tytułu („danych osobowych"/„osobow", nie „dane osobowe"; RODO ma w tytule „ochrony osób
   fizycznych w związku z przetwarzaniem danych osobowych"). Zero trafień z mianownika to NIE
   dowód, że aktu nie ma.
-- **meta** — metadane: tytuł, typ, **wejście w życie / data stosowania** (bywa kilka dat!),
-  status, ELI: `python3 scripts/eurlex.py meta 32016R0679`
+- **meta** — metadane: pełny tytuł, typ, daty, status, ELI: `python3 scripts/eurlex.py meta 32016R0679`
+  - **Daty pochodzą z metadanych AKTU BAZOWEGO.** CELLAR trzyma wejście w życie i daty rozpoczęcia
+    stosowania w JEDNEJ właściwości i ich nie rozróżnia: jedna data = „Wejście w życie"; kilka dat =
+    „Wejście w życie / stosowanie" (najwcześniejsza to z reguły wejście w życie) — którą datą objęty
+    jest dany przepis, ustal z przepisów końcowych (`tekst --fragment` na ostatnim artykule).
+  - **Dyrektywa:** osobno „Termin transpozycji" (bywa kilka — różne zakresy); polską ustawę
+    wdrażającą sprawdź skillem prawo-pl-eli.
+  - **`meta` na CELEX-ie skonsolidowanym** (`0…-YYYYMMDD`) pokazuje „Stan na (konsolidacja)", listę
+    aktów ujętych w konsolidacji oraz daty i status **aktu bazowego** — data w CELEX-ie konsolidacji
+    NIE jest datą wejścia w życie ani stosowania aktu.
+  - **Akt zmieniany** (lista aktów zmieniających): narzędzie ostrzega, że daty stosowania z aktu
+    bazowego mogą być nieaktualne (nowelizacja mogła przesunąć terminy — tak AI Act po 2026/1744) i
+    każe sprawdzić artykuł o stosowaniu w najnowszej wersji skonsolidowanej. Same sprostowania nie
+    zmieniają dat i nie wywołują ostrzeżenia.
 - **skonsolidowany** — WERSJE SKONSOLIDOWANE aktu (odpowiednik tekstu jednolitego; data w CELEX
   = stan prawny na): `python3 scripts/eurlex.py skonsolidowany 32006L0112`
 - **tekst** — treść aktu (XHTML → czysty tekst), domyślnie po polsku. **Do pojedynczego artykułu
@@ -83,11 +95,30 @@ wersje skonsolidowane `02016R0679-20160504`, sprostowania `32016R0679R(01)`, tra
   `python3 scripts/eurlex.py tekst 02016R0679-20160504 --fragment "art. 28"`
   `python3 scripts/eurlex.py tekst 32024R1689 --fragment "profilowanie"` (pełnotekstowo)
   `--jezyk eng` — inna wersja językowa; `--pdf ŚCIEŻKA` zapisuje urzędowy PDF.
-- **odniesienia** — nowelizacje, sprostowania, podstawa prawna:
-  `python3 scripts/eurlex.py odniesienia 32016R0679`
-- każda komenda przyjmuje `--json` oraz `--strict` (blokuje wynik bez zweryfikowanej aktualności lub kompletności); obie flagi działają przed komendą i po niej.
+  Fragment kończy się na granicy jednostki redakcyjnej (następny artykuł/rozdział/załącznik) oraz
+  na końcu części normatywnej: formuła „Sporządzono w…", podpisy i blok przypisów końcowych
+  (rozpoznawany po strukturze XHTML CELLAR) NIE wchodzą do fragmentu ostatniego artykułu; formuła
+  „Niniejsze rozporządzenie wiąże w całości…" zostaje przy nim. Przypisy czytaj bez `--fragment`
+  albo frazą z przypisu.
+  404 na wersji skonsolidowanej z listy `skonsolidowany` (np. pierwsza, tożsama z aktem bazowym)
+  oznacza, że CELLAR nie serwuje już tej ZASTĄPIONEJ wersji — narzędzie wskazuje najnowszą.
+- **odniesienia** — nowelizacje, sprostowania, **uchylenia w obie strony** („UCHYLONY PRZEZ" /
+  „Uchyla", także dorozumiane), akty zmieniane, podstawa prawna; na akcie uchylonym pierwsza linia
+  mówi wprost „AKT UCHYLONY przez … — NIE OBOWIĄZUJE":
+  `python3 scripts/eurlex.py odniesienia 32016R0679` (→ uchyla 31995L0046)
+- każda komenda przyjmuje `--json` oraz `--strict`; obie flagi działają przed komendą i po niej.
   Zero trafień / nierozpoznana odpowiedź API kończą się komunikatem i kodem wyjścia ≠ 0 — także z `--json`
-  (nie dostaniesz pustego JSON-a, który wyglądałby jak „sprawdzone, nic nie ma”).
+  (nie dostaniesz pustego JSON-a, który wyglądałby jak „sprawdzone, nic nie ma”; dotyczy też `szukaj`).
+  `--json` dla `meta` zwraca obiekt: `meta` (surowe wiersze tej pracy), `akt_bazowy` (na wersji
+  skonsolidowanej), `zmieniajace`, `wersje_skonsolidowane`, `ostrzezenia`.
+- **Co sprawdza `--strict`, a czego nie.** Każda kontrola wykonuje się PRZED emisją wyniku; awaria
+  kontroli (SPARQL niedostępny) blokuje wynik zamiast udawać „brak". Blokuje: `tekst` aktu bazowego,
+  gdy istnieją wersje skonsolidowane, i starszą wersję skonsolidowaną, gdy jest nowsza (także w
+  `meta`); `meta` AKTU BAZOWEGO, gdy akt był zmieniany (daty stosowania mogą być nieaktualne —
+  użyj `meta`/`tekst` najnowszej konsolidacji). Nie blokuje: `meta` aktu bazowego bez nowelizacji
+  (konsolidacja z samych sprostowań → tylko ostrzeżenie), `meta` najnowszej wersji skonsolidowanej
+  (daty aktu bazowego idą z ostrzeżeniem). `--strict` NIE weryfikuje treści dat z przepisami
+  końcowymi ani nie wykrywa zmian, których CELLAR jeszcze nie zaindeksował.
 
 Narzędzie samo ostrzega: na akcie bazowym podpowiada najnowszą wersję skonsolidowaną; na wersji
 skonsolidowanej przypomina o jej dokumentacyjnym charakterze i o nowszych wersjach. Nie ignoruj
@@ -119,10 +150,15 @@ wersji skonsolidowanych czytaj akt bazowy):
 1. **Najpierw właściwy akt i wersja, potem cytat.** Typowy przepływ: tabela wyżej (albo `szukaj`) →
    `skonsolidowany <CELEX>` → `tekst <najnowsza wersja> --fragment "art. N"`. Cytowanie aktu
    bazowego sprzed nowelizacji to częsty błąd.
-2. **Wejście w życie ≠ rozpoczęcie stosowania.** RODO weszło w życie 24.05.2016, a stosuje się od
-   25.05.2018; AI Act stosuje się ETAPAMI (różne daty dla różnych rozdziałów). `meta` pokazuje
-   wszystkie daty — przy kilku datach sprawdź przepisy końcowe aktu (`tekst --fragment` na ostatnich
-   artykułach) i odnieś do DATY zdarzenia/sprawy.
+2. **Wejście w życie ≠ rozpoczęcie stosowania ≠ termin transpozycji.** RODO weszło w życie
+   24.05.2016, a stosuje się od 25.05.2018; AI Act stosuje się ETAPAMI (różne daty dla różnych
+   rozdziałów); dyrektywa wiąże państwa od terminu transpozycji. `meta` pokazuje wszystkie daty
+   CELLAR (bez rozróżnienia, która to stosowanie) — przy kilku datach sprawdź przepisy końcowe
+   aktu (`tekst --fragment` na ostatnim artykule) i odnieś do DATY zdarzenia/sprawy. **Po
+   nowelizacji daty z metadanych aktu bazowego mogą być nieaktualne** (AI Act: art. 113 zmieniony
+   przez 2026/1744 — część terminów przesunięta) — wtedy artykuł o stosowaniu czytaj z najnowszej
+   wersji skonsolidowanej, a daty z `meta` traktuj jako pierwotne. Data w CELEX-ie wersji
+   skonsolidowanej to „stan na" konsolidacji, nie data aktu.
 3. **Wersja skonsolidowana ma charakter dokumentacyjny** (nie jest tekstem autentycznym) — świetna
    do analizy, ale w piśmie urzędowym/sądowym wskaż akt bazowy + akty zmieniające (`odniesienia`).
    Do DOSŁOWNEGO cytatu pobierz urzędowy PDF (`tekst … --pdf`).

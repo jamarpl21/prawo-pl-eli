@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-uodo
-version: 1.7.0
+version: 2.0.0
 description: >-
   Odpytuje OFICJALNE API Portalu Orzeczeń UODO (orzeczenia.uodo.gov.pl) — decyzje Prezesa
   Urzędu Ochrony Danych Osobowych: kary pieniężne za naruszenia RODO, upomnienia, nakazy,
@@ -8,8 +8,9 @@ description: >-
   danych: „czy UODO karał za…", „decyzja UODO w sprawie…", „jak UODO interpretuje art. X RODO",
   „jaka kara za brak analizy ryzyka/zgłoszenia naruszenia", przy DPIA, analizie naruszeń
   ochrony danych, audytach RODO i pismach do UODO. Wyszukiwanie pełnotekstowe i po
-  tytule/dacie; pełna treść decyzji po sygnaturze (np. DKN.5131.9.2025). Read-only, bez
-  klucza. Treść RODO → skill prawo-eu-eurlex; wyroki WSA/NSA ze skarg na decyzje UODO →
+  tytule/dacie decyzji lub publikacji; pełna treść decyzji po sygnaturze (np. DKN.5131.9.2025)
+  wraz z historią kontroli sądowej (uchylona / utrzymana / w toku). Read-only, bez klucza.
+  Treść RODO → skill prawo-eu-eurlex; wyroki WSA/NSA ze skarg na decyzje UODO →
   prawo-pl-cbosa. Decisions of the Polish DPA (UODO) from its official public API.
 ---
 
@@ -27,8 +28,11 @@ zgłaszania naruszeń, powierzenia przetwarzania.
 1. **Decyzje Prezesa UODO → ten skill.** Kary, upomnienia, nakazy, umorzenia — z pełną treścią.
 2. **Treść RODO → prawo-eu-eurlex** (rozporządzenie 2016/679, CELEX 32016R0679); polska ustawa
    o ochronie danych osobowych → **prawo-pl-eli** (Dz.U.).
-3. **Wyroki WSA/NSA ze skarg na decyzje UODO → prawo-pl-cbosa** (sądową kontrolę decyzji
-   znajdziesz w CBOSA; tu bywają tylko powiązane rekordy).
+3. **Wyroki WSA/NSA ze skarg na decyzje UODO → prawo-pl-cbosa.** Portal UODO zna FAKT kontroli
+   sądowej (`decyzja` drukuje blok „Kontrola sądowa": data, uchylona / utrzymana / w toku, sygnatura
+   wyroku), ale NIE ma treści wyroków — zakres uchylenia (cała decyzja czy np. sama kara) czytaj
+   w CBOSA: `prawo-pl-cbosa sygnatura "<sygnatura wyroku>"`. Rekordy wyroków w listach portalu
+   (ok. 200 z 700) są bez treści — silnik nie oferuje dla nich `decyzja`, tylko odsyła do CBOSA.
 4. **Delegując research subagentowi**, wpisz: „decyzje UODO pobieraj przez `scripts/uodo.py`
    (skill prawo-pl-uodo); treść RODO przez `scripts/eurlex.py` (prawo-eu-eurlex)".
 
@@ -55,11 +59,18 @@ Nie pobieraj helpera z sieci i nie szukaj go przez `find` po katalogach użytkow
 
 ### Komendy
 
-- **najnowsze** — ostatnio opublikowane dokumenty:
+- **najnowsze** — ostatnio WYDANE dokumenty (API sortuje po dacie decyzji/orzeczenia, nie po
+  dacie publikacji w portalu; starsze decyzje dopisane niedawno tu nie trafią):
   `python3 scripts/uodo.py najnowsze --limit 10`
-- **szukaj** — wyszukiwanie pełnotekstowe / po tytule / po dacie publikacji:
+- **szukaj** — wyszukiwanie pełnotekstowe / po tytule / po dacie DECYZJI (`--od/--do`) / po dacie
+  PUBLIKACJI w portalu (`--pub-od/--pub-do`):
   `python3 scripts/uodo.py szukaj "biometr" --limit 5`
   `python3 scripts/uodo.py szukaj --tytul "pieniężn" --od 2026-01-01`
+  `python3 scripts/uodo.py szukaj --pub-od 2026-01-01 --pub-do 2026-03-31 --limit 100` (co opublikowano w Q1)
+  `--od/--do` filtrują po dacie wydania decyzji (tak działa API) — decyzja z 2025 r. opublikowana
+  w 2026 r. NIE wpadnie w `--od 2026-01-01`; do „co nowego w portalu" służy `--pub-od`. `--pub-od`
+  idzie do API, gdy nie ma innego warunku; z frazą/tytułem filtr publikacji działa tylko w obrębie
+  pobranej strony (silnik to wypisuje) — wtedy zwiększ `--limit` i przeglądaj `--strona`.
   Fraza działa jak **regex bez rozróżniania wielkości liter**, dopasowuje DOSŁOWNIE — szukaj
   RDZENIA słowa („biometr" znajdzie „biometryczne/biometrii"). Tytuły to zdania w formie
   ODMIENIONEJ („nałożenie kary pieniężnej…"), więc mianownik („kara pieniężna") nie trafia
@@ -69,22 +80,40 @@ Nie pobieraj helpera z sieci i nie szukaj go przez `find` po katalogach użytkow
   "indeks:operator:wartość"` (indeksy i operatory: `references/api.md`). `--limit N`, `--strona N`.
 - **decyzja** — pełna decyzja po sygnaturze albo URN:
   `python3 scripts/uodo.py decyzja DKN.5131.9.2025`
-  Pokazuje metadane (status, daty ogłoszenia/publikacji), przedmiot i pełną treść.
+  Pokazuje metadane (status, data decyzji i publikacji), **blok „Kontrola sądowa"** (każdy wyrok
+  z meta: data, UCHYLONA / utrzymana / w toku, sygnatura + odsyłacz do prawo-pl-cbosa), przedmiot
+  i pełną treść (z `body.html` portalu: numeracja list i przypisy `[1]` jak na stronie portalu).
+  Decyzja uchylona (także w części, przy statusie `final`) zaczyna się od nagłówka
+  **„DECYZJA UCHYLONA PRZEZ SĄD (w całości lub w części)"** — treść poniżej to tekst PIERWOTNY;
+  zakres uchylenia ustal w sentencji wyroku (CBOSA), zanim zacytujesz karę.
   Do długich decyzji: `--fragment "pieniężn"` (wycina okna wokół frazy; też podawaj rdzeń).
-- każda komenda przyjmuje `--json` oraz `--strict` (blokuje wynik bez zweryfikowanej aktualności lub kompletności); obie flagi działają przed komendą i po niej.
+  Sygnatura sądowa (`decyzja "III OSK 377/23"`) to rekord bez treści — silnik to wyjaśnia i odsyła do CBOSA.
+- każda komenda przyjmuje `--json` oraz `--strict`; obie flagi działają przed komendą i po niej.
+  **Kontrakt `--strict`:** w `decyzja` kończy błędem (bez wyniku, także z `--json`) decyzję bez pełnej
+  treści ORAZ decyzję z wpisem uchylenia przez sąd (komunikat podaje sygnaturę wyroku i odsyła do
+  CBOSA); decyzja NIEPRAWOMOCNA przechodzi z ostrzeżeniem „UWAGA: decyzja NIEPRAWOMOCNA".
+  W `najnowsze`/`szukaj` `--strict` nic nie zmienia (listy to metadane, nie ma czego weryfikować).
   Zero trafień / nierozpoznana odpowiedź API kończą się komunikatem i kodem wyjścia ≠ 0 — także z `--json`
   (nie dostaniesz pustego JSON-a, który wyglądałby jak „sprawdzone, nic nie ma”).
 
 Typowy przepływ: `szukaj "<rdzeń frazy>"` → wybierz sygnaturę → `decyzja <sygnatura>`
-→ do sądowej kontroli tej decyzji: skill prawo-pl-cbosa (`szukaj "<sygnatura decyzji>"`).
+→ jeśli blok „Kontrola sądowa" pokazuje wyrok: `prawo-pl-cbosa sygnatura "<sygnatura wyroku>"`
+(zakres uchylenia / utrzymania); jeśli nie — i tak sprawdź CBOSA (`szukaj "<sygnatura decyzji>"`),
+bo portal nie musi znać każdej skargi.
 
 ## Zasady (ważne — dlaczego)
 
 1. **Portal jest młody (od 2025 r.)** — publikowane są nowe decyzje oraz sukcesywnie starsze
-   (sygnatury sprzed 2025 pojawiają się z opóźnieniem). Brak decyzji w portalu ≠ jej nieistnienie;
-   starsze decyzje bywają tylko na uodo.gov.pl — zaznacz to w odpowiedzi.
-2. **Decyzja nieprawomocna ≠ ostateczna wykładnia.** Sprawdzaj pole `status` (final/nonfinal)
-   i dopisz zastrzeżenie; od decyzji przysługuje skarga do WSA (kontrola: skill prawo-pl-cbosa).
+   (sygnatury 2018–2024 pojawiają się z opóźnieniem). Brak decyzji w portalu ≠ jej nieistnienie
+   (silnik to wypisuje przy 404); sprawdź wyszukiwarkę https://uodo.gov.pl (dawne adresy
+   `uodo.gov.pl/decyzje/<sygnatura>` już nie działają) — i zaznacz to w odpowiedzi.
+2. **Status `final` ≠ kara się ostała; `inforce` ≠ w obrocie.** `status` ∈ final (prawomocna wg
+   portalu) / nonfinal (nieprawomocna — dopisz zastrzeżenie; przysługuje skarga do WSA) / repealed
+   (uchylona). Kontrolę sądową portal zapisuje w `dates[]` (uchylona / utrzymana / w toku) i przy
+   statusie `final` może istnieć wpis uchylenia części decyzji (ZSPR.421.3.2018: kara 943 470 zł
+   uchylona przez WSA II SA/Wa 1030/19, status nadal `final`). Pole `inforce` API jest `true` nawet
+   dla decyzji uchylonych — nie cytuj go jako „w obrocie". Zanim podasz karę z decyzji z blokiem
+   „Kontrola sądowa", przeczytaj sentencję wyroku w CBOSA.
 3. **Zawsze podawaj sygnaturę + datę** (np. „decyzja Prezesa UODO z 7.08.2025, DKN.5131.9.2025")
    — sygnatura jest stabilnym identyfikatorem (URN w API).
 4. **Kwoty kar i stan prawny weryfikuj w treści decyzji**, nie w tytule — tytuł to opis redakcyjny.
@@ -105,5 +134,7 @@ Pytanie: „czy UODO nakładał kary za brak zgłoszenia naruszenia ochrony dany
 2. `decyzja <sygnatura> --fragment "art. 33"` → argumentacja organu wokół obowiązku zgłoszenia.
 3. (opcjonalnie) treść art. 33 RODO: skill prawo-eu-eurlex
    (`tekst 02016R0679-20160504 --fragment "art. 33"`).
-4. (opcjonalnie) kontrola sądowa: skill prawo-pl-cbosa, `szukaj "<sygnatura decyzji>"`.
-5. W odpowiedzi: sygnatura + data + status (nieprawomocna?) + kwota kary z treści decyzji.
+4. Kontrola sądowa: blok „Kontrola sądowa" z `decyzja` → `prawo-pl-cbosa sygnatura "<wyrok>"`
+   (zakres uchylenia); bez wpisów w bloku — `prawo-pl-cbosa szukaj "<sygnatura decyzji>"`.
+5. W odpowiedzi: sygnatura + data + status (nieprawomocna? uchylona — w jakim zakresie?) + kwota
+   kary z treści decyzji, skorygowana o wynik kontroli sądowej.

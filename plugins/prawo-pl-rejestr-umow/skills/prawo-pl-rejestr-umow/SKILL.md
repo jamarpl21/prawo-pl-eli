@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-rejestr-umow
-version: 1.7.0
+version: 2.0.0
 description: >-
   Odpytuje publiczne API Centralnego Rejestru Umów JSFP (rejestrumow.gov.pl) — jawny
   rejestr umów zawieranych od 1.07.2026 przez jednostki sektora finansów publicznych:
@@ -68,16 +68,32 @@ jesteś w katalogu skilla.)
   `python3 scripts/rejestrumow.py szukaj "remont drogi" --woj dolnośląskie --sort priceDesc`
   `python3 scripts/rejestrumow.py szukaj --jsfp "urząd gminy" --od 2026-07-01 --wartosc-od 100000`
   `python3 scripts/rejestrumow.py szukaj --wykonawca "NAZWA SPÓŁKI"` (albo `--wykonawca-nip`)
-  Fraza szuka w **przedmiocie umowy**; `--jsfp/--regon/--nip` dotyczą zamawiającego,
-  `--wykonawca*` drugiej strony. Daty `RRRR-MM-DD` (`--od/--do` = zawarcie,
-  `--pub-od/--pub-do` = publikacja), `--status Aktywna|Nieaktywna` (dokładnie tak),
-  `--sort` (m.in. `priceDesc`, `publicationDateDesc`, `executionDateAsc`), `--limit N`
-  (maks. 50), `--strona N`. Zaawansowane: `--zapytanie '<json>'` — surowe body z pełnym
-  dostępem do wszystkich sekcji filtrów (`references/api.md`).
+  `python3 scripts/rejestrumow.py szukaj --regon 000001301 --rola dowolna` (podmiot po dowolnej stronie)
+  `python3 scripts/rejestrumow.py szukaj --zmiana-rodzaj TSU02 --zmiana-od 2026-08-01` (umowy z aneksem)
+  Fraza szuka w **przedmiocie umowy**. **Rola podmiotu jest rozłączna** (zweryfikowane:
+  Uniwersytet Wrocławski = 455 umów jako zamawiający + 17 jako wykonawca = 472 „dowolnie"):
+  `--jsfp/--regon/--nip` = TYLKO zamawiający (JSFP), `--wykonawca/--wykonawca-nip/
+  --wykonawca-regon` = TYLKO druga strona (także gdy jest nią inna JSFP), `--rola dowolna`
+  = podmiot z `--jsfp/--regon/--nip` po którejkolwiek stronie (`--rola wykonawca` = to samo
+  co `--wykonawca*`). Pytanie „ile umów ZAWARŁA jednostka X" → domyślna rola; „wszystkie
+  umowy, w których X występuje" → `--rola dowolna`. NIP/REGON podawaj cyframi (kreski silnik
+  usuwa; API porównuje dosłownie). `--woj/--powiat/--gmina/--miejscowosc` = adres
+  zamawiającego. Zmiany umów: `--zmiana-rodzaj KOD` (kod słownika: `TSU02` aneks, `TSU05`
+  rozwiązanie, `TSU06` wypowiedzenie, `TSU07` odstąpienie, `TSU10` wygaśnięcie, `inne`;
+  nazwa zamiast kodu → błąd), `--zmiana-od/--zmiana-do` (data zmiany). Daty `RRRR-MM-DD`
+  (`--od/--do` = zawarcie, `--pub-od/--pub-do` = publikacja), `--status Aktywna|Nieaktywna`
+  (dokładnie tak), `--sort` (m.in. `priceDesc`, `publicationDateDesc`, `executionDateAsc`),
+  `--limit N` (maks. 50 — większy jest obcinany z komunikatem), `--strona N` (od 0; silnik
+  pisze „Kolejna strona" tylko gdy istnieje, „Ostatnia strona", „poza zakresem" albo „poza
+  oknem API"). Zaawansowane: `--zapytanie '<json>'` — surowe body ze wszystkimi sekcjami
+  filtrów (`references/api.md`); **API ignoruje nieznane pola po cichu** — zła nazwa pola =
+  cały rejestr (364 tys. umów) udający wynik; porównuj total z `najnowsze`.
 - **umowa** — pełne szczegóły po idUmowy (UUID z wyników szukania):
   `python3 scripts/rejestrumow.py umowa 958e7d59-057b-4eb4-8f55-e664638f393a`
-  Pokazuje numer, status, okres, wartość (liczbą i słownie), strony z NIP/REGON
-  i adresami, finansowanie ze środków UE/zagranicznych, aneksy i zmiany, wyłączenia jawności.
+  Pokazuje numer, status, okres, wartość (liczbą; obok ewentualny „opis wartości" — dowolny
+  tekst jednostki, NIE gwarantowana kwota słownie), strony z NIP/REGON i pełnym adresem
+  (ulica, kod, miejscowość, gmina/dzielnica, powiat, województwo), finansowanie ze środków
+  UE/zagranicznych, aneksy i zmiany, wyłączenia jawności (zakres, podstawa, wyłączający).
 - **slownik** — słowniki API: `python3 scripts/rejestrumow.py slownik rodzaje_zmian_umowy`
   (`kraje`, `strony_umowy`, `rodzaje_zmian_umowy`, `podstawy_wylaczenia_jawnosci`,
   `zakres_wylaczenia_jawnosci`).
@@ -102,11 +118,16 @@ kwoty, aneksy do odpowiedzi.
    NI.2720.53.2026 Dolnośląskiej Służby Dróg i Kolei z 7.07.2026, idUmowy 958e7d59-…") —
    UUID jest stabilnym identyfikatorem, a link `https://rejestrumow.gov.pl/umowa/<idUmowy>`
    działa w przeglądarce.
-4. **Okno wyszukiwania to 10 000 wyników** — przy większej liczbie trafień
-   (`totalMatchingElements` pokazuje realną) zawężaj zakresami dat/wartości; silnik
-   sam o tym przypomina.
+4. **Okno wyszukiwania to 10 000 wyników** (200 stron po 50) — przy większej liczbie
+   trafień (nagłówek „Pasujących umów" pokazuje realną) ogon zbioru jest NIEOSIĄGALNY
+   żadną stroną: silnik ostrzega, na ostatniej osiągalnej stronie pisze „okno wyczerpane",
+   a `--strona` spoza okna kończy komunikatem „poza oknem API" (exit ≠ 0, także z `--json`).
+   Zawężaj zakresami dat/województwem/wartością; `--strict` blokuje zbiór > 10 000 jako
+   niekompletny. „Brak wyników" znaczy zweryfikowane zero trafień — strona spoza mniejszego
+   zbioru to „poza zakresem (stron: M)", nie zero.
 5. **Wartość może być niejawna albo opisowa** — sprawdzaj w szczegółach pola wyłączenia
-   jawności (podstawę prawną wyłączenia wskazuje jednostka) i „opis wartości umowy".
+   jawności (podstawę prawną wyłączenia wskazuje jednostka) i „opis wartości" (wolny tekst;
+   bywa kwotą słownie, bywa powtórzeniem przedmiotu, często pusty).
 6. Pełna lista endpointów, sekcji filtrów i pułapek: `references/api.md`.
 
 ## Czego ten skill NIE obejmuje
@@ -124,11 +145,13 @@ Jeśli zagadnienie wymaga tych źródeł — powiedz to wprost, nie udawaj, że 
 ## Przykładowy przepływ
 
 Pytanie: „na co gmina X wydaje ostatnio najwięcej i kto jest wykonawcą?"
-1. `szukaj --jsfp "gmina X" --sort priceDesc --limit 10` → największe umowy z idUmowy
-   (jeśli pusto: znajdź REGON gminy i `szukaj --regon <REGON>`).
-2. `umowa <idUmowy>` → wykonawca (NIP/REGON, adres), wartość słownie, aneksy.
+1. `szukaj --jsfp "gmina X" --sort priceDesc --limit 10` → największe umowy ZAWARTE przez
+   gminę jako zamawiającego (jeśli pusto: znajdź REGON gminy i `szukaj --regon <REGON>`;
+   umowy, w których gmina jest wykonawcą dla innej JSFP, pokaże dopiero `--rola dowolna`).
+2. `umowa <idUmowy>` → wykonawca (NIP/REGON, adres), opis wartości, aneksy.
 3. (opcjonalnie) inne umowy tego wykonawcy w całym sektorze:
-   `szukaj --wykonawca-nip <NIP>`.
+   `szukaj --wykonawca-nip <NIP>`; umowy gminy zmienione aneksem: `szukaj --regon <REGON>
+   --zmiana-rodzaj TSU02`.
 4. (opcjonalnie) podstawa prawna jawności: skill prawo-pl-eli
    (`tekst <u.f.p.> --fragment "art. 34a"`).
 5. W odpowiedzi: JSFP + wykonawca + wartość + data zawarcia + idUmowy; dopisz, że rejestr

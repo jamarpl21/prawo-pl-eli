@@ -293,6 +293,225 @@ class TestFragmenty(unittest.TestCase):
     def test_brak_trafien(self):
         self.assertEqual(cbosa._fragmenty("dowolny tekst", "nie ma"), [])
 
+    # audyt D3: okna cięte w środku słowa („kupno i sprz", „aluty tradycyjne") bez znacznika
+
+    @staticmethod
+    def _tekst(przed=40, po=120):
+        slowa_przed = " ".join(f"wyraz{i:03d}" for i in range(przed))
+        slowa_po = " ".join(f"slowo{i:03d}" for i in range(po))
+        return f"{slowa_przed} INTERPRETACJA indywidualna {slowa_po}."
+
+    def test_brzegi_na_granicy_wyrazu(self):
+        txt = self._tekst()
+        (s, e), = cbosa._fragmenty(txt, "interpretacja")
+        self.assertGreater(s, 0)
+        self.assertLess(e, len(txt))
+        self.assertTrue(txt[s - 1].isspace(), f"początek w środku słowa: {txt[s - 5:s + 5]!r}")
+        self.assertTrue(txt[e].isspace(), f"koniec w środku słowa: {txt[e - 5:e + 5]!r}")
+        self.assertIn("INTERPRETACJA", txt[s:e])
+
+    def test_brzegi_wola_granice_zdania(self):
+        zdania = " ".join(f"Zdanie numer {i} ma kilka wyrazów i kończy się kropką." for i in range(6))
+        txt = zdania + " Tu pada fraza KRYPTOWALUTA i dalej tekst. " + \
+            " ".join(f"Dalsze zdanie {i} o niczym w szczególności." for i in range(30))
+        (s, e), = cbosa._fragmenty(txt, "kryptowaluta")
+        self.assertTrue(txt[s].isupper(), f"okno nie zaczyna się od zdania: {txt[s:s + 20]!r}")
+        self.assertEqual(txt[e - 2], ".", f"okno nie kończy się zdaniem: {txt[e - 20:e]!r}")
+
+    def test_skrot_nie_konczy_zdania(self):
+        # „art.", „2018 r." — kropka po skrócie nie jest granicą zdania
+        txt = "Wyrokiem z 6 czerwca 2018 r. sąd oddalił skargę na podstawie art. 151 p.p.s.a. Skarżący wniósł skargę.\nNaczelny Sąd"
+        granice = cbosa._granice_zdan(txt, 0, len(txt))
+        self.assertEqual([txt[g:g + 8] for g in granice], ["Skarżący", "Naczelny"])
+
+    def test_fraza_zostaje_w_oknie_po_scaleniu(self):
+        txt = self._tekst(po=5) + " " + self._tekst(przed=5, po=200)
+        spans = cbosa._fragmenty(txt, "interpretacja")
+        self.assertEqual(len(spans), 1)  # dwa bliskie trafienia → jedno okno
+        s, e = spans[0]
+        self.assertEqual(txt[s:e].upper().count("INTERPRETACJA"), 2)
+
+    def test_wydruk_ma_znaczniki_uciecia(self):
+        html = TestOrzeczenie.HTML.replace(
+            "<P>1. Wyrokiem z 6 czerwca 2018 r.&nbsp;sąd oddalił skargę.</P>",
+            "<P>" + self._tekst(przed=60, po=200) + "</P>")
+        args = mock.Mock(doc_id="8889489BE0", json=False, strict=False, fragment="interpretacja")
+        out = io.StringIO()
+        with mock.patch.object(cbosa, "_fetch", return_value=html), redirect_stdout(out):
+            cbosa.cmd_orzeczenie(args)
+        okno = out.getvalue().split("## Uzasadnienie", 1)[1].split("\n")[1]
+        self.assertTrue(okno.startswith("…"), okno[:40])
+        self.assertTrue(okno.endswith(" …"), okno[-40:])
+        self.assertRegex(okno, r"^…wyraz\d{3} ")  # pełne słowo tuż za znacznikiem
+        self.assertRegex(okno, r" slowo\d{3} …$")
+        self.assertIn("„…” oznacza ucięcie", out.getvalue())
+
+    def test_okno_od_poczatku_bez_znacznika(self):
+        html = TestOrzeczenie.HTML.replace("6 czerwca 2018 r.", "6 czerwca 2018 r. interpretacja")
+        args = mock.Mock(doc_id="8889489BE0", json=False, strict=False, fragment="interpretacja")
+        out = io.StringIO()
+        with mock.patch.object(cbosa, "_fetch", return_value=html), redirect_stdout(out):
+            cbosa.cmd_orzeczenie(args)
+        okno = out.getvalue().split("## Uzasadnienie", 1)[1].split("\n")[1]
+        self.assertFalse(okno.startswith("…"), okno)  # okno zaczyna się na początku tekstu
+        self.assertFalse(okno.endswith("…"), okno)    # i sięga jego końca — nic nie ucięto
+
+
+class TestPrawomocnosc(unittest.TestCase):
+    """Audyt D1/D2: CBOSA oznacza każde orzeczenie „orzeczenie prawomocne / nieprawomocne" w komórce
+    „Data orzeczenia" (zagnieżdżona tabela) — silnik gubił flagę, a --strict przepuszczał wyrok WSA
+    uchylony przez NSA. Fragmenty HTML = żywe strony /doc/109C7D1883, /doc/8889489BE0 (2026-08)."""
+
+    @staticmethod
+    def _html(data, kursywa, sygnatura="I SA/Bk 226/18 - Wyrok WSA w Białymstoku z 2018-06-06",
+              powiazane=True):
+        pow_ = ('<tr class="niezaznaczona"><td class="info-list-label"><table class="noborder-tab"><tr>'
+                '<td class="lista-label">Sygn. powiązane</td></tr></table></td><td class="info-list-value">'
+                '<a href="/doc/8889489BE0">II FSK 2870/18 - Wyrok NSA z 2021-02-10</a></td></tr>'
+                if powiazane else "")
+        return f"""<TITLE>{sygnatura}</TITLE>
+        <table class="info-list">
+        <tr class="niezaznaczona"><td class="info-list-label"><table class="noborder-tab"><tr>
+          <td class="lista-label">Data orzeczenia</td></tr></table></td>
+          <td class="info-list-value"><table cellspacing=0 cellpadding=0 style="width: 100%">
+            <tr><td>{data}</td>
+            <td style="width: 50%; text-align: right; padding-right: 5px; font-style: italic;">{kursywa}</td>
+            </tr></table></td></tr>
+        <tr class="niezaznaczona"><td class="info-list-label"><table class="noborder-tab"><tr>
+          <td class="lista-label">Sąd</td></tr></table></td>
+          <td class="info-list-value">Wojewódzki Sąd Administracyjny w Białymstoku</td></tr>
+        {pow_}
+        <tr class="niezaznaczona"><td class="info-list-label"><table class="noborder-tab"><tr>
+          <td class="lista-label">Treść wyniku</td></tr></table></td>
+          <td class="info-list-value">Oddalono skargę</td></tr></table>
+        <td class="info-list-label-uzasadnienie"><div class="lista-label">Uzasadnienie</div>
+          <span class="info-list-value-uzasadnienie"><P>Sąd uznał, że skarga jest nieprawomocna
+          w ocenie strony, ale to tekst uzasadnienia, nie oznaczenie.</P></span></td>"""
+
+    NIEPRAWOMOCNE = _html.__func__("2018-06-06", "orzeczenie nieprawomocne")
+    PRAWOMOCNE = _html.__func__("2021-02-10", "orzeczenie prawomocne",
+                                sygnatura="II FSK 2870/18 - Wyrok NSA z 2021-02-10")
+    # żywa strona /doc/1A8B8B8130 (postanowienie o wstrzymaniu wykonania, 2026-08-19): pole jest, ale puste
+    PUSTE_POLE = _html.__func__("2026-08-19", "&nbsp;",
+                                sygnatura="VI SA/Wa 707/26 - Postanowienie WSA w Warszawie z 2026-08-19",
+                                powiazane=False)
+
+    def _uruchom(self, html, argv):
+        out = io.StringIO()
+        with mock.patch.object(cbosa, "_fetch", return_value=html), \
+                mock.patch.object(sys, "argv", ["cbosa.py"] + argv), redirect_stdout(out):
+            try:
+                cbosa.main()
+            except SystemExit as e:
+                return out.getvalue(), e.code
+        return out.getvalue(), 0
+
+    def test_parser_nieprawomocne_i_czysta_data(self):
+        d = cbosa._orzeczenie(self.NIEPRAWOMOCNE, "109C7D1883")
+        self.assertIs(d["prawomocne"], False)
+        self.assertEqual(d["prawomocnosc"], "orzeczenie nieprawomocne")
+        self.assertEqual(d["metadane"]["Data orzeczenia"], "2018-06-06")  # data bez śmieci z kursywy
+        self.assertEqual(d["metadane"]["Treść wyniku"], "Oddalono skargę")
+
+    def test_parser_prawomocne(self):
+        d = cbosa._orzeczenie(self.PRAWOMOCNE, "8889489BE0")
+        self.assertIs(d["prawomocne"], True)
+        self.assertEqual(d["prawomocnosc"], "orzeczenie prawomocne")
+
+    def test_parser_puste_pole_to_none_nie_prawomocne(self):
+        d = cbosa._orzeczenie(self.PUSTE_POLE, "1A8B8B8130")
+        self.assertIsNone(d["prawomocne"])
+        self.assertEqual(d["prawomocnosc"], "")  # pole jest, CBOSA nic nie wpisała
+
+    def test_parser_brak_pola_to_none(self):
+        d = cbosa._orzeczenie(TestOrzeczenie.HTML, "X")  # stary płaski układ bez kursywy
+        self.assertIsNone(d["prawomocne"])
+        self.assertIsNone(d["prawomocnosc"])
+
+    def test_slowo_w_uzasadnieniu_nie_jest_oznaczeniem(self):
+        html = self.PUSTE_POLE.replace("skarga jest nieprawomocna", "orzeczenie nieprawomocne w ocenie")
+        self.assertIsNone(cbosa._orzeczenie(html, "X")["prawomocne"])
+
+    def test_tekst_nieprawomocne_linia_po_dacie_i_glosna_uwaga(self):
+        out, kod = self._uruchom(self.NIEPRAWOMOCNE, ["orzeczenie", "109C7D1883"])
+        self.assertEqual(kod, 0)
+        linie = out.splitlines()
+        i = next(n for n, l in enumerate(linie) if l.startswith("  Data orzeczenia: 2018-06-06"))
+        self.assertEqual(linie[i + 1], "  Prawomocność: NIEPRAWOMOCNE (oznaczenie CBOSA „orzeczenie nieprawomocne”) — zob. UWAGA wyżej")
+        self.assertTrue(out.startswith("UWAGA: I SA/Bk 226/18 jest oznaczone w CBOSA jako ORZECZENIE NIEPRAWOMOCNE"))
+        self.assertIn("uchylone", out)
+        self.assertIn("II FSK 2870/18 - Wyrok NSA z 2021-02-10 → orzeczenie 8889489BE0", out)  # dokąd skoczyć
+
+    def test_tekst_prawomocne_bez_uwagi(self):
+        out, kod = self._uruchom(self.PRAWOMOCNE, ["orzeczenie", "8889489BE0"])
+        self.assertEqual(kod, 0)
+        self.assertIn("  Data orzeczenia: 2021-02-10\n  Prawomocność: prawomocne (oznaczenie CBOSA „orzeczenie prawomocne”)\n", out)
+        self.assertNotIn("UWAGA", out)
+
+    def test_tekst_puste_pole_ma_adnotacje(self):
+        out, kod = self._uruchom(self.PUSTE_POLE, ["orzeczenie", "1A8B8B8130"])
+        self.assertEqual(kod, 0)
+        self.assertIn("Prawomocność: nieznana — CBOSA nie podaje", out)
+        self.assertIn("UWAGA: VI SA/Wa 707/26 — CBOSA nie podaje prawomocności", out)
+
+    def test_json_ma_pole_prawomocne(self):
+        out, _ = self._uruchom(self.NIEPRAWOMOCNE, ["orzeczenie", "109C7D1883", "--json"])
+        d = json.loads(out)
+        self.assertIs(d["prawomocne"], False)
+        self.assertEqual(d["prawomocnosc"], "orzeczenie nieprawomocne")
+        self.assertIn("NIEPRAWOMOCNE", d["uwaga"])
+        self.assertTrue(d["transport_tls_verified"])
+        out, _ = self._uruchom(self.PRAWOMOCNE, ["--json", "orzeczenie", "8889489BE0"])
+        d = json.loads(out)
+        self.assertIs(d["prawomocne"], True)
+        self.assertNotIn("uwaga", d)
+        out, _ = self._uruchom(self.PUSTE_POLE, ["orzeczenie", "1A8B8B8130", "--json"])
+        self.assertIsNone(json.loads(out)["prawomocne"])
+
+    def test_strict_blokuje_nieprawomocne_przed_emisja(self):
+        for argv in (["orzeczenie", "109C7D1883", "--strict"],
+                     ["--strict", "orzeczenie", "109C7D1883"],
+                     ["orzeczenie", "109C7D1883", "--json", "--strict"]):
+            out, kod = self._uruchom(self.NIEPRAWOMOCNE, argv)
+            self.assertEqual(out, "", argv)  # nic na stdout — także z --json
+            self.assertNotEqual(kod, 0)
+            self.assertIn("orzeczenie nieprawomocne — tryb strict nie zwraca treści, której aktualność "
+                          "nie jest potwierdzona; bez --strict dostaniesz tekst z ostrzeżeniem", str(kod))
+            self.assertIn("[8889489BE0]", str(kod))  # odsyła do wyroku NSA w tej sprawie
+            self.assertNotIn("ponownie", str(kod))   # to nie awaria przejściowa
+
+    def test_strict_przepuszcza_prawomocne(self):
+        out, kod = self._uruchom(self.PRAWOMOCNE, ["orzeczenie", "8889489BE0", "--strict"])
+        self.assertEqual(kod, 0)
+        self.assertIn("Prawomocność: prawomocne", out)
+        out, kod = self._uruchom(self.PRAWOMOCNE, ["orzeczenie", "8889489BE0", "--strict", "--json"])
+        self.assertEqual(kod, 0)
+        self.assertIs(json.loads(out)["prawomocne"], True)
+
+    def test_strict_blokuje_brak_oznaczenia(self):
+        out, kod = self._uruchom(self.PUSTE_POLE, ["orzeczenie", "1A8B8B8130", "--strict"])
+        self.assertEqual(out, "")
+        self.assertIn("CBOSA nie podaje prawomocności", str(kod))
+        self.assertIn("bez --strict", str(kod))
+        out, kod = self._uruchom(TestOrzeczenie.HTML, ["orzeczenie", "8889489BE0", "--strict"])
+        self.assertEqual(out, "")
+        self.assertIn("nie znaleziono oznaczenia", str(kod))
+
+    def test_strict_nadal_sprawdza_tls(self):
+        def fake_fetch(path, data=None):
+            cbosa._transport_tls_verified = False
+            return self.PRAWOMOCNE
+
+        out = io.StringIO()
+        with mock.patch.object(cbosa, "_fetch", side_effect=fake_fetch), \
+                mock.patch.object(sys, "argv", ["cbosa.py", "orzeczenie", "8889489BE0", "--strict"]), \
+                redirect_stdout(out):
+            with self.assertRaises(SystemExit) as caught:
+                cbosa.main()
+        cbosa._transport_tls_verified = True
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn("TLS", str(caught.exception.code))
+
 
 class TestFlagaJson(unittest.TestCase):
     """--json musi działać także PO komendzie — modele piszą flagi właśnie tam."""

@@ -58,8 +58,32 @@ POST zwraca stronę 1 + ciasteczka sesji (`Set-Cookie`). Kolejne strony: `GET /c
   Etykiety: `Data orzeczenia`, `Data wpływu`, `Sąd`, `Sędziowie` (z funkcją `/przewodniczący sprawozdawca/`),
   `Symbol z opisem`, `Hasła tematyczne`, `Sygn. powiązane` (linki `/doc/…`), `Skarżony organ`,
   `Treść wyniku`, `Powołane przepisy` (Dz.U. + artykuły + tytuł aktu)
+- **prawomocność** — JEDYNA komórka z zagnieżdżoną tabelą: wartość `Data orzeczenia` to
+  `<table …><tr><td>2018-06-06</td><td style="… font-style: italic;">orzeczenie nieprawomocne</td></tr></table>`
+  (albo `orzeczenie prawomocne`; bywa **puste** `&nbsp;` — zweryfikowane 2026-08 na postanowieniu
+  o wstrzymaniu wykonania `VI SA/Wa 707/26`, doc 1A8B8B8130). Ogólny regex metadanych czyta z niej tylko
+  datę; oznaczenie parsuje osobno `_prawomocnosc()` → JSON `prawomocne: true|false|null` i `prawomocnosc`
+  (`"orzeczenie prawomocne"` / `"orzeczenie nieprawomocne"` / `""` = pole puste / `null` = pola nie znaleziono).
+  Zweryfikowane na żywo: 109C7D1883 (WSA, nieprawomocne — uchylony przez NSA w II FSK 2870/18),
+  8889489BE0 i DC7DA8E6E8 (prawomocne), F438A0BAA7 (uchwała NSA, prawomocne).
+  **Strona wyników wyszukiwarki oznaczenia nie ma** (jedyne „prawomocn” w `raw_search` to treść snippetów).
 - sekcje treści: `<div class="lista-label">Sentencja</div><span class="info-list-value-uzasadnienie">…</span>`
   — analogicznie `Tezy` (jeśli są) i `Uzasadnienie` (bywa nieopublikowane)
+
+## Tryb `--strict` — co sprawdza, czego nie
+
+| Kontrola | Efekt w `--strict` | Bez `--strict` |
+|---|---|---|
+| TLS niezweryfikowany (`CBOSA_INSECURE_TLS=1`) | blokada (`VerificationUnknown`) | wynik + adnotacja, JSON `transport_tls_verified:false` |
+| strona `/doc/{id}` nierozpoznana / wyszukiwarka bez licznika i listy | blokada (UNKNOWN, „spróbuj ponownie") | to samo — zawsze |
+| `orzeczenie`: oznaczenie **nieprawomocne** | blokada: „orzeczenie nieprawomocne — tryb strict nie zwraca treści, której aktualność nie jest potwierdzona; bez --strict dostaniesz tekst z ostrzeżeniem” + sygnatury powiązane | pełny tekst, `Prawomocność: NIEPRAWOMOCNE`, UWAGA na początku, JSON `prawomocne:false` + `uwaga` |
+| `orzeczenie`: pole prawomocności puste / nieznalezione | blokada (aktualność niepotwierdzona) | pełny tekst, `Prawomocność: nieznana`, UWAGA, JSON `prawomocne:null` |
+| `orzeczenie`: oznaczenie prawomocne | przechodzi | `Prawomocność: prawomocne`, JSON `prawomocne:true` |
+| `szukaj` / `sygnatura`: prawomocność pozycji | **nie sprawdza** — lista CBOSA nie niesie flagi | j.w.; sprawdź przez `orzeczenie <doc_id>` |
+
+Wszystkie kontrole wykonują się PRZED emisją wyniku (także `--json`): przy blokadzie stdout jest pusty,
+komunikat idzie na stderr, kod wyjścia ≠ 0. Strict NIE ocenia: ostateczności wyroku NSA (wznowienie, skarga
+nadzwyczajna), aktualności powołanych przepisów (→ ELI), ani tego, czy NSA zmienił linię w innej sprawie.
 
 ## Mapowanie komend `cbosa.py` → pola
 

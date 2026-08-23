@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-cbosa
-version: 1.7.0
+version: 2.0.0
 description: >-
   Przeszukuje CBOSA — Centralną Bazę Orzeczeń Sądów Administracyjnych (orzeczenia.nsa.gov.pl):
   wyroki, postanowienia i uchwały NSA oraz 16 WSA (~2,4 mln orzeczeń od 2004 r.). Używaj przy
@@ -69,16 +69,46 @@ Nie pobieraj helpera z sieci i nie szukaj go przez `find` po katalogach użytkow
 - **orzeczenie** — pełne orzeczenie po `doc_id` (z listy `szukaj`):
   `python3 scripts/cbosa.py orzeczenie 8889489BE0`
   Pokazuje metadane (sąd, sędziowie, symbol, hasła, skarżony organ, **powołane przepisy**,
-  sygnatury powiązane z doc_id do skoku), sentencję i uzasadnienie. Do długich uzasadnień:
-  `--fragment "interpretacja"` (wycina okna wokół frazy).
+  sygnatury powiązane z doc_id do skoku), **prawomocność** (linia `Prawomocność:` zaraz po dacie;
+  w JSON `prawomocne: true/false/null` + `prawomocnosc` = tekst oznaczenia CBOSA), sentencję
+  i uzasadnienie. Do długich uzasadnień: `--fragment "interpretacja"` (wycina okna wokół frazy;
+  brzegi okien dopasowane do granic zdań/wyrazów, `…` na brzegu oznacza ucięcie, `[...]` między oknami).
 - **sygnatura** — szybkie odszukanie po sygnaturze:
   `python3 scripts/cbosa.py sygnatura II FSK 2870/18`
-- każda komenda przyjmuje `--json` oraz `--strict` (blokuje wynik bez zweryfikowanej aktualności lub kompletności); obie flagi działają przed komendą i po niej.
+- każda komenda przyjmuje `--json` oraz `--strict`; obie flagi działają przed komendą i po niej.
   Zero trafień / nierozpoznana odpowiedź API kończą się komunikatem i kodem wyjścia ≠ 0 — także z `--json`
   (nie dostaniesz pustego JSON-a, który wyglądałby jak „sprawdzone, nic nie ma”).
 
+### Prawomocność i tryb `--strict`
+
+CBOSA oznacza każde orzeczenie na stronie `/doc/<id>` kursywą **„orzeczenie prawomocne” /
+„orzeczenie nieprawomocne”** (w wierszu „Data orzeczenia”); przy części orzeczeń (np. postanowienia
+wpadkowe, świeże orzeczenia) pole jest **puste** — CBOSA nic nie twierdzi. Silnik czyta to oznaczenie
+i w `orzeczenie` zawsze je pokazuje:
+
+- `Prawomocność: prawomocne` — bez uwag.
+- `Prawomocność: NIEPRAWOMOCNE` + głośne **UWAGA** na początku wyniku: orzeczenie mogło zostać
+  **uchylone lub zmienione w wyższej instancji** (typowo: wyrok WSA uchylony przez NSA). Zanim je
+  zacytujesz, skocz do orzeczenia powiązanego (`Sygn. powiązane` / `↳ powiązane`, WSA ↔ NSA) i sprawdź
+  jego „Treść wyniku”. Przykład: `I SA/Bk 226/18` (doc 109C7D1883) jest nieprawomocny — NSA w
+  `II FSK 2870/18` (doc 8889489BE0) „uchylił zaskarżony wyrok”.
+- `Prawomocność: nieznana` + UWAGA — CBOSA nie podaje (puste pole) albo oznaczenia nie znaleziono
+  (zmiana układu strony). Nie traktuj tego jak „prawomocne”.
+
+**Lista wyników `szukaj`/`sygnatura` NIE ma tego oznaczenia** (strona wyników CBOSA go nie niesie) —
+flaga jest dostępna wyłącznie przez `orzeczenie <doc_id>`.
+
+`--strict` blokuje wynik (komunikat + kod ≠ 0, nic na stdout także z `--json`), gdy: (1) transport TLS
+nie został zweryfikowany, (2) strona orzeczenia nie została rozpoznana / wyszukiwarka nie odpowiedziała
+poprawną stroną, (3) orzeczenie jest oznaczone jako **nieprawomocne**, (4) prawomocności na stronie
+brak (puste pole / oznaczenie nieznalezione). Bez `--strict` dostaniesz w tych dwóch ostatnich
+przypadkach pełny tekst z ostrzeżeniem. `--strict` **nie sprawdza**: czy wyrok NSA jest ostateczny
+w sensie wznowienia/skargi nadzwyczajnej, czy przepisy powołane w orzeczeniu nadal obowiązują (→ ELI),
+ani prawomocności wyników `szukaj` (brak danych na liście).
+
 Typowy przepływ: `szukaj` (zawęź `--sad`/`--od`/`--symbol`) → wybierz doc_id → `orzeczenie <doc_id>`
-→ w razie potrzeby skacz po sygnaturach powiązanych (WSA ↔ NSA w tej samej sprawie).
+(spójrz na `Prawomocność:`) → w razie potrzeby skacz po sygnaturach powiązanych (WSA ↔ NSA w tej samej
+sprawie).
 
 ## Zasady (ważne — dlaczego)
 
@@ -96,6 +126,7 @@ Typowy przepływ: `szukaj` (zawęź `--sad`/`--od`/`--symbol`) → wybierz doc_i
    II FSK 2870/18"); do dosłownego cytatu w piśmie podaj też link do strony orzeczenia.
 4. **Dwuinstancyjność:** sprawy WSA i NSA łącz przez pole „Sygn. powiązane" (skarga kasacyjna od
    wyroku WSA → wyrok NSA). Sygnatury: NSA np. `II FSK 2870/18`, WSA np. `I SA/Bk 226/18`.
+   Wyrok WSA oznaczony `NIEPRAWOMOCNE` może już nie obowiązywać — najpierw sprawdź wyrok NSA.
 5. **Nie myl orzeczenia z przepisem.** Brzmienie i aktualność powołanych przepisów potwierdź w ELI
    (skill prawo-pl-eli) — orzeczenie mogło zapaść na starszym stanie prawnym.
 6. **Okno serwisowe:** CBOSA ma codzienną krótką przerwę ok. 21:00 — błędy o tej porze są normalne.

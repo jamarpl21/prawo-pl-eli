@@ -3,3 +3,4 @@ __pycache__/
 .DS_Store
 *.pdf
 *.zip
+.playwright-mcp/

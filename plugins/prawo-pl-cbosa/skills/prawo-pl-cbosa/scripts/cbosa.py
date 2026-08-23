@@ -18,12 +18,18 @@ Komendy:
   sygnatura <sygnatura...>                      znajdź orzeczenie po sygnaturze
 Globalnie: --json  (zrzut sparsowanych danych jako JSON zamiast podsumowania; działa przed
                     komendą i po niej)
-           --strict  (blokuje wynik, gdy nie udało się zweryfikować aktualności lub kompletności)
+           --strict  (blokuje wynik, gdy nie udało się zweryfikować aktualności lub kompletności:
+                      TLS niezweryfikowany, nierozpoznana strona, orzeczenie NIEPRAWOMOCNE albo
+                      bez oznaczenia prawomocności na stronie CBOSA)
+
+Prawomocność: strona /doc/{id} niesie w wierszu „Data orzeczenia" kursywę „orzeczenie prawomocne"
+/ „orzeczenie nieprawomocne". Silnik ją parsuje (pole JSON `prawomocne`: true/false/null) — lista
+wyników wyszukiwarki tego oznaczenia NIE ma, więc flaga jest dostępna tylko przez `orzeczenie`.
 """
 import sys, os, json, re, time, argparse, ssl, calendar, html as html_mod
 import urllib.request, urllib.parse, urllib.error, http.cookiejar
 
-__version__ = "1.7.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "2.0.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://orzeczenia.nsa.gov.pl"
 CONTENT_HOSTS = ("orzeczenia.nsa.gov.pl",)
 
@@ -157,6 +163,35 @@ def _sprawdz_transport_strict(a):
             "tryb strict odrzuca wynik pobrany bez weryfikacji certyfikatu TLS")
 
 
+def _sprawdz_prawomocnosc_strict(a, d):
+    """--strict a prawomocność: CBOSA sama oznacza orzeczenie jako (nie)prawomocne. Orzeczenie
+    NIEPRAWOMOCNE mogło zostać uchylone w wyższej instancji — strict nie zwraca takiej treści.
+    Brak oznaczenia (None) = aktualność niepotwierdzona — strict też blokuje (jawnie, nie
+    jako „awaria": to nie jest błąd przejściowy, więc nie przez VerificationUnknown)."""
+    if not getattr(a, "strict", False):
+        return
+    if d.get("prawomocne") is False:
+        sys.exit(_z_uwaga_o_transporcie(
+            f"BŁĄD (strict): {d.get('sygnatura') or d['doc_id']} — orzeczenie nieprawomocne — tryb "
+            "strict nie zwraca treści, której aktualność nie jest potwierdzona; bez --strict "
+            "dostaniesz tekst z ostrzeżeniem. Sprawdź orzeczenie powiązane (WSA ↔ NSA): "
+            + (", ".join(f"{p['opis']} [{p['doc_id']}]" for p in d.get("powiazane", []))
+               or "brak sygnatur powiązanych na stronie CBOSA") + f". Źródło: {d['url']}"))
+    if d.get("prawomocne") is None:
+        sys.exit(_z_uwaga_o_transporcie(
+            f"BŁĄD (strict): {d.get('sygnatura') or d['doc_id']} — {_opis_braku_oznaczenia(d)} "
+            "— tryb strict nie potwierdza aktualności takiej treści; bez --strict dostaniesz tekst "
+            f"z adnotacją. Sprawdź w przeglądarce: {d['url']}"))
+
+
+def _opis_braku_oznaczenia(d):
+    if d.get("prawomocnosc") == "":
+        return ("CBOSA nie podaje prawomocności tego orzeczenia (pole przy dacie orzeczenia jest "
+                "puste — tak bywa przy postanowieniach wpadkowych i świeżych orzeczeniach)")
+    return ("na stronie CBOSA nie znaleziono oznaczenia „orzeczenie prawomocne / nieprawomocne” "
+            "(zmiana układu strony?)")
+
+
 def _fetch(path, data=None):
     """GET/POST strony CBOSA (HTML). Throttling >=0,5 s; ponowienia z rosnącym odstępem.
     Zwraca pobrany HTML jako FOUND; UNKNOWN przekazuje przez VerificationUnknown.
@@ -259,21 +294,94 @@ def _text(fragment):
     return t.strip()
 
 
+# Granica zdania: akapit albo .!?;: + odstęp + wielka litera/cudzysłów/nawias. Kropka po skrócie
+# („art.", „ust.", „2018 r.", „Dz.U.") ani po pojedynczej literze nie kończy zdania.
+_GRANICA = re.compile(r"\n+|[.!?;:]\s+(?=[A-ZĄĆĘŁŃÓŚŹŻ„\"(])")
+_SKROTY = {"art", "ust", "pkt", "lit", "poz", "nr", "np", "tj", "tzw", "tzn", "ww", "zw", "sygn",
+           "str", "por", "zob", "wg", "itd", "itp", "ok", "ds", "m.in", "dz.u", "dz", "proc",
+           "zd", "red", "wyd"}
+
+
+def _granice_zdan(txt, a, b):
+    """Pozycje (koniec granicy) początków zdań/akapitów w txt[a:b]."""
+    out = []
+    for m in _GRANICA.finditer(txt, a, b):
+        if m.group(0)[0] in ".!?":
+            przed = re.search(r"(\S+)$", txt[a:m.start()])
+            tok = przed.group(1).lower().strip("„\"()[]") if przed else ""
+            if (tok in _SKROTY or len(tok) <= 1) and "\n" not in m.group(0):
+                continue
+        out.append(m.end())
+    return out
+
+
+def _dopasuj_brzegi(txt, start, end, min_start, max_end, luz=150):
+    """Przesuwa brzegi okna do granicy zdania (w zapasie `luz` znaków), a gdy jej nie ma — do
+    granicy wyrazu. Okno nigdy nie kurczy się poza [min_start, max_end] (pozycje frazy), więc
+    fraza zostaje w środku. Bez żadnej granicy (ciągły ciąg znaków) brzeg zostaje jak był."""
+    if start > 0:
+        limit = min(start + luz, min_start)
+        zdania = _granice_zdan(txt, start, limit)
+        if zdania:
+            start = zdania[0]
+        else:
+            m = re.compile(r"\s+").search(txt, start, limit)
+            if m:
+                start = m.end()
+    if end < len(txt):
+        limit = max(end - luz, max_end)
+        zdania = _granice_zdan(txt, limit, end)
+        if zdania:
+            end = zdania[-1]
+        else:
+            spacje = [m.start() for m in re.finditer(r"\s", txt[limit:end])]
+            if spacje:
+                end = limit + spacje[-1]
+    return start, end
+
+
 def _fragmenty(txt, fraza, maks=6, okno=600):
-    """Okna tekstu wokół wystąpień frazy (bez rozróżniania wielkości liter) — jak w saos.py."""
+    """Okna tekstu wokół wystąpień frazy (bez rozróżniania wielkości liter) — jak w saos.py.
+    Brzegi okien dopasowane do granic zdań/wyrazów (_dopasuj_brzegi), żeby wycinek nie zaczynał
+    się ani nie kończył w środku słowa (audyt: „kupno i sprz", „aluty tradycyjne")."""
     low, f = txt.lower(), fraza.lower().strip()
     if not f:
         return []
-    spans, p = [], low.find(f)
+    spans, p = [], low.find(f)  # (start, end, pierwsza_fraza, koniec_ostatniej_frazy)
     while p != -1 and len(spans) < maks:
         start = max(0, p - okno // 3)
         end = min(len(txt), p + len(f) + okno)
         if spans and start <= spans[-1][1]:
-            spans[-1] = (spans[-1][0], max(spans[-1][1], end))
+            s0, e0, p0, _ = spans[-1]
+            spans[-1] = (s0, max(e0, end), p0, p + len(f))
         else:
-            spans.append((start, end))
+            spans.append((start, end, p, p + len(f)))
         p = low.find(f, p + len(f))
-    return spans
+    return [_dopasuj_brzegi(txt, s, e, p0, p1) for s, e, p0, p1 in spans]
+
+
+def _prawomocnosc(flat):
+    """Oznaczenie prawomocności ze strony /doc/{id} → (bool|None, tekst etykiety|None).
+    CBOSA wstawia je w komórce „Data orzeczenia" jako zagnieżdżoną tabelę:
+      <td>2018-06-06</td><td style="… font-style: italic;">orzeczenie nieprawomocne</td>
+    — ogólny parser metadanych (_orzeczenie) czyta tylko datę, stąd osobny odczyt tej komórki.
+    Wynik (bool|None, etykieta): etykieta = tekst oznaczenia; "" = komórka kursywy jest, ale PUSTA
+    (&nbsp; — CBOSA nie podaje prawomocności, zweryfikowane na żywo np. dla postanowienia
+    o wstrzymaniu wykonania z 2026-08); None = komórki nie znaleziono (zmiana układu strony?).
+    Nie zgadujemy: brak oznaczenia to „nie wiadomo", nie „prawomocne"."""
+    m = re.search(r'Data orzeczenia</td>.*?<td[^>]*class="info-list-value"[^>]*>(.*?)</tr>\s*</table>',
+                  flat, re.S)
+    komorka = m.group(1) if m else ""
+    if not komorka:  # awaryjnie: etykieta gdziekolwiek na stronie (poza treścią uzasadnienia)
+        tresc = flat.find('class="info-list-value-uzasadnienie"')
+        komorka = flat[:tresc] if tresc != -1 else flat
+    m = re.search(r"orzeczenie\s+(nie)?prawomocne", komorka, re.I)
+    if m:
+        return (m.group(1) is None), re.sub(r"\s+", " ", m.group(0)).lower()
+    kursywa = re.search(r'<td[^>]*font-style:\s*italic[^>]*>(.*?)</td>', komorka, re.S)
+    if kursywa and not _text(kursywa.group(1)).strip():
+        return None, ""  # pole prawomocności istnieje, ale CBOSA zostawiła je puste
+    return None, None
 
 
 def _wyniki(strona_html):
@@ -338,12 +446,47 @@ def _orzeczenie(strona_html, doc_id):
     d["metadane"] = meta
     if powiazane:
         d["powiazane"] = powiazane
+    if meta:
+        # oznaczenie CBOSA „orzeczenie prawomocne / nieprawomocne" (komórka „Data orzeczenia")
+        d["prawomocne"], d["prawomocnosc"] = _prawomocnosc(flat)
     for sekcja in ("Tezy", "Sentencja", "Uzasadnienie"):
         m = re.search(r'<div class="lista-label">\s*' + sekcja +
                       r'\s*</div>\s*<span class="info-list-value-uzasadnienie">(.*?)</span>', flat, re.S)
         if m:
             d[sekcja.lower()] = _text(m.group(1))
     return d
+
+
+def _etykieta_prawomocnosci(d):
+    if d.get("prawomocne") is True:
+        return "prawomocne (oznaczenie CBOSA „orzeczenie prawomocne”)"
+    if d.get("prawomocne") is False:
+        return "NIEPRAWOMOCNE (oznaczenie CBOSA „orzeczenie nieprawomocne”) — zob. UWAGA wyżej"
+    if d.get("prawomocnosc") == "":
+        return "nieznana — CBOSA nie podaje (puste pole prawomocności) — zob. UWAGA wyżej"
+    return "nieznana — brak oznaczenia „orzeczenie prawomocne / nieprawomocne” na stronie — zob. UWAGA wyżej"
+
+
+def _uwaga_o_prawomocnosci(d):
+    """Głośne ostrzeżenie do wyniku tekstowego i JSON, gdy CBOSA oznacza orzeczenie jako
+    NIEPRAWOMOCNE (mogło zostać uchylone/zmienione w NSA) albo oznaczenia brak."""
+    if d.get("prawomocne") is True:
+        return ""
+    kto = d.get("sygnatura") or d["doc_id"]
+    if d.get("prawomocne") is False:
+        pow_ = d.get("powiazane") or []
+        if pow_:
+            dokad = ("sprawdź orzeczenie powiązane (WSA ↔ NSA, pole „Sygn. powiązane”) i jego "
+                     "„Treść wyniku”: " + "; ".join(f"{p['opis']} → orzeczenie {p['doc_id']}"
+                                                    for p in pow_))
+        else:
+            dokad = ("CBOSA nie podaje sygnatur powiązanych — sprawdź w CBOSA, czy zapadł wyrok "
+                     "NSA ze skargi kasacyjnej w tej sprawie (szukaj --sygnatura / sygnatura)")
+        return (f"UWAGA: {kto} jest oznaczone w CBOSA jako ORZECZENIE NIEPRAWOMOCNE — mogło zostać "
+                f"uchylone lub zmienione w wyższej instancji i nie musi już obowiązywać. Przed "
+                f"cytowaniem {dokad}. Tryb --strict takiej treści nie zwraca.")
+    return (f"UWAGA: {kto} — {_opis_braku_oznaczenia(d)} — prawomocność NIEPOTWIERDZONA; "
+            f"sprawdź w przeglądarce: {d['url']}. Tryb --strict takiej treści nie zwraca.")
 
 
 # ── Komendy ──────────────────────────────────────────────────────────────────────────────
@@ -433,9 +576,17 @@ def cmd_orzeczenie(a):
         # UNKNOWN z podpowiedzią; także --json nie może emitować pozornie poprawnego wyniku
         raise VerificationUnknown(f"nie udało się rozpoznać strony orzeczenia {doc_id} — "
                                   f"sprawdź w przeglądarce: {d['url']}")
+    d.setdefault("prawomocne", None)
+    d.setdefault("prawomocnosc", None)
+    uwaga = _uwaga_o_prawomocnosci(d)
+    if uwaga:
+        d["uwaga"] = uwaga
+    _sprawdz_prawomocnosc_strict(a, d)  # cała weryfikacja PRZED emisją wyniku (także --json)
     if a.json:
         print(json.dumps(_dane_z_transportem(d), ensure_ascii=False, indent=2)); return
     _drukuj_uwage_o_transporcie()
+    if uwaga:
+        print(uwaga + "\n")
     print(f"# {d.get('tytul', doc_id)}   [{doc_id}]")
     for k in ("Data orzeczenia", "Sąd", "Sędziowie", "Symbol z opisem", "Hasła tematyczne",
               "Skarżony organ", "Treść wyniku", "Powołane przepisy", "Sygn. powiązane"):
@@ -443,6 +594,8 @@ def cmd_orzeczenie(a):
         if v:
             v1 = re.sub(r"\s*\n\s*", " | ", v.strip())
             print(f"  {k}: {v1[:500]}")
+        if k == "Data orzeczenia":
+            print(f"  Prawomocność: {_etykieta_prawomocnosci(d)}")
     print(f"  Źródło: {d['url']}")
     for p in d.get("powiazane", []):
         print(f"  ↳ powiązane: [{p['doc_id']}]  {p['opis']}")
@@ -462,8 +615,10 @@ def cmd_orzeczenie(a):
         for i, (s, e) in enumerate(spans):
             if i:
                 print("\n[...]\n")
-            print(txt[s:e].strip())
-        print(f"\n(okna: {len(spans)} — pominięto resztę; pełna treść: bez --fragment)")
+            # „…" na brzegu = w tym miejscu okno ucina tekst (brzeg dopasowany do granicy
+            # zdania/wyrazu, więc wycinek nie zaczyna się ani nie kończy w środku słowa)
+            print(("…" if s > 0 else "") + txt[s:e].strip() + (" …" if e < len(txt) else ""))
+        print(f"\n(okna: {len(spans)} — „…” oznacza ucięcie; pominięto resztę; pełna treść: bez --fragment)")
         return
     if len(txt) > 40000:
         print(f"(UWAGA: długie uzasadnienie {len(txt)} znaków — do wycinka użyj --fragment \"<fraza>\")\n")
@@ -507,7 +662,8 @@ def main():
     ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     ap.add_argument("--json", action="store_true", help="zrzut sparsowanych danych jako JSON")
     ap.add_argument("--strict", action="store_true",
-                    help="zakończ błędem, gdy nie udało się zweryfikować aktualności lub kompletności")
+                    help="zakończ błędem, gdy nie udało się zweryfikować aktualności lub kompletności "
+                         "(TLS, rozpoznana strona, prawomocność orzeczenia)")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("szukaj")
@@ -537,7 +693,8 @@ def main():
         p.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
                        help="zrzut sparsowanych danych jako JSON")
         p.add_argument("--strict", action="store_true", default=argparse.SUPPRESS,
-                       help="zakończ błędem, gdy nie udało się zweryfikować aktualności lub kompletności")
+                       help="zakończ błędem, gdy nie udało się zweryfikować aktualności lub kompletności "
+                         "(TLS, rozpoznana strona, prawomocność orzeczenia)")
 
     a = ap.parse_args()
     try:

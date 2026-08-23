@@ -1,6 +1,6 @@
 {
   "name": "prawo-pl-saos",
-  "version": "1.7.0",
+  "version": "2.0.0",
   "description": "Polskie orzecznictwo z publicznego API SAOS (saos.org.pl): SN, TK, sądy powszechne, KIO. Wyszukiwanie po frazie, sygnaturze, sądzie, sędzim, powołanym przepisie i dacie; pełna treść uzasadnień, powołane przepisy i orzeczenia. Read-only.",
   "author": {
     "name": "Krzysztof Gibek"
