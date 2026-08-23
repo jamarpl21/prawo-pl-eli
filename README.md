@@ -137,6 +137,10 @@ Wszystkie skille są w otwartym standardzie **[Agent Skills](https://agentskills
 ## Wymagania
 
 - Python 3.8+ (tylko stdlib; brak `pip install`)
+- **zalecane: `pdftotext` (poppler)** — `brew install poppler` / `apt install poppler-utils`. Od 2.0 silniki
+  ELI i e-dzienników czytają treść aktu z **urzędowego PDF**, gdy API nie ma HTML (k.c. Dz.U. 2026 poz. 795,
+  Konstytucja) albo gdy HTML jest tylko pierwszą stroną (wszystkie dzienniki wojewódzkie). Bez pdftotext
+  silnik sięga po tekst zastępczy z głośnym ostrzeżeniem, a `--strict` go odrzuca.
 - dostęp do internetu (`api.sejm.gov.pl`, hosty e-dzienników wojewódzkich, `publications.europa.eu`,
   `www.saos.org.pl`, `orzeczenia.nsa.gov.pl`, `orzeczenia.uodo.gov.pl`, `rejestrumow.gov.pl`)
 
@@ -234,29 +238,39 @@ Dwie flagi globalne, w każdym silniku, działają przed komendą i po niej:
   „sprawdzone, nic nie ma", a to najgroźniejszy fałszywy negatyw w pracy prawnika.
 - `--strict` — tryb „do pisma procesowego": wynik, którego **aktualności lub kompletności** nie dało się
   zweryfikować, nie jest drukowany z ostrzeżeniem, tylko odrzucany (kod wyjścia ≠ 0, pusty stdout).
-  Domyślny tryb (research) jest bez zmian — te same sytuacje dają głośne `UWAGA:`. Co blokuje strict:
-  awaria kontroli aktualności (ELI `/references`, SPARQL konsolidacji), starszy tekst jednolity, gdy
-  istnieje nowszy (ELI — także gdy podasz sygnaturę starego t.j.), treść aktu bazowego / starszej wersji,
-  gdy istnieje nowsza konsolidacja (EUR-Lex; metadane `meta` przechodzą), zakres dat poza znanym końcem
-  zbioru SN/TK/KIO (SAOS — bez żadnego żądania do sieci), treść pobrana bez weryfikacji TLS (CBOSA),
-  decyzja bez pełnej treści (UODO), pominięty rocznik (e-dzienniki), zbiór większy niż okno API (rejestr
-  umów). Wszystkie kontrole wykonują się PRZED emisją wyniku, również dla `--json`.
-  Strict nie zastępuje oceny prawnika: t.j. z późniejszymi nowelizacjami nadal przechodzi (z ostrzeżeniem
-  „Nowelizacje po tekście jednolitym"), bo nowszego t.j. po prostu nie ma.
+  Domyślny tryb (research) jest bez zmian — te same sytuacje dają głośne `UWAGA:`. Co blokuje strict
+  (pełna lista per silnik w każdym SKILL.md, sekcja „Co sprawdza --strict"):
+  - **ELI:** awaria kontroli aktualności (`/references`), starszy t.j., gdy istnieje nowszy (także gdy
+    podasz sygnaturę starego t.j.), tekst zastępczy ze starszego t.j. (brak pdftotext), nieudana
+    ekstrakcja PDF, niekompletna lista nowelizacji po t.j.;
+  - **EUR-Lex:** awaria SPARQL, starsza wersja skonsolidowana, treść aktu bazowego, gdy istnieje
+    konsolidacja, `meta` aktu bazowego znowelizowanego (daty stosowania w CELLAR są wtedy nieaktualne);
+  - **SAOS:** zakres dat poza końcem zbioru SN (22.06.2016) / TK (9.12.2015) / KIO (6.09.2018) —
+    granica potwierdzana na żywo; **CBOSA:** treść bez weryfikacji TLS, orzeczenie **nieprawomocne** lub
+    bez potwierdzonej prawomocności; **UODO:** decyzja bez pełnej treści, decyzja **uchylona przez sąd**;
+  - **e-dzienniki:** pominięty lub niekompletny rocznik, tekst z text.html (tylko 1. strona), tekst
+    uszkodzony (U+FFFD, brak §); **rejestr umów:** zbiór większy niż okno API (10 000).
+
+  Wszystkie kontrole wykonują się PRZED emisją wyniku, również dla `--json`. Strict nie zastępuje oceny
+  prawnika: t.j. z późniejszymi nowelizacjami nadal przechodzi (z listą „Nowelizacje po tekście
+  jednolitym"), bo nowszego t.j. po prostu nie ma; zakres uchylenia decyzji UODO czy wyroku WSA trzeba
+  odczytać z sentencji (strict tylko odmawia treści, która może już nie obowiązywać).
 
 ### eli.py (prawo polskie)
 
 | Komenda | Opis | Przykład |
 |---|---|---|
 | `szukaj` | znajdź akt po tytule/typie/roku/haśle | `szukaj "Kodeks spółek handlowych" --typ Ustawa --limit 5` |
-| `meta` | metadane aktu (status, wejście w życie, pliki tekstu) | `meta DU 2000 1037` |
+| `meta` | metadane aktu: status, **data aktu** („z dnia"), **ogłoszono** (publikacja w Dz.U.), wejście w życie, stan prawny t.j., uwagi o rozłożonym wejściu w życie | `meta DU 2000 1037` |
 | `tj` | znajdź AKTUALNY tekst jednolity (najnowszy oznaczony) | `tj DU 2000 1037` |
 | `odniesienia` | nowelizacje, podstawa prawna, tekst jednolity | `odniesienia DU 2024 18` |
 | `tekst` | treść aktu; `--fragment` wycina pojedynczy artykuł; `--pdf` zapisuje urzędowy PDF | `tekst DU 2024 18 --fragment "art. 299"` |
 | `struktura` | spis jednostek redakcyjnych aktu | `struktura DU 2024 18 --filtr "Art. 299"` |
 
 Komendy `tekst` i `tj` same ostrzegają, gdy cytujesz z nieaktualnej wersji (istnieje nowszy tekst
-jednolity / są nowelizacje po t.j.).
+jednolity / są nowelizacje po t.j. — lista łączy wpisy t.j. z „Aktami zmieniającymi" aktu bazowego po
+dacie stanu prawnego). Gdy API nie ma HTML aktu (świeży t.j. k.c., Konstytucja), `tekst` czyta urzędowy
+PDF przez `pdftotext` — przypisy z dołu strony trafiają do linii `[przypis N)]`.
 
 Każda komenda przyjmuje `--json` i `--strict` (wyżej). Sygnaturę można podać w wielu formach:
 `DU 2000 1037`, `DU/2024/18`, `"Dz.U. 2024 poz. 18"`, `WDU20240000018`, albo `DU/2000/1037` (ELI).
@@ -267,21 +281,24 @@ Każda komenda przyjmuje `--json` i `--strict` (wyżej). Sygnaturę można poda�
 |---|---|---|
 | `dzienniki` | lista 16 dzienników; z `--woj` roczniki i liczba aktów | `dzienniki --woj DS` |
 | `szukaj` | akty województwa po frazie z tytułu (filtr lokalny) | `szukaj --woj DS "plan zagospodarowania" --rok 2026` |
-| `akt` | metadane aktu (typ, organ, status, linki PDF/HTML) | `akt DS 2026 3299` |
-| `tekst` | treść aktu; `--fragment` wycina okna; `--pdf` zapisuje urzędowy PDF | `tekst DS 2026 3299 --fragment "§ 2"` |
+| `akt` | metadane aktu (typ, organ, **data aktu** i **data publikacji** w dzienniku, status, powiązania: sprostowania, uchylenia, rozstrzygnięcia nadzorcze) | `akt DS 2026 3299` |
+| `tekst` | treść aktu **z urzędowego PDF** (pdftotext); `--fragment "§ N"` zwraca cały §; `--pdf` zapisuje PDF | `tekst DS 2026 3299 --fragment "§ 2"` |
 
 Kody województw = sufiks publishera ELI (`DS`=dolnośląskie, `MZ`=mazowieckie, `SL`=śląskie…);
 można też podać nazwę (`--woj lodzkie`). API dzienników ignoruje filtry serwerowe — silnik pobiera
-rocznik i filtruje tytuły lokalnie.
+rocznik i filtruje tytuły lokalnie (bez `?limit=…`, bo ten wariant serwer podaje z przestarzałego cache'u —
+silnik porównuje liczbę pozycji z `totalCount`). `text.html` dzienników zawiera tylko pierwszą stronę aktu,
+dlatego treść pochodzi z PDF. Hosty z niepełnym łańcuchem certyfikatów (MP, LS, LD) obsługiwane przez
+dociągnięcie certyfikatu pośredniego (AIA) z pełną weryfikacją.
 
 ### eurlex.py (prawo UE)
 
 | Komenda | Opis | Przykład |
 |---|---|---|
 | `szukaj` | znajdź akt po frazie z tytułu (domyślnie PL) | `szukaj "sztucznej inteligencji" --typ REG` |
-| `meta` | metadane (typ, wejście w życie / stosowanie, status, ELI) | `meta 32016R0679` |
+| `meta` | metadane (typ, wejście w życie / stosowanie, **termin transpozycji** dyrektywy, status, ELI); na wersji skonsolidowanej: „stan na" + daty **aktu bazowego**; ostrzeżenie, gdy akt był zmieniany (daty stosowania w CELLAR nie są wtedy aktualizowane) | `meta 32016R0679` |
 | `skonsolidowany` | wersje skonsolidowane (odpowiednik t.j.) | `skonsolidowany 32006L0112` |
-| `odniesienia` | nowelizacje, sprostowania, podstawa traktatowa | `odniesienia 32016R0679` |
+| `odniesienia` | nowelizacje, sprostowania, **uchylenia (w obie strony)**, podstawa traktatowa | `odniesienia 32016R0679` |
 | `tekst` | treść aktu (domyślnie PL); `--fragment` wycina artykuł; `--jezyk`, `--pdf` | `tekst 02016R0679-20160504 --fragment "art. 28"` |
 
 ### saos.py (orzecznictwo polskie)
@@ -293,8 +310,11 @@ rocznik i filtruje tytuły lokalnie.
 | `sygnatura` | szybkie odszukanie po numerze sprawy | `sygnatura III CSK 203/09` |
 
 `--sad`: `SN | TK | powszechne | admin | KIO`. SAOS to baza **wtórna** — `--sad admin` zwykle zwraca 0
-(orzecznictwo administracyjne: skill **prawo-pl-cbosa** niżej). Każda komenda przyjmuje `--json` i `--strict`
-(w strict `--sad SN/TK/KIO` wymaga `--do` w granicach zbioru, np. `--do 2016-12-31` dla SN).
+(orzecznictwo administracyjne: skill **prawo-pl-cbosa** niżej). Zbiory **SN, TK i KIO są zamknięte** —
+kończą się dokładnie na 22.06.2016, 9.12.2015 i 6.09.2018 (silnik potwierdza granicę na żywo i ostrzega
+z dokładnością do dnia; w strict `--sad SN/TK/KIO` wymaga `--do` w granicach zbioru). W tekstach SN/TK/KIO
+SAOS spłaszcza indeksy górne (art. 417¹ → „4171") — silnik ostrzega; w sądach powszechnych renderuje
+`art. 556¹`. „Powołane przepisy" to niepełna lista SAOS; `--przepis` dopasowuje luźno (dopisz nazwę ustawy).
 
 ### cbosa.py (orzecznictwo sądów administracyjnych — NSA/WSA)
 
@@ -306,18 +326,21 @@ rocznik i filtruje tytuły lokalnie.
 
 `--sad`: `NSA` albo `"WSA <miasto>"` (16 miast). CBOSA nie ma API — silnik czyta publiczne strony
 HTML z throttlingiem ≥0,5 s (zmiana układu stron może wymagać aktualizacji). Wielkość strony
-wyników: stałe 10 (`--strona N`).
+wyników: stałe 10 (`--strona N`). `orzeczenie` podaje **prawomocność** (flaga ze strony CBOSA) i ostrzega,
+gdy orzeczenie jest nieprawomocne (mogło zostać uchylone — zob. orzeczenia powiązane WSA ↔ NSA).
 
 ### uodo.py (decyzje Prezesa UODO — RODO)
 
 | Komenda | Opis | Przykład |
 |---|---|---|
-| `najnowsze` | ostatnio opublikowane dokumenty | `najnowsze --limit 10` |
-| `szukaj` | pełnotekstowo (regex) / po tytule / dacie publikacji | `szukaj "biometr" --od 2026-01-01` |
-| `decyzja` | pełna treść decyzji po sygnaturze albo URN; `--fragment` | `decyzja DKN.5131.9.2025 --fragment "art. 33"` |
+| `najnowsze` | ostatnio **wydane** dokumenty (API sortuje po dacie decyzji) | `najnowsze --limit 10` |
+| `szukaj` | pełnotekstowo (regex) / po tytule / dacie **decyzji** (`--od/--do`) lub **publikacji** (`--pub-od/--pub-do`) | `szukaj "biometr" --od 2026-01-01` |
+| `decyzja` | pełna treść decyzji po sygnaturze albo URN; blok **„Kontrola sądowa"** (uchylenia/utrzymania z sygnaturami WSA/NSA); `--fragment` | `decyzja DKN.5131.9.2025 --fragment "art. 33"` |
 
 API stosuje jeden warunek filtrujący na zapytanie (fraza ALBO tytuł); zaawansowane filtry:
-`--warunek "indeks:operator:wartość"`.
+`--warunek "indeks:operator:wartość"`. Decyzja uchylona przez sąd jest oznaczana nagłówkiem „DECYZJA
+UCHYLONA PRZEZ SĄD" (zakres uchylenia — w sentencji wyroku: skill prawo-pl-cbosa); pole `inforce` API nie
+odzwierciedla uchyleń.
 
 ### rejestrumow.py (umowy sektora finansów publicznych)
 
@@ -328,9 +351,11 @@ API stosuje jeden warunek filtrujący na zapytanie (fraza ALBO tytuł); zaawanso
 | `umowa` | pełne szczegóły umowy po idUmowy (strony z adresami, aneksy, wyłączenia jawności) | `umowa 958e7d59-057b-4eb4-8f55-e664638f393a` |
 | `slownik` | słowniki API (kody rodzajów zmian, stron, wyłączeń) | `slownik rodzaje_zmian_umowy` |
 
-Filtry można łączyć (AND): fraza dotyczy przedmiotu umowy, `--jsfp/--regon/--nip` zamawiającego,
-`--wykonawca(-nip/-regon)` drugiej strony, `--od/--do` daty zawarcia, `--wartosc-od/-do` kwoty;
-surowe body: `--zapytanie '<json>'`. Okno wyszukiwania: 10 000 wyników (zawężaj datami), strona maks. 50.
+Filtry można łączyć (AND): fraza dotyczy przedmiotu umowy, `--jsfp/--regon/--nip` zamawiającego
+(`--rola wykonawca|dowolna` zmienia stronę), `--wykonawca(-nip/-regon)` drugiej strony, `--od/--do` daty
+zawarcia, `--wartosc-od/-do` kwoty, `--zmiana-rodzaj KOD` / `--zmiana-od/-do` aneksów i zmian; surowe body:
+`--zapytanie '<json>'` (API ignoruje nieznane pola — zła nazwa = cały rejestr). Okno wyszukiwania: 10 000
+wyników (silnik mówi wprost, gdy jest wyczerpane), strona maks. 50.
 
 ### Przykładowe przepływy
 
@@ -417,6 +442,41 @@ we wszystkich miejscach, identyczna; `tools/validate.py` wymusza to w CI:
 
 Wydanie nowej wersji: bump `version` we wszystkich powyższych → `python3 tools/validate.py &&
 for t in tools/test_*.py; do python3 $t; done` → `git tag v1.x.y` → `git push --tags`.
+
+## Audyt merytoryczny (sierpień 2026) i wydanie 2.0
+
+22–23 sierpnia 2026 wersja 1.7.0 wszystkich siedmiu silników przeszła **audyt merytoryczny**: nie jakości
+kodu, lecz tego, czy to, co narzędzia zwracają, jest w 100% prawdą w zestawieniu z **niezależnym źródłem
+urzędowym** (ISAP i urzędowe PDF-y Dz.U., strony i PDF-y dzienników wojewódzkich, EUR-Lex, sn.pl /
+ipo.trybunal.gov.pl / uzp.gov.pl, surowe strony CBOSA, portal UODO i uodo.gov.pl, API rejestru umów
+i Biała lista VAT). 15 agentów w trzech fazach — sondy per silnik, adwersaryjna weryfikacja najcięższych
+ustaleń, krytyk kompletności — wykonało **129 kontroli**: 73 TRUE, 37 PARTIAL, 18 FALSE, 1 UNVERIFIABLE,
+łącznie **56 defektów** (7 potwierdzonych adwersaryjnie, 0 obalonych). Pełny raport z dowodami i krokami
+reprodukcji: [`docs/audyt-merytoryczny-2026-08.md`](docs/audyt-merytoryczny-2026-08.md).
+
+**Co się potwierdziło.** Tam, gdzie silnik ma tekst, brzmienie przepisów zgadza się z urzędowym PDF znak
+po znaku (k.c. art. 415, 353¹, 449¹, 23; k.p.c. art. 17; k.s.h. art. 299; Konstytucja; RODO art. 6 i 17;
+AI Act art. 5; teksty CBOSA, SAOS i UODO); sygnatury, daty orzeczeń, składy, statusy obowiązywania aktów,
+mapowanie pól rejestru umów (NIP-y kontrahentów zgodne z Białą listą) — prawdziwe.
+
+**Co było nieprawdą — i co naprawiło wydanie 2.0:**
+
+| Silnik | Defekt (1.7.0) | Naprawa (2.0.0) |
+|---|---|---|
+| ELI, e-dzienniki | „Ogłoszono" = data uchwalenia aktu, nie publikacji (sygnaliści: 14.06 vs 24.06.2024; DS 3292: 7 tygodni) | `Data aktu` + `Ogłoszono` z pola `promulgation`; `Stan prawny na`; `Uwagi` z rozłożonym wejściem w życie |
+| ELI | przy pustym `text.html` (k.c. Dz.U. 2026/795, Konstytucja) cichy tekst ze STARSZEGO t.j. pod nagłówkiem aktualnego — art. 187 k.c. w brzmieniu z 2024 r.; instrukcja nałożenia zmian wskazywała nieistniejącą sekcję | treść z **urzędowego PDF** aktu przez `pdftotext`; bez pdftotext — jawny tekst zastępczy z listą aktów zmieniających, blokowany w strict |
+| ELI | „Nowelizacje po t.j." zaniżone (k.p.c. 2 z 4–5); `Znaleziono` = rozmiar strony | lista uzupełniana z aktu bazowego; `Znaleziono` = `totalCount` |
+| e-dzienniki | `text.html` = tylko 1. strona PDF; „Nie znaleziono frazy" dla § 2–4 i stawek; listing `?limit=100000` z przestarzałego cache'u (brak najnowszych aktów, unieważniony MPZP jako „obowiązujący"); tekst hosta podlaskiego z dziurami; MP/LS/LD „niedostępne" | tekst z PDF; listing bez magicznego limitu z kontrolą `totalCount`; detekcja uszkodzeń; dociąganie łańcucha TLS (AIA); powiązania (sprostowania, uchylenia, nieważność) z rejestru dziennika |
+| UODO | decyzje **uchylone przez sąd** (Bisnode — kara 943 470 zł, Morele) jako „w obrocie: tak"; `--od/--do` filtrowało po dacie decyzji, opisane jako publikacji | blok „Kontrola sądowa" z sygnaturami WSA/NSA, nagłówek „DECYZJA UCHYLONA", strict blokuje; filtry nazwane zgodnie z prawdą + `--pub-od/--pub-do`; tekst z `body.html` (przypisy, numeracja) |
+| CBOSA | flaga „orzeczenie nieprawomocne" gubiona — uchylony wyrok WSA wyglądał jak obowiązujący | `Prawomocność:` w tekście i JSON, ostrzeżenie, strict blokuje nieprawomocne |
+| SAOS | granice zbiorów roczne (SN kończy się 22.06.2016, KIO 6.09.2018) — „zweryfikowane zero" dla II półrocza 2016; `<sup>` jako łamanie linii; spłaszczone indeksy SN bez ostrzeżenia; martwe linki „Źródło oryginalne" | granice z dokładnością do dnia, potwierdzane na żywo; `art. 556¹`; ostrzeżenie o spłaszczeniu; wzorce adresów sn.pl / ipo.trybunal.gov.pl / uzp |
+| EUR-Lex | `meta` na konsolidacji: data „stan na" jako wejście w życie; daty stosowania AI Act sprzed nowelizacji; brak terminów transpozycji i uchyleń; ostatni artykuł z 58 przypisami | daty aktu bazowego, ostrzeżenie o nowelizacjach, `cdm:directive_date_transposition`, uchylenia w obie strony, granice strukturalne XHTML |
+| rejestr umów | `--nip/--regon` pasowały do dowolnej strony umowy; strona za oknem 10 000 = fałszywe zero; `api.md` z nieistniejącą sekcją filtrów zmian | `--rola`, komunikaty o oknie, prawdziwa sekcja `zmianyUmowy` + `--zmiana-*` |
+| wszystkie | `--strict` dawał fałszywy „pass" tam, gdzie nie było dedykowanej kontroli; obietnica „zero trafień → kod ≠ 0 także z `--json`" fałszywa dla `szukaj` w ELI/EUR-Lex/SAOS | kontrakt strict opisany per silnik i rozszerzony (wyżej); `szukaj` wszędzie kończy zero komunikatem i kodem ≠ 0 |
+
+Testy jednostkowe: 276 → 491. Audyt wskazał też luki do kolejnych testów (przepisy znowelizowane
+w ostatnich 90 dniach, t.j. z brzmieniem z datą przyszłą, indeksy literowe w k.p.c., tabele załączników)
+— zob. sekcję D raportu.
 
 ## Ważne zastrzeżenia
 
