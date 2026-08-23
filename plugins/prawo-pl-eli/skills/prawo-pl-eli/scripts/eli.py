@@ -9,20 +9,28 @@ Komendy:
   szukaj ["<fraza>"] [--typ T] [--rok R] [--wyd DU|MP] [--haslo H] [--obowiazujace] [--limit N] [--offset N]
   meta <sygnatura...>            np. meta DU 2024 18  |  meta "Dz.U. 2024 poz. 18"  |  meta WDU20240000018
   tekst <sygnatura...> [--fragment "art. 299"] [--pdf ŚCIEŻKA]
-                                 tekst aktu (text.html → czysty tekst); --fragment wycina tylko jednostki
-                                 z frazą (np. jeden artykuł); --pdf zapisuje urzędowy PDF
+                                 tekst aktu (text.html → czysty tekst; gdy API nie ma HTML — własny urzędowy
+                                 PDF aktu przez `pdftotext -layout`, jeśli jest w PATH); --fragment wycina
+                                 tylko jednostki z frazą (np. jeden artykuł); --pdf zapisuje urzędowy PDF
   struktura <sygnatura...> [--filtr F] [--poziom N]   spis jednostek redakcyjnych aktu (z /struct)
   odniesienia <sygnatura...>     nowelizacje, tekst jednolity, podstawa prawna
   tj <sygnatura...>              znajduje AKTUALNY TEKST JEDNOLITY dla aktu i podaje jego sygnaturę
 Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
-           --strict  (blokuje wynik, gdy nie udało się zweryfikować aktualności lub kompletności)
+           --strict  (blokuje wynik PRZED emisją, gdy nie udało się zweryfikować aktualności lub
+                      kompletności: nowszy t.j., awaria kontroli, tekst ze STARSZEGO t.j. zamiast własnego
+                      PDF, niepełna lista nowelizacji; NIE wykrywa zmian przepisu po stanie prawnym t.j.)
 """
-import sys, json, re, time, argparse, urllib.request, urllib.parse, urllib.error
+import sys, json, re, time, argparse, shutil, subprocess, tempfile, os
+import urllib.request, urllib.parse, urllib.error
 from html.parser import HTMLParser
 
 __version__ = "1.7.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://api.sejm.gov.pl/eli"
 CONTENT_HOSTS = ("api.sejm.gov.pl",)
+# Pamięć podręczna udanych GET-ów bez parametrów (metadane, odniesienia) w obrębie jednego
+# uruchomienia — te same odniesienia aktu bazowego potrzebuje kontrola nowszego t.j. i lista
+# nowelizacji; zapora api.sejm.gov.pl źle znosi powtórzone żądania.
+_CACHE = {}
 
 
 class VerificationUnknown(RuntimeError):
@@ -71,6 +79,15 @@ def _get(path, params=None, soft=False):
         q = urllib.parse.urlencode({k: v for k, v in params.items() if v not in (None, "", False)})
         if q:
             url += "?" + q
+    elif url in _CACHE:
+        return _CACHE[url]
+    wynik = _pobierz(url, soft)
+    if not params:
+        _CACHE[url] = wynik
+    return wynik
+
+
+def _pobierz(url, soft):
     req = urllib.request.Request(url, headers={"User-Agent": f"eli-skill/{__version__}", "Accept": "application/json, text/html"})
     raw, ctype = None, ""
     for attempt in (1, 2):
@@ -107,12 +124,15 @@ def _get(path, params=None, soft=False):
     return raw
 
 
-def _get_bytes(url):
+def _get_bytes(url, soft=False):
+    """Pobiera plik (PDF). soft=True: awaria to VerificationUnknown zamiast zakończenia programu."""
     req = urllib.request.Request(url, headers={"User-Agent": f"eli-skill/{__version__}"})
     try:
         with _opener.open(req, timeout=60) as r:
             return r.read()
     except Exception as e:
+        if soft:
+            raise VerificationUnknown(f"błąd pobierania {url} ({e})") from e
         sys.exit(f"BŁĄD pobierania: {url} ({e})")
 
 
@@ -123,47 +143,313 @@ def _expect_dict(d, what):
 
 
 class _Stripper(HTMLParser):
+    """HTML z text.html → tekst.
+
+    Odsyłacz do przypisu API zapisuje jako <a class="gloss-link tooltip"><sup>N)</sup>
+    <span class="tooltip-text">treść przypisu</span></a> — WEWNĄTRZ numeru jednostki:
+    „<h3>2<a…><sup>1)</sup>…</a>)</h3>" (pkt 2 z przypisem 1), „Art. 66c<a…><sup>6)</sup>…</a>."
+    Przepisywanie tego liniowo dawało „2 1)", „a 2)", „§ 1 12)" — cyfra odsyłacza wchodziła
+    w numer jednostki (pkt 2 czytało się jak pkt 21). Dlatego numer odsyłacza NIE trafia do
+    tekstu, a treść przypisu czeka w kolejce i wychodzi na najbliższej granicy bloku jako
+    osobna linia „[przypis N)] …" (etykieta jest konieczna: 7 przypisów w k.p.c. zaczyna się
+    od „Art. 598…"/„Tytuł działu…" i na początku linii udawałoby nagłówek jednostki — _GRANICE).
+    """
+
+    BLOKI = ("p", "br", "div", "tr", "li", "h1", "h2", "h3", "h4")
+
     def __init__(self):
         super().__init__()
         self.out, self.skip = [], 0
+        self.gloss = 0            # głębokość <a> wewnątrz odsyłacza do przypisu
+        self.w_sup = False        # w <sup> odsyłacza (numer przypisu)
+        self.tt = 0               # głębokość <span> wewnątrz treści przypisu (tooltip-text)
+        self.nr, self.tresc = [], []
+        self.oczekujace = []      # przypisy do wypisania na najbliższej granicy bloku
+
+    def _granica(self):
+        for nr, tresc in self.oczekujace:
+            if tresc:
+                self.out.append(f"\n[przypis {nr}] {tresc}" if nr else f"\n[przypis] {tresc}")
+        self.oczekujace = []
+        self.out.append("\n")
+
+    def zakoncz(self):
+        if self.oczekujace:
+            self._granica()
 
     def handle_starttag(self, tag, attrs):
         if tag in ("script", "style"):
             self.skip += 1
-        if tag in ("p", "br", "div", "tr", "li", "h1", "h2", "h3", "h4"):
-            self.out.append("\n")
-        # Indeks górny artykułu (np. "Art. 21<sup>1</sup>.") rozdzielamy spacją, żeby
-        # "Art. 21 1." było odróżnialne od "Art. 211." — inaczej art. 21¹ i art. 211
-        # sklejają się do tego samego napisu i _fragmenty zwraca oba (znany bug).
+        klasa = dict(attrs).get("class", "") or ""
+        if tag in self.BLOKI:
+            self._granica()
+        if tag == "a" and self.gloss:
+            self.gloss += 1
+        elif tag == "a" and "gloss-link" in klasa:
+            self.gloss, self.nr, self.tresc = 1, [], []
         if tag == "sup":
-            self.out.append(" ")
-        # Treść przypisu (dymek przy odsyłaczu) API wstawia INLINE, w środku przepisu:
-        # „Art. 66c 6)Dodany przez art. 3…" albo „…wyrażą na to zgodę. 20)Zdanie trzecie dodane…".
-        # Bez oznaczenia nie da się odróżnić normy od komentarza redakcyjnego, więc przypis
-        # wychodzi do własnej linii z etykietą. Etykieta (a nie samo „\n") jest konieczna:
-        # 7 przypisów w k.p.c. zaczyna się od „Art. 598…"/„Tytuł działu…" i na początku linii
-        # udawałoby nagłówek jednostki (_GRANICE), tnąc fragment w losowym miejscu.
-        if tag == "span" and "tooltip-text" in dict(attrs).get("class", ""):
-            self.out.append("\n[przypis] ")
+            if self.gloss:
+                self.w_sup = True
+            else:
+                # Indeks górny artykułu (np. "Art. 21<sup>1</sup>.") rozdzielamy spacją, żeby
+                # "Art. 21 1." było odróżnialne od "Art. 211." — inaczej art. 21¹ i art. 211
+                # sklejają się do tego samego napisu i _fragmenty zwraca oba (znany bug).
+                self.out.append(" ")
+        if tag == "span":
+            if self.tt:
+                self.tt += 1
+            elif "tooltip-text" in klasa:
+                if self.gloss:
+                    self.tt = 1
+                else:   # dymek poza odsyłaczem (nieznany wariant znaczników) — jak dawniej, inline
+                    self.out.append("\n[przypis] ")
 
     def handle_endtag(self, tag):
         if tag in ("script", "style") and self.skip:
             self.skip -= 1
+        if tag == "sup":
+            self.w_sup = False
+        if tag == "span" and self.tt:
+            self.tt -= 1
+        if tag == "a" and self.gloss:
+            self.gloss -= 1
+            if not self.gloss:
+                nr = "".join(self.nr).replace("\xa0", " ").strip()
+                tresc = " ".join("".join(self.tresc).replace("\xa0", " ").split())
+                self.oczekujace.append((nr, tresc))
+                self.nr, self.tresc = [], []
 
     def handle_data(self, data):
-        if not self.skip:
-            self.out.append(data)
+        if self.skip:
+            return
+        if self.gloss:
+            if self.w_sup:
+                self.nr.append(data)
+            elif self.tt:
+                self.tresc.append(data)
+            return
+        self.out.append(data)
 
 
 def html_to_text(html):
     p = _Stripper()
     p.feed(html)
+    p.zakoncz()
     # API ELI używa twardych spacji (NBSP), np. "Art.\xa0299." — normalizuj, żeby frazy były wyszukiwalne
     t = "".join(p.out).replace("\xa0", " ")
     t = re.sub(r"[ \t]+", " ", t)
     t = re.sub(r"\n[ \t]+", "\n", t)
+    t = re.sub(r"[ \t]+\n", "\n", t)
     t = re.sub(r"\n{3,}", "\n\n", t)
     return t.strip()
+
+
+# ---------------------------------------------------------------------------------------------
+# Urzędowy PDF → tekst (gdy API ma textHTML=false: np. k.c. DU 2026 795, Konstytucja DU 1997 483)
+# ---------------------------------------------------------------------------------------------
+_PDF_NAGLOWEK = re.compile(r"^\s*(©\s*Kancelaria Sejmu|(Dziennik Ustaw|Monitor Polski)\s+–\s*\d+\s*–)")
+_PDF_STOPKA = re.compile(r"^\s*(\d{4}-\d{2}-\d{2}|–?\s*\d{1,4}\s*–?)\s*$")
+_PDF_PRZYPIS = re.compile(r"^(\d{1,3})\)(?:\s+(.*))?$")
+# glued odsyłacz do przypisu: „§ 1.3)", „(uchylony)5)", „chemicznych2)" — cyfry + „)" sklejone
+# z poprzedzającym znakiem, który nie jest spacją, cyfrą ani nawiasem otwierającym
+_PDF_ODSYLACZ = re.compile(r"(?<=[^\s\d\[(„\"'«])(\d{1,3})\)")
+_PDF_FRAZY_PRZYPISU = ("przez art.", "weszła w życie", "wszedł w życie", "wchodzi w życie", "Dodany ",
+                       "W brzmieniu", "Uchylony", "Ze zmianą", "Zmiany tekstu", "odnośniku", "Obecnie",
+                       "kieruje działem", "wdraża dyrektyw")
+# początek NOWEGO akapitu (jednostki redakcyjnej) — tylko to nie jest doklejane do poprzedniej linii
+_PDF_NOWY_AKAPIT = re.compile(
+    r"^[„\"]?(Art\.\s*\d|§\s*\d|Rozdział\s|ROZDZIAŁ\s|Dział\s|DZIAŁ\s|Tytuł\s|TYTUŁ\s|Księga\s|KSIĘGA\s|"
+    r"Oddział\s|ODDZIAŁ\s|Załącznik|Część\s|CZĘŚĆ\s|Preambuła|PREAMBUŁA|\d+[a-z]?\)\s|[a-z]\)\s|–\s|\d+[a-z]?\.\s)")
+# jednostka na LEWYM marginesie (pkt/lit./tiret mają wysunięty numer; „Art."/„§" bywają niewcięte)
+_PDF_JEDNOSTKA = re.compile(
+    r"^(Art\.\s*\d|§\s*\d|\d+[a-z]?\)\s|[a-z]\)\s|–\s|Rozdział\s|ROZDZIAŁ\s|Dział\s|DZIAŁ\s|Tytuł\s|TYTUŁ\s|"
+    r"Księga\s|KSIĘGA\s|Oddział\s|Załącznik)")
+_PDF_WCIECIE_NAGLOWKA = 16   # krótki wiersz wcięty co najmniej tyle = wyśrodkowany nagłówek (DZIAŁ IV)
+_PDF_MAKS_NAGLOWEK = 70
+
+
+def pdftotext_dostepny():
+    return shutil.which("pdftotext") is not None
+
+
+def pdf_do_tekstu_layout(pdf_bytes):
+    """`pdftotext -layout` na bajtach PDF → surowy tekst (pusty napis przy awarii)."""
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+            f.write(pdf_bytes)
+            tmp = f.name
+        r = subprocess.run(["pdftotext", "-layout", "-enc", "UTF-8", tmp, "-"],
+                           capture_output=True, timeout=180)
+        if r.returncode != 0:
+            return ""
+        return r.stdout.decode("utf-8", "replace")
+    except Exception:
+        return ""
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def _pdf_strona(page, pierwsza):
+    """Jedna strona z `pdftotext -layout` → (linie treści [(wcięcie, tekst)], przypisy {nr: treść}).
+
+    Usuwa nagłówek („©Kancelaria Sejmu  s. 1/119", „Dziennik Ustaw – 22 – Poz. 795"), stopkę
+    (znacznik daty „2026-06-22", numer strony), normalizuje margines strony i wydziela blok
+    przypisów z dołu strony (po pustej linii; „3)   W brzmieniu ustalonym…" + wcięte kontynuacje).
+    """
+    lines = page.split("\n")
+    while lines and not lines[-1].strip():
+        lines.pop()
+    # nagłówek: pierwsze niepuste linie
+    i = 0
+    while i < len(lines) and not lines[i].strip():
+        i += 1
+    while i < len(lines) and _PDF_NAGLOWEK.match(lines[i]):
+        i += 1
+    lines = lines[i:]
+    # stopka: znacznik daty / numer strony na samym dole
+    while lines and (not lines[-1].strip() or _PDF_STOPKA.match(lines[-1])):
+        lines.pop()
+    if pierwsza and any("Opracowano na" in l for l in lines):
+        # Pierwsza strona „tekstu ujednoliconego" Kancelarii Sejmu (np. Konstytucja) ma na prawym
+        # marginesie notkę „Opracowano na podstawie: Dz. U. …", którą -layout dokleja do linii
+        # preambuły — odcinamy wszystko, co zaczyna się w prawej ćwiartce strony
+        szer = max(len(l.rstrip()) for l in lines) or 1
+        prog = int(szer * 0.75)
+
+        def bez_notki(l):
+            if len(l) - len(l.lstrip(" ")) >= prog:
+                return ""
+            for m in re.finditer(r"\S( {6,})(?=\S)", l):
+                if m.end() >= prog:
+                    return l[:m.start() + 1]
+            return l
+        lines = [bez_notki(l) for l in lines]
+    niepuste = [l for l in lines if l.strip()]
+    if not niepuste:
+        return [], {}
+    margines = min(len(l) - len(l.lstrip(" ")) for l in niepuste)
+    wiersze = [(0, "") if not l.strip() else (len(l) - len(l.lstrip(" ")) - margines, " ".join(l.split()))
+               for l in lines]
+    # blok przypisów: ostatni blok po pustej linii, zaczynający się od „N)" na marginesie
+    przypisy = {}
+    k = len(wiersze)
+    while k > 0 and wiersze[k - 1][1]:
+        k -= 1
+    blok = wiersze[k:]
+    if k > 0 and blok and blok[0][0] == 0 and _PDF_PRZYPIS.match(blok[0][1]):
+        numery = [m.group(1) for w, t in blok if w == 0 for m in [_PDF_PRZYPIS.match(t)] if m]
+        tresc_strony = "\n".join(t for w, t in wiersze[:k])
+        odsylacze = set(_PDF_ODSYLACZ.findall(tresc_strony))
+        tekst_bloku = " ".join(t for w, t in blok)
+        if (set(numery) & odsylacze) or any(f in tekst_bloku for f in _PDF_FRAZY_PRZYPISU):
+            biezacy = None
+            for w, t in blok:
+                m = _PDF_PRZYPIS.match(t) if w == 0 else None
+                if m:
+                    biezacy = m.group(1)
+                    przypisy[biezacy] = m.group(2) or ""
+                elif biezacy is not None:
+                    przypisy[biezacy] = _doklej(przypisy[biezacy], t)
+            wiersze = wiersze[:k]
+    return [(w, t) for w, t in wiersze if t], przypisy
+
+
+def _zlacz_rozstrzelone(t):
+    """Rozstrzelony tytuł z PDF („US T AW A", „O B W IE S Z CZ E N I E") → „USTAWA"; tylko wiersze
+    z samych wielkich liter, w których większość „wyrazów" to 1–2 znaki."""
+    tok = t.split()
+    if len(tok) >= 4 and all(x.isalpha() and x.isupper() for x in tok) \
+            and sum(len(x) <= 2 for x in tok) >= 0.6 * len(tok) and len("".join(tok)) <= 20:
+        return "".join(tok)
+    return t
+
+
+def _doklej(a, b):
+    """Łączy wiersz zawinięty w PDF: „zabez-" + „pieczenia" → „zabezpieczenia" (dzielenie wyrazów),
+    inaczej przez spację. Heurystyka: myślnik na końcu + mała litera na początku następnego wiersza."""
+    if not a:
+        return b
+    if a.endswith(("-", "­")) and b[:1].islower():
+        return a[:-1] + b
+    return a + " " + b
+
+
+def _pdf_normalizuj_indeksy(t):
+    # indeks górny w PDF: „Art. 68[1]." / „art. 385[1]–385[3]" / „68¹" → jak w ścieżce HTML: „Art. 68 1."
+    t = re.sub(r"(?<=\d)\[(\d+[a-z]?)\]", r" \1", t)
+    return re.sub(r"(?<=\d)([" + _SUPS + r"]+)", lambda m: " " + m.group(1).translate(_SUP), t)
+
+
+def pdf_layout_do_tekstu(raw):
+    """Tekst z `pdftotext -layout` → tekst w układzie jak z text.html.
+
+    Strony są czyszczone z nagłówków/stopek, zawinięte wiersze są sklejane w akapity (nowy akapit
+    zaczyna się od wciętego „Art."/„§"/„N)"/„lit."…, kontynuacja stoi na lewym marginesie),
+    a odsyłacze do przypisów („§ 1.3)") znikają z numeracji — treść przypisu wychodzi pod
+    akapit jako „[przypis 3)] …", dokładnie jak w ścieżce HTML.
+    """
+    strony = raw.split("\f")
+    akapity = []        # [wcięcie_nagłówka(bool), tekst, {strony}]
+    przypisy = {}       # nr strony → {nr przypisu: treść}
+    poprzedni_naglowek = False
+    for nr, strona in enumerate(strony):
+        wiersze, przyp = _pdf_strona(strona, pierwsza=(nr == 0))
+        if przyp:
+            przypisy[nr] = przyp
+        for wciecie, t in wiersze:
+            naglowek = wciecie >= _PDF_WCIECIE_NAGLOWKA and len(t) <= _PDF_MAKS_NAGLOWEK
+            if naglowek:
+                t = _zlacz_rozstrzelone(t)
+            nowy = (naglowek or poprzedni_naglowek or not akapity
+                    or (wciecie > 0 and _PDF_NOWY_AKAPIT.match(t)) or _PDF_JEDNOSTKA.match(t))
+            if nowy:
+                akapity.append([naglowek, t, {nr}])
+            else:
+                akapity[-1][1] = _doklej(akapity[-1][1], t)
+                akapity[-1][2].add(nr)
+            poprzedni_naglowek = naglowek
+    # Tekst jednolity zaczyna się od OBWIESZCZENIA Marszałka Sejmu (z cytowanymi przepisami
+    # przejściowymi: „Art. 3. Ustawa wchodzi w życie…"). To nie jest treść aktu, a na początku
+    # linii udawałoby nagłówek artykułu — wiersze obwieszczenia dostają znacznik „» ".
+    zal = next((i for i, a in enumerate(akapity[:400]) if a[1].lower().startswith("załącznik do obwieszczenia")), None)
+    if zal and any("jednolitego tekstu" in a[1] for a in akapity[:zal]):
+        for a in akapity[:zal]:
+            a[1] = "» " + a[1]
+        akapity.insert(0, [True, "[obwieszczenie Marszałka Sejmu sprzed załącznika — wiersze ze znakiem » NIE są treścią aktu]", set()])
+    out = []
+    for naglowek, t, na_stronach in akapity:
+        t = _pdf_normalizuj_indeksy(t)
+        odsylacze = []
+        t = _PDF_ODSYLACZ.sub(lambda m: odsylacze.append(m.group(1)) or "", t)
+        if naglowek or re.match(r"^Art\.\s*\d", t):
+            out.append("")
+        out.append(t)
+        for n in odsylacze:
+            tresc = None
+            for s in sorted(na_stronach) + [max(na_stronach) + 1, min(na_stronach) - 1]:
+                if n in przypisy.get(s, {}):
+                    tresc = przypisy[s][n]
+                    break
+            out.append(f"[przypis {n})] {tresc}" if tresc else f"[przypis {n})] (treści przypisu nie odnaleziono na tej stronie PDF)")
+    t = "\n".join(out)
+    t = re.sub(r"\n{3,}", "\n\n", t)
+    return t.strip()
+
+
+def _wybierz_pdf(meta):
+    """Najlepszy urzędowy PDF z metadanych: tekst ujednolicony (U) > jednolity (T) > ogłoszony (O)."""
+    texts = meta.get("texts") or []
+    for code in ("U", "T", "O"):
+        pick = next((t for t in texts if t.get("type") == code
+                     and (t.get("fileName") or "").lower().endswith(".pdf")), None)
+        if pick:
+            return pick
+    return None
 
 
 # granice jednostek redakcyjnych w tekście po konwersji (nagłówki na początku linii)
@@ -313,7 +599,164 @@ def _nowszy_tj(path, refs):
     return None
 
 
-def _ostrzezenia(refs):
+def _akt_opis(act):
+    return act.get("displayAddress") or act.get("ELI", "") or ""
+
+
+def _daty_aktu(act):
+    """Daty z obiektu aktu w odniesieniach: (data aktu = „z dnia" w tytule, ogłoszono w Dz.U./M.P.)."""
+    return act.get("announcementDate") or "", act.get("promulgation") or ""
+
+
+_ETYKIETY_DATY = (
+    # kategoria odniesień (początek nazwy, małe litery) → co oznacza pole `date` (zweryfikowane 2026-08)
+    ("akty zmieniające", "wejście w życie zmiany"),
+    ("akty zmienione", "wejście w życie zmiany"),
+    ("nowelizacje po tekście jednolit", "data aktu"),
+)
+
+
+def _etykieta_daty(kind):
+    k = (kind or "").lower()
+    return next((et for pref, et in _ETYKIETY_DATY if k.startswith(pref)), "data wg API")
+
+
+def _fmt_ref(ref, kind=None):
+    """Linia odniesienia z JEDNOZNACZNYMI etykietami dat: `date` z API znaczy co innego w każdej
+    kategorii („Akty zmieniające" = wejście w życie zmiany, „Nowelizacje po t.j." = data aktu)."""
+    if not isinstance(ref, dict):
+        return f"  - {ref}"
+    act = ref.get("act") if isinstance(ref.get("act"), dict) else None
+    extra = []
+    if act:
+        line = f"  - {_akt_opis(act)}  {act.get('title', '')}".rstrip()
+        data_aktu, ogloszono = _daty_aktu(act)
+        if data_aktu:
+            extra.append(f"data aktu {data_aktu}")
+        if ogloszono:
+            extra.append(f"ogłoszono {ogloszono}")
+    else:
+        line = f"  - {ref.get('displayAddress') or ref.get('ELI', '') or ref}"
+    if ref.get("date"):
+        et = _etykieta_daty(kind)
+        if not (et == "data aktu" and f"data aktu {ref['date']}" in extra):
+            extra.append(f"{et} {ref['date']}")
+    if ref.get("art"):
+        extra.append(f"art. {ref['art']}")
+    if extra:
+        line += "  (" + ", ".join(extra) + ")"
+    return line
+
+
+def _lista(refs, prefix):
+    key = next((k for k in refs if k.lower().startswith(prefix)), None)
+    if not key:
+        return []
+    items = refs[key] if isinstance(refs[key], list) else [refs[key]]
+    return [r for r in items if isinstance(r, dict) and isinstance(r.get("act"), dict)]
+
+
+def _zmiany_bazowe_po(base_eli, stan_prawny):
+    """„Akty zmieniające" aktu bazowego OGŁOSZONE lub WCHODZĄCE W ŻYCIE po dacie stanu prawnego t.j.
+
+    Tylko te nie są (w całości) oddane w tekście jednolitym. Może rzucić VerificationUnknown
+    (soft GET odniesień aktu bazowego).
+    """
+    base_refs = _get(f"/acts/{base_eli}/references", soft=True)
+    if not isinstance(base_refs, dict):
+        return []
+    out = []
+    for r in _lista(base_refs, "akty zmieniające"):
+        _, ogloszono = _daty_aktu(r["act"])
+        wejscie = r.get("date") or ""
+        if (ogloszono and ogloszono > stan_prawny) or (wejscie and wejscie > stan_prawny):
+            out.append(r)
+    return out
+
+
+_MAKS_DOPYTAN = 10
+
+
+def _nowelizacje_po_tj(refs, path, strict=False):
+    """Nowelizacje po tekście jednolitym: własna kategoria t.j. UZUPEŁNIONA o „Akty zmieniające"
+    aktu bazowego po `legalStatusDate` t.j. (Sejm nie synchronizuje obu list — audyt 2026-08:
+    k.p.c. t.j. 2026/468 wykazywał 2 z 5, k.s.h. 2024/18 — 1 z 4). Zwraca (linie, uwagi).
+
+    Każda pozycja ma daty opisane jednoznacznie: data aktu / ogłoszono / wejście w życie zmiany.
+    Awaria dopytań: w strict → VerificationUnknown, inaczej uwaga o możliwej niekompletności.
+    """
+    wlasne = _lista(refs, "nowelizacje po tekście jednolit")
+    base = _akt_bazowy(refs)
+    if not (wlasne or base):
+        return [], []
+    uwagi = []
+    stan_prawny = ""
+    zrodla = ["odniesienia t.j."] if wlasne else []
+    pozycje = {}   # ELI → {act, data_aktu, ogloszono, wejscie, etykieta}
+    for r in wlasne:
+        act = r["act"]
+        data_aktu, ogloszono = _daty_aktu(act)
+        pozycje[act.get("ELI")] = {"act": act, "data_aktu": data_aktu or r.get("date") or "",
+                                   "ogloszono": ogloszono, "wejscie": "", "etykieta": ""}
+    if base and base.get("ELI"):
+        try:
+            meta = _get(path, soft=True) if path else None
+            stan_prawny = (meta or {}).get("legalStatusDate") or "" if isinstance(meta, dict) else ""
+            if stan_prawny:
+                for r in _zmiany_bazowe_po(base["ELI"], stan_prawny):
+                    act = r["act"]
+                    data_aktu, ogloszono = _daty_aktu(act)
+                    poz = pozycje.setdefault(act.get("ELI"), {"act": act, "data_aktu": data_aktu,
+                                                              "ogloszono": ogloszono, "wejscie": "", "etykieta": ""})
+                    poz["wejscie"], poz["etykieta"] = r.get("date") or "", "wejście w życie zmiany"
+                zrodla.append(f"„Akty zmieniające\" aktu bazowego {_akt_opis(base)} ogłoszone lub "
+                              f"wchodzące w życie po {stan_prawny}")
+            else:
+                uwagi.append(f"UWAGA: brak legalStatusDate w metadanych {path} — listy nowelizacji nie "
+                             "uzupełniono z aktu bazowego (może być niepełna).")
+        except VerificationUnknown as e:
+            if strict:
+                raise VerificationUnknown(f"nie udało się uzupełnić listy nowelizacji z aktu bazowego ({e})") from e
+            uwagi.append(f"UWAGA: nie udało się uzupełnić listy nowelizacji z aktu bazowego ({e}) — "
+                         "lista poniżej może być NIEPEŁNA.")
+    # wejście w życie dla pozycji tylko z listy t.j. (bez `date` = wejście w życie): dopytaj metadane
+    dopytania = 0
+    for eli_id, poz in pozycje.items():
+        if poz["wejscie"] or not eli_id or dopytania >= _MAKS_DOPYTAN:
+            continue
+        dopytania += 1
+        try:
+            m = _get(f"/acts/{eli_id}", soft=True)
+        except VerificationUnknown as e:
+            if strict:
+                raise
+            uwagi.append(f"UWAGA: nie udało się pobrać wejścia w życie {eli_id} ({e}).")
+            continue
+        if isinstance(m, dict):
+            poz["wejscie"], poz["etykieta"] = m.get("entryIntoForce") or "", "wejście w życie aktu"
+            if m.get("comments"):
+                poz["uwagi"] = m["comments"]
+    linie = []
+    for poz in sorted(pozycje.values(), key=lambda x: (x["ogloszono"] or x["data_aktu"] or ""), reverse=True):
+        act = poz["act"]
+        daty = []
+        if poz["data_aktu"]:
+            daty.append(f"data aktu {poz['data_aktu']}")
+        if poz["ogloszono"]:
+            daty.append(f"ogłoszono {poz['ogloszono']}")
+        daty.append(f"{poz['etykieta'] or 'wejście w życie'} {poz['wejscie'] or '— sprawdź: meta ' + (act.get('ELI') or '').replace('/', ' ')}")
+        linie.append(f"  - {_akt_opis(act)}  {act.get('title', '')}".rstrip() + "  (" + ", ".join(daty) + ")")
+        if poz.get("uwagi"):
+            linie.append(f"      uwagi: {poz['uwagi']}")
+    if linie:
+        naglowek = (f"UWAGA: po tym tekście jednolitym" + (f" (stan prawny na {stan_prawny})" if stan_prawny else "")
+                    + f" odnotowano zmiany ({len(linie) - sum(1 for l in linie if l.startswith('      uwagi'))})"
+                    " — sprawdź ich wejście w życie" + (f" [źródła: {'; '.join(zrodla)}]" if zrodla else "") + ":")
+        linie.insert(0, naglowek)
+    return linie, uwagi
+
+
+def _ostrzezenia(refs, path=None, strict=False):
     """Ostrzeżenia o aktualności (lista linii) na podstawie odniesień aktu."""
     out = []
     tj = _tj_acts(refs)
@@ -321,32 +764,27 @@ def _ostrzezenia(refs):
         a = tj[0]
         out.append(f"UWAGA: ten akt ma TEKST JEDNOLITY — cytuj z najnowszego: "
                    f"{a.get('displayAddress') or a.get('ELI', '')} (ELI {a.get('ELI', '')}).")
-    key = next((k for k in refs if k.lower().startswith("nowelizacje po tekście jednolit")), None)
-    if key:
-        items = refs[key] if isinstance(refs[key], list) else [refs[key]]
-        out.append(f"UWAGA: po tym tekście jednolitym odnotowano zmiany ({len(items)}) — sprawdź ich wejście w życie:")
-        out += [_fmt_ref(r) for r in items]
-    return out
+    linie, uwagi = _nowelizacje_po_tj(refs, path, strict)
+    return out + uwagi + linie
 
 
 def _tj_z_tekstem(path, refs):
     """Najnowszy tekst jednolity z NIEPUSTYM text.html, pomijając akt bieżący.
 
-    API potrafi zwrócić 200 i 0 bajtów dla text.html świeżego tekstu jednolitego (HTML pojawia
-    się z opóźnieniem względem PDF) — wtedy czytamy poprzedni t.j. zamiast zostawiać użytkownika
-    bez oficjalnego źródła. Zwraca (akt, tekst) albo None.
+    API potrafi zwrócić 200 i 0 bajtów dla text.html (textHTML=false) — także dla KILKU kolejnych
+    t.j. (k.c.: 2026/795 i 2025/1071 bez HTML, dopiero 2024/1061 z HTML). To jest ostatnia deska
+    ratunku, gdy nie da się przetworzyć urzędowego PDF. Zwraca (akt, tekst, pominięte_ELI) albo None.
     """
     biezacy_eli = path[len("/acts/"):]
     tj = _tj_acts(refs)
     if not tj:
         # akt sam jest t.j. — pełną listę tekstów jednolitych mają odniesienia aktu BAZOWEGO
-        base_key = next((k for k in refs if k.lower().startswith("tekst jednolity dla aktu")), None)
-        items = (refs[base_key] if isinstance(refs[base_key], list) else [refs[base_key]]) if base_key else []
-        base = next((r.get("act") for r in items if isinstance(r, dict) and isinstance(r.get("act"), dict)), None)
+        base = _akt_bazowy(refs)
         if base and base.get("ELI"):
             base_refs = _get(f"/acts/{base['ELI']}/references", soft=True)
             tj = _tj_acts(base_refs) if isinstance(base_refs, dict) else []
     niepewne = None
+    pominiete = []
     for act in tj:
         eli_id = act.get("ELI")
         if not eli_id or eli_id == biezacy_eli:
@@ -360,7 +798,8 @@ def _tj_z_tekstem(path, refs):
             continue
         txt = html_to_text(html) if isinstance(html, str) else ""
         if txt:
-            return act, txt
+            return act, txt, pominiete
+        pominiete.append(eli_id)
     if niepewne is not None:
         raise VerificationUnknown(f"nie wszystkie teksty jednolite dało się pobrać ({niepewne})")
     return None
@@ -403,10 +842,28 @@ def cmd_szukaj(a):
         params["inForce"] = 1
     d = _get("/acts/search", params)
     d = _expect_dict(d, "wyniki wyszukiwania")
+    items = d.get("items") or []
+    total = d.get("totalCount")
+    if total is None:
+        total = d.get("count", len(items))
+    if not items:
+        # zero trafień = komunikat + kod wyjścia ≠ 0 (także z --json) — pusty JSON wyglądałby jak
+        # „sprawdzone, nic nie ma", a to tylko brak dopasowania TEJ frazy/filtrów
+        sys.exit(f"Brak wyników (totalCount={total}, offset {a.offset}) dla: fraza={a.fraza!r}, typ={a.typ!r}, "
+                 f"rok={a.rok!r}, haslo={a.haslo!r}. To NIE dowodzi, że aktu nie ma — spróbuj krótszej frazy "
+                 "z tytułu, bez --typ/--rok, albo --haslo.")
     if a.json:
         print(json.dumps(d, ensure_ascii=False, indent=2)); return
-    items = d.get("items", [])
-    print(f"Znaleziono: {d.get('count', '?')} (pokazuję {len(items)}, offset {a.offset})\n")
+    print(f"Znaleziono: {total} (pokazuję {len(items)}, offset {a.offset})")
+    try:
+        pozostalo = int(total) - (a.offset + len(items))
+    except (TypeError, ValueError):
+        pozostalo = 0
+    if pozostalo > 0:
+        print(f"UWAGA: to NIE wszystkie wyniki — pozostało {pozostalo}. Kolejna strona: "
+              f"--offset {a.offset + len(items)} --limit {a.limit}; albo zwiększ --limit (np. 100). "
+              "Akt bazowy bywa na końcu listy (API sortuje nowelizacje przed aktem bazowym).")
+    print()
     for it in items:
         print(f"  {it.get('address','')}  [{it.get('status','')}]")
         print(f"    {it.get('title','').strip()[:160]}")
@@ -426,10 +883,18 @@ def cmd_meta(a):
     print(f"  Adres:   {d.get('displayAddress','')}")
     print(f"  Typ:     {d.get('type','')}")
     print(f"  Status:  {d.get('status','')}  (inForce={d.get('inForce','')})")
-    print(f"  Ogłoszono: {d.get('announcementDate','')}   WEJŚCIE W ŻYCIE: {d.get('entryIntoForce') or '—'}"
-          f"   Stan prawny na: {d.get('legalStatusDate','')}")
+    # announcementDate = data AKTU (wydania/podpisania — „z dnia" w tytule), promulgation = data
+    # OGŁOSZENIA w Dz.U./M.P. — vacatio legis liczy się od ogłoszenia (audyt 2026-08: mylono je)
+    print(f"  Data aktu: {d.get('announcementDate') or '—'}   (data wydania — „z dnia” w tytule)")
+    print(f"  Ogłoszono: {d.get('promulgation') or '— (brak w API)'}   (publikacja w Dz.U./M.P.)")
+    print(f"  WEJŚCIE W ŻYCIE: {d.get('entryIntoForce') or '—'}")
+    if d.get("legalStatusDate"):
+        print(f"  Stan prawny na: {d['legalStatusDate']}   (tekst jednolity oddaje stan na ten dzień)")
     if d.get("validFrom") and d.get("validFrom") != d.get("entryIntoForce"):
         print(f"  Obowiązuje od: {d['validFrom']}")
+    if d.get("comments"):
+        # np. „art. 5 ust. 4 … wchodzą w życie z dniem 25 grudnia 2024 r." — RÓŻNE daty dla jednostek
+        print(f"  Uwagi:   {' '.join(str(d['comments']).split())}")
     if d.get("keywordsNames"):
         print(f"  Hasła:   {', '.join(d['keywordsNames'])}")
     print(f"  ELI:     {d.get('ELI','')}")
@@ -438,37 +903,60 @@ def cmd_meta(a):
         print("  Dostępne teksty (type/fileName):")
         for t in texts:
             print(f"    - {t.get('type','?')}: {t.get('fileName','')}")
-    print(f"  Tekst HTML: {BASE}{path}/text.html")
+    if d.get("textHTML") is False:
+        print(f"  Tekst HTML: BRAK w API (textHTML=false) — `tekst {label}` czyta urzędowy PDF przez pdftotext")
+    else:
+        print(f"  Tekst HTML: {BASE}{path}/text.html")
     if "tekst jednolity" in (d.get("status") or "").lower():
         print(f"  → Akt ma tekst jednolity — ustal aktualny: python3 {sys.argv[0]} tj {label}")
 
 
+def _tekst_z_pdf(path, label, meta):
+    """Tekst aktu z jego WŁASNEGO urzędowego PDF (pdftotext -layout). Zwraca (tekst, url, błąd)."""
+    pick = _wybierz_pdf(meta)
+    if not pick:
+        return "", "", "brak PDF w metadanych aktu"
+    if not pdftotext_dostepny():
+        return "", "", "brak programu pdftotext (poppler) w PATH"
+    url = f"{BASE}{path}/text/{pick['type']}/{pick['fileName']}"
+    try:
+        data = _get_bytes(url, soft=True)
+    except VerificationUnknown as e:
+        return "", url, str(e)
+    raw = pdf_do_tekstu_layout(data)
+    txt = pdf_layout_do_tekstu(raw) if raw else ""
+    if not txt:
+        return "", url, "pdftotext nie zwrócił tekstu (PDF bez warstwy tekstowej albo błąd konwersji)"
+    return txt, url, ""
+
+
 def cmd_tekst(a):
+    strict = getattr(a, "strict", False)
     path, label = act_path(a.sygnatura)
     # odniesienia służą tylko ostrzeżeniom o aktualności — ich awaria nie może odebrać
     # użytkownikowi samego tekstu; zamiast tego tekst dostaje GŁOŚNE ostrzeżenie
     try:
         refs = _get(path + "/references", soft=True)
     except VerificationUnknown as e:
-        if getattr(a, "strict", False):
+        if strict:
             raise
         refs = None
         ostrz = [f"UWAGA: nie udało się zweryfikować aktualności aktu {label} ({e}) — "
                  "sprawdź nowelizacje i teksty jednolite ręcznie, zanim zacytujesz."]
     else:
-        ostrz = _ostrzezenia(refs) if isinstance(refs, dict) else []
+        ostrz = _ostrzezenia(refs, path, strict) if isinstance(refs, dict) else []
         # nowszy t.j. — zarówno dla aktu bazowego, jak i dla aktu, który SAM jest (starszym) t.j.
         try:
             nowszy = _nowszy_tj(path, refs) if isinstance(refs, dict) else None
         except VerificationUnknown as e:
-            if getattr(a, "strict", False):
+            if strict:
                 raise
             nowszy = None
             ostrz.append(f"UWAGA: nie udało się sprawdzić, czy istnieje nowszy tekst jednolity ({e}) — "
                          f"zweryfikuj: tj {label}, zanim zacytujesz.")
         if nowszy:
             aktualny = nowszy.get("displayAddress") or nowszy.get("ELI", "")
-            if getattr(a, "strict", False):
+            if strict:
                 sys.exit(f"BŁĄD: istnieje nowszy tekst jednolity: {aktualny}. "
                          "Tryb strict blokuje starszą treść.")
             if not _tj_acts(refs):  # akt bazowy ma już ostrzeżenie „cytuj z najnowszego" z _ostrzezenia()
@@ -478,12 +966,7 @@ def cmd_tekst(a):
     if a.pdf:
         # pobierz urzędowy PDF (preferuj tekst jednolity, typ 'U'/'T', inaczej oryginał 'O')
         meta = _expect_dict(_get(path), "metadane aktu")
-        texts = meta.get("texts", [])
-        pick = None
-        for code in ("U", "T", "O", "H"):
-            pick = next((t for t in texts if t.get("type") == code and t.get("fileName", "").lower().endswith(".pdf")), None)
-            if pick:
-                break
+        pick = _wybierz_pdf(meta)
         if not pick:
             sys.exit("Brak PDF w metadanych aktu.")
         url = f"{BASE}{path}/text/{pick['type']}/{pick['fileName']}"
@@ -498,29 +981,42 @@ def cmd_tekst(a):
     if isinstance(html, (dict, list)):
         html = json.dumps(html, ensure_ascii=False)
     txt = html_to_text(html if isinstance(html, str) else "")
+    zrodlo = "z text.html; HTML→tekst"
     if not txt:
-        try:
-            fb = _tj_z_tekstem(path, refs if isinstance(refs, dict) else {})
-        except VerificationUnknown as e:
-            _nie_zweryfikowano(f"zapasowego tekstu jednolitego dla {label}", e)
-        if not fb:
-            sys.exit(f"BŁĄD: text.html dla {label} jest PUSTE w API (HTML bywa dodawany z opóźnieniem) "
-                     f"i nie znalazłem innego tekstu jednolitego z tekstem. "
-                     f"Pobierz urzędowy PDF: tekst {label} --pdf plik.pdf")
-        act, txt = fb
-        addr = act.get("displayAddress") or act.get("ELI", "")
-        actual_eli = act.get("ELI") or ""
-        if getattr(a, "strict", False):
-            sys.exit(f"BŁĄD: strict zabrania zwrócenia starszego tekstu jednolitego {actual_eli or addr} "
-                     f"zamiast pustego text.html dla {label}. Pobierz urzędowy PDF: "
-                     f"tekst {label} --pdf plik.pdf")
-        sig = actual_eli.replace("/", " ")
-        ostrz = [f"ELI_TEXT_SOURCE_FALLBACK={actual_eli}",
-                 f"UWAGA: text.html dla {label} jest PUSTE w API — poniżej tekst z innego t.j.: {addr}.",
-                 f"Nałóż zmiany pomiędzy nimi: odniesienia {sig} (sekcja „Nowelizacje po tekście jednolitym\");"
-                 f" do dosłownego cytatu: tekst {label} --pdf plik.pdf"] + ostrz
-        label = f"{label} (tekst z: {addr})"
-    print(f"# {label} — tekst (z text.html; HTML→tekst, do dosłownego cytatu zweryfikuj z PDF urzędowym)\n")
+        # textHTML=false (np. k.c. DU 2026 795, Konstytucja DU 1997 483, świeże pozycje): najpierw
+        # WŁASNY urzędowy PDF tego aktu — to jest jego tekst, więc --strict go przepuszcza
+        meta = _expect_dict(_get(path), "metadane aktu")
+        txt, url, pdf_blad = _tekst_z_pdf(path, label, meta)
+        if txt:
+            zrodlo = "z urzędowego PDF przez pdftotext -layout"
+            ostrz = [f"ELI_TEXT_SOURCE_PDF={url}",
+                     f"UWAGA: text.html dla {label} jest PUSTE w API (textHTML=false) — poniżej tekst "
+                     f"WYEKSTRAHOWANY z urzędowego PDF tego aktu ({meta.get('legalStatusDate') and 'stan prawny na ' + meta['legalStatusDate'] or 'tekst ogłoszony'}). "
+                     "Sklejanie wierszy i dzielonych wyrazów jest automatyczne; linie „[przypis N)]\" to "
+                     "przypisy z dołu strony PDF. Do dosłownego cytatu: tekst " + label + " --pdf plik.pdf"] + ostrz
+        else:
+            if strict:
+                sys.exit(f"BŁĄD: text.html dla {label} jest PUSTE w API (textHTML=false), a urzędowego PDF "
+                         f"nie dało się przetworzyć ({pdf_blad}). Tryb strict blokuje zastępczy (STARSZY) tekst "
+                         f"jednolity, bo jego kompletności nie da się zweryfikować. Zainstaluj pdftotext "
+                         f"(poppler: brew install poppler / apt install poppler-utils) albo pobierz PDF: "
+                         f"tekst {label} --pdf plik.pdf")
+            try:
+                fb = _tj_z_tekstem(path, refs if isinstance(refs, dict) else {})
+            except VerificationUnknown as e:
+                _nie_zweryfikowano(f"zapasowego tekstu jednolitego dla {label}", e)
+            if not fb:
+                sys.exit(f"BŁĄD: text.html dla {label} jest PUSTE w API (textHTML=false — dla tego aktu API nie "
+                         f"udostępnia HTML), urzędowego PDF nie dało się przetworzyć ({pdf_blad}) i nie ma innego "
+                         f"tekstu jednolitego z tekstem. Zainstaluj pdftotext (poppler) albo pobierz PDF: "
+                         f"tekst {label} --pdf plik.pdf")
+            act, txt, pominiete = fb
+            addr = _akt_opis(act)
+            actual_eli = act.get("ELI") or ""
+            zrodlo = "z text.html STARSZEGO t.j.; HTML→tekst"
+            ostrz = _ostrzezenie_starszego_tj(path, label, refs, meta, act, pominiete, pdf_blad) + ostrz
+            label = f"{label} (NIEAKTUALNE BRZMIENIE MOŻLIWE — tekst z: {addr})"
+    print(f"# {label} — tekst ({zrodlo}; do dosłownego cytatu zweryfikuj z PDF urzędowym)\n")
     for w in ostrz:
         print(w)
     if ostrz:
@@ -548,12 +1044,54 @@ def cmd_tekst(a):
     print(txt)
 
 
+def _ostrzezenie_starszego_tj(path, label, refs, meta, act, pominiete, pdf_blad):
+    """Nagłówek ostrzegawczy dla tekstu ze STARSZEGO t.j. + INLINE lista zmian aktu bazowego po jego
+    stanie prawnym (dawna instrukcja „odniesienia <stary t.j.>" była martwa: wygasły t.j. nie ma
+    w API kategorii „Nowelizacje po tekście jednolitym")."""
+    addr = _akt_opis(act)
+    actual_eli = act.get("ELI") or ""
+    out = [f"ELI_TEXT_SOURCE_FALLBACK={actual_eli}"]
+    stan = ""
+    try:
+        m = _get(f"/acts/{actual_eli}", soft=True) if actual_eli else None
+        stan = m.get("legalStatusDate") or "" if isinstance(m, dict) else ""
+    except VerificationUnknown:
+        stan = ""
+    out.append(f"UWAGA — NIEAKTUALNE BRZMIENIE MOŻLIWE: text.html dla {label} jest PUSTE w API (textHTML=false), "
+               f"a urzędowego PDF nie dało się przetworzyć ({pdf_blad}). Poniżej tekst STARSZEGO tekstu "
+               f"jednolitego {addr}" + (f" (stan prawny na {stan})" if stan else "") + "."
+               + (f" Pominięto t.j. z pustym text.html: {', '.join(pominiete)}." if pominiete else ""))
+    base = _akt_bazowy(refs) if isinstance(refs, dict) else None
+    if not base and isinstance(refs, dict) and _tj_acts(refs):
+        base = {"ELI": path[len("/acts/"):], "displayAddress": meta.get("displayAddress", "")}
+    if base and base.get("ELI") and stan:
+        try:
+            zmiany = _zmiany_bazowe_po(base["ELI"], stan)
+        except VerificationUnknown as e:
+            out.append(f"UWAGA: nie udało się pobrać zmian aktu bazowego po {stan} ({e}) — sprawdź ręcznie: "
+                       f"odniesienia {base['ELI'].replace('/', ' ')} (sekcja „Akty zmieniające\").")
+        else:
+            if zmiany:
+                out.append(f"Zmiany aktu bazowego {_akt_opis(base)} ogłoszone lub wchodzące w życie po {stan} "
+                           f"({len(zmiany)}) — NIE ma ich w poniższym tekście, nałóż je sam:")
+                out += [_fmt_ref(r, "Akty zmieniające") for r in zmiany]
+            else:
+                out.append(f"W API brak zmian aktu bazowego {_akt_opis(base)} po {stan} (indeksacja bywa opóźniona).")
+    else:
+        out.append("UWAGA: nie ustaliłem stanu prawnego starszego t.j. — sprawdź „Akty zmieniające\" aktu bazowego ręcznie.")
+    out.append(f"Do dosłownego, aktualnego brzmienia: zainstaluj pdftotext (poppler) i powtórz, albo: tekst {label} --pdf plik.pdf")
+    return out
+
+
 def cmd_struktura(a):
     path, label = act_path(a.sygnatura)
-    d = _get(path + "/struct")
+    # /struct istnieje głównie dla t.j. i starszych aktów — 404 to zweryfikowany brak, nie awaria
+    d = _get(path + "/struct", soft=True)
     nodes = d if isinstance(d, list) else [d] if isinstance(d, dict) else None
     if not nodes:
-        sys.exit("Brak struktury dla tego aktu (API udostępnia /struct głównie dla tekstów jednolitych i starszych aktów).")
+        sys.exit(f"Brak struktury dla tego aktu ({label}) — API udostępnia /struct głównie dla tekstów "
+                 f"jednolitych i starszych aktów; świeżo ogłoszone pozycje często go nie mają. "
+                 f"Spis jednostek odczytasz z tekstu: tekst {label} | grep -n \"^Art\\.\"")
     if a.json:
         print(json.dumps(d, ensure_ascii=False, indent=2)); return
     filtr = (a.filtr or "").lower()
@@ -576,38 +1114,25 @@ def cmd_struktura(a):
         print(f"(nic nie pasuje do filtra {a.filtr!r})")
 
 
-def _fmt_ref(ref):
-    if not isinstance(ref, dict):
-        return f"  - {ref}"
-    act = ref.get("act") if isinstance(ref.get("act"), dict) else None
-    if act:
-        head = act.get("displayAddress") or act.get("ELI", "") or ""
-        line = f"  - {head}  {act.get('title','')}".rstrip()
-    else:
-        line = f"  - {ref.get('displayAddress') or ref.get('ELI','') or ref}"
-    extra = []
-    if ref.get("date"):
-        extra.append(f"data {ref['date']}")
-    if ref.get("art"):
-        extra.append(f"art. {ref['art']}")
-    if extra:
-        line += "  (" + ", ".join(extra) + ")"
-    return line
-
-
 def cmd_odniesienia(a):
     path, label = act_path(a.sygnatura)
     d = _get(path + "/references")
     d = _expect_dict(d, "odniesienia aktu")
     if a.json:
         print(json.dumps(d, ensure_ascii=False, indent=2)); return
-    print(f"Odniesienia dla: {label}\n")
+    print(f"Odniesienia dla: {label}")
+    print("(daty: „data aktu\" = data wydania z tytułu, „ogłoszono\" = publikacja w Dz.U./M.P., "
+          "„wejście w życie zmiany\" = pole date w „Akty zmieniające\")\n")
     for kind, lst in d.items():
         items = lst if isinstance(lst, list) else [lst]
         print(f"## {kind}  ({len(items)})")
         for ref in items:
-            print(_fmt_ref(ref))
+            print(_fmt_ref(ref, kind))
         print()
+    if _akt_bazowy(d):
+        linie, uwagi = _nowelizacje_po_tj(d, path, getattr(a, "strict", False))
+        for w in uwagi + linie:
+            print(w)
 
 
 def cmd_tj(a):
@@ -627,7 +1152,8 @@ def cmd_tj(a):
         if eli:
             sig = eli.replace("/", " ")
             print(f"\nDalej: python3 {sys.argv[0]} tekst {sig} --fragment \"art. N\"")
-            print(f"oraz:  python3 {sys.argv[0]} odniesienia {sig}   (sekcja „Nowelizacje po tekście jednolitym\")")
+            print(f"(tekst na t.j. sam wypisuje „Nowelizacje po tekście jednolitym\" — uzupełnione o „Akty "
+                  f"zmieniające\" aktu bazowego po stanie prawnym t.j.; pełna lista: odniesienia {label})")
         return
     # akt sam jest tekstem jednolitym: kategoria 'Tekst jednolity dla aktu' wskazuje akt BAZOWY
     base_key = next((k for k in d if k.lower().startswith("tekst jednolity dla aktu")), None)
@@ -649,10 +1175,11 @@ def cmd_tj(a):
                     sys.exit(f"BŁĄD: istnieje nowszy tekst jednolity: {aktualny}. "
                              "Tryb strict blokuje starszy wynik.")
                 kontrola = f"UWAGA: istnieje NOWSZY tekst jednolity: {aktualny} — cytuj z niego."
+        ostrz = _ostrzezenia(d, path, getattr(a, "strict", False))
         if a.json:
             print(json.dumps(d, ensure_ascii=False, indent=2)); return
         print(f"{label} SAM JEST tekstem jednolitym" + (f" (dla: {base.get('displayAddress','')} — {base.get('title','')[:90]})" if base else "") + ".")
-        for w in _ostrzezenia(d):
+        for w in ostrz:
             print(w)
         if kontrola:
             print(kontrola)

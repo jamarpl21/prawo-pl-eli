@@ -44,7 +44,9 @@ Używaj go, zanim podasz brzmienie przepisu, sygnaturę albo stwierdzisz, że co
 
 ## Narzędzie
 
-Wszystko robi helper `scripts/eli.py` (tylko biblioteka standardowa Pythona — bez instalacji).
+Wszystko robi helper `scripts/eli.py` (tylko biblioteka standardowa Pythona — bez instalacji; opcjonalnie
+program `pdftotext` z pakietu poppler w PATH — potrzebny TYLKO do aktów, dla których API nie ma HTML, np.
+Konstytucja i świeże teksty jednolite; bez niego działa `--pdf`).
 Skrypt leży **obok tego pliku SKILL.md** (`<katalog skilla>/scripts/eli.py`) — NIE zakładaj, że to
 `~/.claude/skills/prawo-pl-eli` (skill zainstalowany jako plugin leży w katalogu pluginów; w Claude
 Code: `${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-eli`). Uruchamiaj wyłącznie helper z bieżącego pakietu:
@@ -71,11 +73,18 @@ Sygnaturę można podać w wielu formach: `DU 2000 1037`, `DU/2024/18`, `"Dz.U. 
 - **szukaj** — znajdź akt po tytule/typie/roku/haśle:
   `python3 scripts/eli.py szukaj "Kodeks spółek handlowych" --typ Ustawa --limit 5`
   (opcje: `--typ`, `--rok`, `--wyd DU|MP`, `--haslo`, `--obowiazujace`, `--limit`, `--offset`)
-- **meta** — metadane aktu (tytuł, typ, status, **wejście w życie**, czy obowiązuje, hasła, ELI, pliki tekstu):
+- **meta** — metadane aktu (tytuł, typ, status, daty, czy obowiązuje, hasła, ELI, pliki tekstu):
   `python3 scripts/eli.py meta DU 2000 1037`
+  Daty są rozdzielone, bo API ma dwa różne pola: **„Data aktu"** (`announcementDate` = data wydania,
+  „z dnia …" w tytule) i **„Ogłoszono"** (`promulgation` = publikacja w Dz.U./M.P. — od niej liczy się
+  vacatio legis); dalej **„WEJŚCIE W ŻYCIE"**, **„Stan prawny na"** (`legalStatusDate`, tylko t.j.) i
+  **„Uwagi"** (`comments` — np. „art. 5 ust. 4 … wchodzą w życie z dniem 25 grudnia 2024 r.", czyli RÓŻNE
+  daty wejścia w życie dla różnych jednostek; czytaj je zawsze).
 - **tj** — znajdź AKTUALNY TEKST JEDNOLITY dla aktu (posortowane, najnowszy oznaczony; na starym t.j. ostrzega o nowszym):
   `python3 scripts/eli.py tj DU 2000 1037`
-- **tekst** — treść aktu (z `text.html` → czysty tekst). **Do pojedynczego przepisu używaj `--fragment`**
+- **tekst** — treść aktu (z `text.html` → czysty tekst; gdy API nie ma HTML dla aktu — `textHTML=false`,
+  np. Konstytucja, k.c. DU 2026 795 — z jego WŁASNEGO urzędowego PDF przez `pdftotext -layout`, z nagłówkiem
+  „tekst z urzędowego PDF przez pdftotext" i linią `ELI_TEXT_SOURCE_PDF=…`). **Do pojedynczego przepisu używaj `--fragment`**
   (wycina tylko jednostki z frazą — pełny kodeks to setki tysięcy znaków):
   `python3 scripts/eli.py tekst DU 2024 18 --fragment "art. 299"` (trafia w nagłówek artykułu, nie w odesłania)
   `python3 scripts/eli.py tekst DU 2024 18 --fragment "przedawnienie"` (wyszukiwanie pełnotekstowe)
@@ -91,16 +100,30 @@ Sygnaturę można podać w wielu formach: `DU 2000 1037`, `DU/2024/18`, `"Dz.U. 
   `python3 scripts/eli.py struktura DU 2024 18 --filtr "Art. 299"` (opcje: `--filtr`, `--poziom N`)
 - **odniesienia** — powiązania: nowelizacje, podstawa prawna, tekst jednolity, akty wykonawcze:
   `python3 scripts/eli.py odniesienia DU 2024 18`
-- każda komenda przyjmuje `--json` oraz `--strict` (blokuje wynik bez zweryfikowanej aktualności lub kompletności); obie flagi działają przed komendą i po niej.
+- każda komenda przyjmuje `--json` oraz `--strict`; obie flagi działają przed komendą i po niej.
   Zero trafień / nierozpoznana odpowiedź API kończą się komunikatem i kodem wyjścia ≠ 0 — także z `--json`
-  (nie dostaniesz pustego JSON-a, który wyglądałby jak „sprawdzone, nic nie ma”).
+  (nie dostaniesz pustego JSON-a, który wyglądałby jak „sprawdzone, nic nie ma”); `szukaj` pokazuje
+  `totalCount` z API („Znaleziono: 58 (pokazuję 10, offset 0)") i jak stronicować (`--offset`/`--limit`) —
+  akt bazowy bywa na KOŃCU listy, za nowelizacjami.
+
+**Co sprawdza `--strict`** (wszystko PRZED wypisaniem czegokolwiek; niepowodzenie = komunikat, kod ≠ 0,
+pusty stdout): (1) istnieje nowszy t.j. niż podany → blokada; (2) odniesień lub aktu bazowego nie dało się
+pobrać (awaria sieci/zapory) → blokada; (3) `text.html` puste i tekst pochodziłby ze STARSZEGO t.j. albo
+`pdftotext` zawiódł → blokada (tekst z własnego urzędowego PDF aktu PRZECHODZI); (4) listy nowelizacji
+nie dało się uzupełnić z aktu bazowego → blokada. **Czego `--strict` NIE sprawdza:** czy przepis został
+zmieniony PO stanie prawnym t.j. — to wiesz tylko z sekcji „Nowelizacje po tekście jednolitym" (czytaj ją
+i sprawdzaj „wejście w życie zmiany" względem daty sprawy); nie sprawdza też obcięcia listy `szukaj`
+(to jest jawnie wypisane) ani opóźnień indeksacji API.
 
 Narzędzie samo ostrzega: `tekst` na akcie, który ma tekst jednolity, każe cytować z najnowszego t.j.;
-na tekście jednolitym wypisuje „Nowelizacje po tekście jednolitym", a na STARSZYM t.j. (np. z pamięci)
-— „NIEAKTUALNY tekst jednolity, istnieje NOWSZY" (sprawdza to na akcie bazowym). Gdy `text.html`
-świeżego t.j. jest jeszcze puste w API, narzędzie automatycznie czyta poprzedni t.j. i każe nałożyć
-zmiany pomiędzy nimi. Nie ignoruj tych ostrzeżeń. Z `--strict` każda z tych sytuacji (i awaria kontroli)
-kończy się błędem zamiast ostrzeżenia — wtedy sięgnij po `tj` i aktualny t.j. albo `--pdf`.
+na tekście jednolitym wypisuje „Nowelizacje po tekście jednolitym" — własną listę t.j. UZUPEŁNIONĄ o
+„Akty zmieniające" aktu bazowego ogłoszone lub wchodzące w życie po `legalStatusDate` t.j. (Sejm nie
+synchronizuje obu list; każda pozycja ma osobno „data aktu", „ogłoszono", „wejście w życie zmiany") —
+a na STARSZYM t.j. (np. z pamięci) — „NIEAKTUALNY tekst jednolity, istnieje NOWSZY" (sprawdza to na akcie
+bazowym). Gdy `text.html` jest puste w API (`textHTML=false`), narzędzie czyta WŁASNY urzędowy PDF aktu
+(`pdftotext`); tylko bez `pdftotext` sięga po najnowszy STARSZY t.j. z HTML — wtedy nagłówek mówi
+„NIEAKTUALNE BRZMIENIE MOŻLIWE", wymienia pominięte t.j. i wypisuje INLINE zmiany aktu bazowego po stanie
+prawnym tego starszego t.j., które trzeba nałożyć samemu. Nie ignoruj tych ostrzeżeń.
 
 ### Akty bazowe głównych kodeksów (pomiń `szukaj`)
 
@@ -109,7 +132,7 @@ potem `tekst <t.j.> --fragment "art. N"` (dwie komendy zamiast trzech):
 
 | Akt | Sygnatura bazowa |
 |---|---|
-| Konstytucja RP (tekst wprost, bez `tj`) | `DU 1997 483` |
+| Konstytucja RP (tekst wprost, bez `tj`; API nie ma HTML — `tekst … --fragment "Art. 45"` czyta urzędowy PDF przez `pdftotext`, bez niego tylko `--pdf`) | `DU 1997 483` |
 | Kodeks cywilny (k.c.) | `DU 1964 93` |
 | Kodeks postępowania cywilnego (k.p.c.) | `DU 1964 296` |
 | Kodeks rodzinny i opiekuńczy (k.r.o.) | `DU 1964 59` |
@@ -126,13 +149,15 @@ potem `tekst <t.j.> --fragment "art. N"` (dwie komendy zamiast trzech):
 1. **Najpierw znajdź właściwy akt, potem cytuj.** Typowy przepływ: `szukaj` → ustal sygnaturę → `tj`
    (aktualny tekst jednolity) → `tekst <t.j.> --fragment "art. N"`. Dla kodeksów z tabeli wyżej pomiń
    `szukaj` i zacznij od `tj`. Cytowanie starej wersji to częsty błąd.
-2. **Sprawdź NOWELIZACJE i ich WEJŚCIE W ŻYCIE** (najczęstsze źródło błędu). `meta` pokazuje datę wejścia
-   w życie, `odniesienia` — zmiany; „Nowelizacje po tekście jednolitym" oznacza, że nawet t.j. bywa już
-   nieaktualny. Zanim powiesz „przepis brzmi…":
+2. **Sprawdź NOWELIZACJE i ich WEJŚCIE W ŻYCIE** (najczęstsze źródło błędu). `meta` pokazuje „Ogłoszono"
+   (publikacja w Dz.U. — od niej liczy się vacatio legis; NIE myl z „Data aktu"), „WEJŚCIE W ŻYCIE" i
+   „Uwagi" (różne daty dla różnych jednostek); `odniesienia` — zmiany; „Nowelizacje po tekście jednolitym"
+   oznacza, że nawet t.j. bywa już nieaktualny. Zanim powiesz „przepis brzmi…":
    - **Akt OGŁOSZONY ≠ OBOWIĄZUJĄCY.** W nowelizacji sprawdź artykuł „wchodzi w życie" — możliwe vacatio
      legis oraz RÓŻNE daty dla różnych jednostek redakcyjnych — i odnieś do **DATY zdarzenia/sprawy**
-     (przepis sprzed/po zmianie). Tekst jednolity oddaje stan na `legalStatusDate`; nowsze zmiany trzeba
-     nałożyć ręcznie i sprawdzić, czy już obowiązują.
+     (przepis sprzed/po zmianie). Tekst jednolity oddaje stan na `legalStatusDate`; pozycje z listy
+     „Nowelizacje po tekście jednolitym" z „wejście w życie zmiany" po tej dacie trzeba nałożyć ręcznie
+     i sprawdzić, czy już obowiązują — `--strict` tego NIE robi za Ciebie.
    - **Baza może NIE mieć najświeższej zmiany.** Brak nowelizacji w API ≠ pewność, że jej nie ma
      (indeksacja bywa opóźniona). Przy sprawie na konkretną datę zweryfikuj dodatkowo (np. najnowsze
      pozycje `dziennikustaw.gov.pl`, proces legislacyjny), a w odpowiedzi zaznacz:
@@ -145,9 +170,11 @@ potem `tekst <t.j.> --fragment "art. N"` (dwie komendy zamiast trzech):
    podstawą do „brak takiego przepisu w tym akcie". Sprawdź też, czy pytasz o WŁAŚCIWY akt: sankcja
    za naruszenie obowiązku zwykle stoi w k.w./k.k., a nie w ustawie, która ten obowiązek nakłada.
 4. **Do DOSŁOWNEGO cytatu w umowie/piśmie/sądzie** używaj urzędowego PDF (`tekst … --pdf`), bo
-   `text.html` po konwersji bywa zlepiony; `--fragment` jest świetny do szybkiego odczytu i analizy.
-   Linia zaczynająca się od `[przypis]` to **komentarz redakcyjny tekstu jednolitego** (kiedy przepis
-   dodano lub zmieniono), a NIE treść normy — nigdy jej nie cytuj jako przepisu.
+   `text.html` po konwersji bywa zlepiony, a tekst z PDF ma automatycznie sklejone wiersze i dzielone
+   wyrazy; `--fragment` jest świetny do szybkiego odczytu i analizy.
+   Linia zaczynająca się od `[przypis N)]` to **komentarz redakcyjny tekstu jednolitego** (kiedy przepis
+   dodano lub zmieniono, z jaką datą wejścia w życie), a NIE treść normy — nigdy jej nie cytuj jako
+   przepisu; sam numer odsyłacza nie wchodzi już w numer jednostki („§ 1.", „pkt 2)").
 5. **Zawsze podawaj sygnaturę Dz.U./M.P. i ELI** przy cytacie (np. „art. 299 § 1 k.s.h., Dz.U. 2024
    poz. 18"). To pozwala odbiorcy zweryfikować źródło.
 6. Pełna lista endpointów i parametrów: `references/api.md` (czytaj przy zapytaniach spoza powyższych
@@ -172,6 +199,7 @@ Kodeksu spółek handlowych i czy to aktualne?" (przykład — stan na czerwiec 
 1. `szukaj "Kodeks spółek handlowych" --typ Ustawa` → akt bazowy ELI `DU/2000/1037`.
 2. `tj DU 2000 1037` → najnowszy tekst jednolity `DU/2024/18` (Dz.U. 2024 poz. 18), oznaczony „AKTUALNY".
 3. `tekst DU 2024 18 --fragment "art. 299"` → treść artykułu + automatyczne ostrzeżenie o nowelizacjach
-   po t.j. (tu: Dz.U. 2024 poz. 96 — wyrok TK K 29/23). Nowsze zmiany kodeksu (np. Dz.U. 2026 poz. 176)
-   mogą nie być jeszcze wpięte pod t.j. — dopytaj `szukaj`iem i odnieś do daty sprawy.
+   po t.j. (tu 4: Dz.U. 2024 poz. 96 — wyrok TK K 29/23, oraz z aktu bazowego Dz.U. 2026 poz. 176, 187,
+   644 z „wejście w życie zmiany" 2027–2030). Odnieś każdą do daty sprawy; indeksacja API bywa opóźniona,
+   więc przy sprawie na konkretną datę dopytaj jeszcze `szukaj`iem.
 4. W odpowiedzi: zacytuj przepis, podaj sygnaturę i datę stanu prawnego.
