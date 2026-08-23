@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-cbosa
-version: 1.7.0
+version: 2.0.0
 description: >-
   Przeszukuje CBOSA — Centralną Bazę Orzeczeń Sądów Administracyjnych (orzeczenia.nsa.gov.pl):
   wyroki, postanowienia i uchwały NSA oraz 16 WSA (~2,4 mln orzeczeń od 2004 r.). Używaj przy

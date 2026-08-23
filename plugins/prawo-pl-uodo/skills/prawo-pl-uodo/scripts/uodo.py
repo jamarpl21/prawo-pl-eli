@@ -24,7 +24,7 @@ Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
 import sys, json, re, time, argparse, urllib.request, urllib.parse, urllib.error
 from html.parser import HTMLParser
 
-__version__ = "1.7.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "2.0.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://orzeczenia.uodo.gov.pl/api"
 CONTENT_HOSTS = ("orzeczenia.uodo.gov.pl",)
 POLA = "id,refid,refname,title,dates,kind,parts,publication"  # domyślne pola listy wyników
