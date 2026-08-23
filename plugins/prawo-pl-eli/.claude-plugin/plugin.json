@@ -1,0 +1,11 @@
+{
+  "name": "prawo-pl-eli",
+  "description": "Polskie prawo z oficjalnego API ELI Sejmu (Dz.U./Monitor Polski) do każdego pytania z prawa polskiego oraz pracy nad umowami i pismami procesowymi: wyszukiwanie aktów, pojedyncze artykuły, tekst jednolity, nowelizacje i podstawa prawna. Read-only — źródło pierwotne zamiast cytowania przepisów z pamięci lub portali.",
+  "version": "2.0.0",
+  "author": {
+    "name": "Krzysztof Gibek"
+  },
+  "homepage": "https://github.com/jamarpl21/prawo-pl-eli",
+  "repository": "https://github.com/jamarpl21/prawo-pl-eli",
+  "license": "MIT"
+}
