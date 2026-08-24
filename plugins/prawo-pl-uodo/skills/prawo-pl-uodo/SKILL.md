@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-uodo
-version: 2.0.0
+version: 2.0.1
 description: >-
   Odpytuje OFICJALNE API Portalu Orzeczeń UODO (orzeczenia.uodo.gov.pl) — decyzje Prezesa
   Urzędu Ochrony Danych Osobowych: kary pieniężne za naruszenia RODO, upomnienia, nakazy,
@@ -44,16 +44,33 @@ Skrypt leży **obok tego pliku SKILL.md** (`<katalog skilla>/scripts/uodo.py`) �
 Code: `${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-uodo`). Uruchamiaj wyłącznie helper z bieżącego pakietu:
 
 ```
-# Claude Code: przy ładowaniu skilla podstawia ${CLAUDE_PLUGIN_ROOT} (pełna ścieżka poniżej).
+# 1) Claude Code: przy ładowaniu skilla podstawia ${CLAUDE_PLUGIN_ROOT} (pełna ścieżka poniżej).
 UODO="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-uodo/scripts/uodo.py"
-# Codex / Claude Desktop / instalacja ręczna: katalog TEGO pliku SKILL.md (Claude Code podaje go
-# jako „Base directory for this skill”, Codex w liście skilli) — podstaw go zamiast <katalog skilla>.
+# 2) Codex / Claude Desktop / instalacja ręczna: katalog TEGO pliku SKILL.md (Claude Code podaje go
+#    jako „Base directory for this skill”, Codex w liście skilli) — podstaw go zamiast <katalog skilla>.
 [ -f "$UODO" ] || UODO="<katalog skilla>/scripts/uodo.py"
-[ -f "$UODO" ] || { echo "BŁĄD: brak helpera obok SKILL.md: $UODO" >&2; exit 1; }
+# 3) Piaskownica (Cowork, czat z code execution): katalog pluginu bywa NIEWIDOCZNY dla powłoki — wtedy
+#    pobierz DOKŁADNIE tę wersję helpera (tag = wersja z nagłówka tego pliku). Suma SHA-256 jest
+#    sprawdzana w kodzie przed zapisem i przed każdym uruchomieniem; niezgodna = helper nie startuje.
+[ -f "$UODO" ] || UODO=$(python3 - <<'EOF'
+import hashlib, os, sys, urllib.request
+WERSJA, SHA256 = "2.0.1", "be2c37fc830ffae0f6cf2a5e9178d40b0a861094a084fd70260d6180ac77775e"
+URL = f"https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/v{WERSJA}/plugins/prawo-pl-uodo/skills/prawo-pl-uodo/scripts/uodo.py"
+p = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"prawo-pl-uodo-{WERSJA}", "uodo.py")
+try:
+    dane = open(p, "rb").read() if os.path.exists(p) else urllib.request.urlopen(URL, timeout=30).read()
+except Exception as e:
+    sys.exit(f"BŁĄD: nie udało się pobrać helpera ({e}). Bez helpera NIE cytuj prawa z pamięci ani z portali — poinformuj użytkownika.")
+if hashlib.sha256(dane).hexdigest() != SHA256:
+    os.path.exists(p) and os.remove(p)
+    sys.exit("BŁĄD: suma SHA-256 helpera nie zgadza się z SKILL.md — helper NIE zostanie uruchomiony. Nie cytuj prawa z pamięci ani z portali — poinformuj użytkownika.")
+os.makedirs(os.path.dirname(p), exist_ok=True); open(p, "wb").write(dane); print(p)
+EOF
+) && [ -f "$UODO" ] || exit 1
 python3 "$UODO" <komenda> [...]
 ```
 
-Nie pobieraj helpera z sieci i nie szukaj go przez `find` po katalogach użytkownika ani systemu.
+Nie szukaj helpera przez `find` po katalogach użytkownika ani systemu i nie pobieraj go z żadnego innego źródła niż przypięty tag z sumą wyżej (żadnego `main`, żadnej innej wersji z cache) — inna wersja helpera to inne wyniki.
 
 (W przykładach niżej `python3 scripts/uodo.py` oznacza `python3 "$UODO"`, jeśli nie jesteś w katalogu skilla.)
 

@@ -7,6 +7,7 @@ import io
 import sys
 import importlib.util
 import pathlib
+import re
 import unittest
 import urllib.error
 from unittest import mock
@@ -605,18 +606,33 @@ class TestT04RecznaInstalacjaSkilli(unittest.TestCase):
 
     def test_wszystkie_skille_maja_lokalny_fallback_bez_sieci_i_find(self):
         # helper wyłącznie z bieżącego pakietu: ścieżka podstawiana przez Claude Code
-        # (${CLAUDE_PLUGIN_ROOT}) albo katalog tego SKILL.md — bez find po dysku i bez curl z main
+        # (${CLAUDE_PLUGIN_ROOT}) albo katalog tego SKILL.md — bez find po dysku i bez curl z main.
+        # Trzeci krok (piaskownica, 2.0.1) pobiera DOKŁADNIE tę wersję z tagu i odmawia uruchomienia,
+        # gdy suma SHA-256 nie zgadza się z zapisaną w SKILL.md — dlatego suma w SKILL.md musi być
+        # sumą pliku silnika z tego samego pakietu, a tag = wersja z frontmattera.
+        import hashlib
         for plugin in self.WYDANE:
             skill = ROOT / f"plugins/{plugin}/skills/{plugin}/SKILL.md"
             text = skill.read_text(encoding="utf-8")
             with self.subTest(skill=skill):
                 self.assertIn(f'="${{CLAUDE_PLUGIN_ROOT}}/skills/{plugin}/scripts/', text)
                 self.assertIn('="<katalog skilla>/scripts/', text)
-                self.assertIn("Nie pobieraj helpera z sieci", text)
-                self.assertIn("nie szukaj go przez `find`", text)
+                self.assertIn("nie pobieraj go z żadnego innego źródła niż przypięty tag", text)
+                self.assertIn("Nie szukaj helpera przez `find`", text)
                 self.assertNotIn("curl -fsSL", text)
                 self.assertNotIn('find "$HOME', text)
+                self.assertNotIn("/prawo-pl-eli/main/", text)
                 self.assertIn("`--strict`", text)
+                wersja = re.search(r"^version:\s*(\S+)\s*$", text, re.M).group(1)
+                m = re.search(r'WERSJA, SHA256 = "([^"]+)", "([0-9a-f]{64})"', text)
+                self.assertIsNotNone(m, "brak przypiętego kroku 3) Piaskownica")
+                self.assertEqual(m.group(1), wersja, "tag pobierania ≠ wersja skilla")
+                silnik = re.search(r'/v\{WERSJA\}/plugins/' + re.escape(plugin)
+                                   + r'/skills/' + re.escape(plugin) + r'/scripts/([a-z]+\.py)"', text)
+                self.assertIsNotNone(silnik, "URL pobierania nie wskazuje tagu v{WERSJA} tego skilla")
+                plik = ROOT / f"plugins/{plugin}/skills/{plugin}/scripts/{silnik.group(1)}"
+                self.assertEqual(m.group(2), hashlib.sha256(plik.read_bytes()).hexdigest(),
+                                 "suma w SKILL.md ≠ suma silnika w pakiecie")
 
 
 class TestT11NowszyTjNaStarszymTj(unittest.TestCase):

@@ -5,6 +5,7 @@
 Checks every plugin's manifests, both marketplace catalogs, each skill's SKILL.md frontmatter,
 and that each engine compiles. All declared versions must be identical (lockstep). No pip deps.
 """
+import hashlib
 import json
 import re
 import sys
@@ -90,6 +91,22 @@ for plugin, engine_names in PLUGINS:
             errors.append(f"{engine_name}: missing __version__")
         else:
             versions[engine_rel] = m.group(1)
+
+        # Sandbox fallback in SKILL.md (step "3) Piaskownica"): pinned tag = lockstep version and the
+        # engine's EXACT sha256 — the shell block refuses to run a helper whose sum differs.
+        if skill.exists():
+            actual = hashlib.sha256(engine.read_bytes()).hexdigest()
+            url_tail = f"/v{{WERSJA}}/plugins/{plugin}/skills/{plugin}/scripts/{engine_name}\""
+            m = re.search(r'WERSJA, SHA256 = "([^"]+)", "([0-9a-f]{64})"', text)
+            if not m:
+                errors.append(f"{skill_rel}: missing pinned fallback (WERSJA, SHA256 = ...) for {engine_name}")
+            else:
+                versions[f"{skill_rel}#fallback"] = m.group(1)
+                if m.group(2) != actual:
+                    errors.append(f"{skill_rel}: SHA256 for {engine_name} is {m.group(2)[:12]}…, "
+                                  f"expected {actual}")
+            if url_tail not in text:
+                errors.append(f"{skill_rel}: fallback URL must end with {url_tail}")
 
 # Marketplace catalogs (Claude + Codex) — must list every plugin with a version
 for rel in (".claude-plugin/marketplace.json", ".agents/plugins/marketplace.json"):

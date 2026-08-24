@@ -1,6 +1,6 @@
 {
   "name": "prawo-pl-rejestr-umow",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Umowy jednostek sektora finansów publicznych z publicznego API Centralnego Rejestru Umów (rejestrumow.gov.pl, od 1.07.2026): zamawiający, wykonawca, przedmiot, wartość, aneksy, wyłączenia jawności. Wyszukiwanie po przedmiocie, stronach (nazwa/REGON/NIP), województwie, dacie i wartości. Read-only, bez klucza.",
   "author": {
     "name": "Krzysztof Gibek"

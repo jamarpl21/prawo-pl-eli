@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-edzienniki
-version: 2.0.0
+version: 2.0.1
 description: >-
   Odpytuje API ELI 16 WOJEWÓDZKICH DZIENNIKÓW URZĘDOWYCH — PRAWO MIEJSCOWE: uchwały rad gmin,
   powiatów i sejmików województw, rozporządzenia i zarządzenia wojewody, akty prawa miejscowego.
@@ -44,16 +44,33 @@ to `~/.claude/skills/prawo-pl-edzienniki` (skill zainstalowany jako plugin leży
 w Claude Code: `${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-edzienniki`). Uruchamiaj wyłącznie helper z bieżącego pakietu:
 
 ```
-# Claude Code: przy ładowaniu skilla podstawia ${CLAUDE_PLUGIN_ROOT} (pełna ścieżka poniżej).
+# 1) Claude Code: przy ładowaniu skilla podstawia ${CLAUDE_PLUGIN_ROOT} (pełna ścieżka poniżej).
 EDZ="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-edzienniki/scripts/edzienniki.py"
-# Codex / Claude Desktop / instalacja ręczna: katalog TEGO pliku SKILL.md (Claude Code podaje go
-# jako „Base directory for this skill”, Codex w liście skilli) — podstaw go zamiast <katalog skilla>.
+# 2) Codex / Claude Desktop / instalacja ręczna: katalog TEGO pliku SKILL.md (Claude Code podaje go
+#    jako „Base directory for this skill”, Codex w liście skilli) — podstaw go zamiast <katalog skilla>.
 [ -f "$EDZ" ] || EDZ="<katalog skilla>/scripts/edzienniki.py"
-[ -f "$EDZ" ] || { echo "BŁĄD: brak helpera obok SKILL.md: $EDZ" >&2; exit 1; }
+# 3) Piaskownica (Cowork, czat z code execution): katalog pluginu bywa NIEWIDOCZNY dla powłoki — wtedy
+#    pobierz DOKŁADNIE tę wersję helpera (tag = wersja z nagłówka tego pliku). Suma SHA-256 jest
+#    sprawdzana w kodzie przed zapisem i przed każdym uruchomieniem; niezgodna = helper nie startuje.
+[ -f "$EDZ" ] || EDZ=$(python3 - <<'EOF'
+import hashlib, os, sys, urllib.request
+WERSJA, SHA256 = "2.0.1", "8ae96c4b313af78c8e737815e8d0643e4698922aacf9ca3ed4747f7e679cfede"
+URL = f"https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/v{WERSJA}/plugins/prawo-pl-edzienniki/skills/prawo-pl-edzienniki/scripts/edzienniki.py"
+p = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"prawo-pl-edzienniki-{WERSJA}", "edzienniki.py")
+try:
+    dane = open(p, "rb").read() if os.path.exists(p) else urllib.request.urlopen(URL, timeout=30).read()
+except Exception as e:
+    sys.exit(f"BŁĄD: nie udało się pobrać helpera ({e}). Bez helpera NIE cytuj prawa z pamięci ani z portali — poinformuj użytkownika.")
+if hashlib.sha256(dane).hexdigest() != SHA256:
+    os.path.exists(p) and os.remove(p)
+    sys.exit("BŁĄD: suma SHA-256 helpera nie zgadza się z SKILL.md — helper NIE zostanie uruchomiony. Nie cytuj prawa z pamięci ani z portali — poinformuj użytkownika.")
+os.makedirs(os.path.dirname(p), exist_ok=True); open(p, "wb").write(dane); print(p)
+EOF
+) && [ -f "$EDZ" ] || exit 1
 python3 "$EDZ" <komenda> [...]
 ```
 
-Nie pobieraj helpera z sieci i nie szukaj go przez `find` po katalogach użytkownika ani systemu.
+Nie szukaj helpera przez `find` po katalogach użytkownika ani systemu i nie pobieraj go z żadnego innego źródła niż przypięty tag z sumą wyżej (żadnego `main`, żadnej innej wersji z cache) — inna wersja helpera to inne wyniki.
 
 (W przykładach niżej `python3 scripts/edzienniki.py` oznacza `python3 "$EDZ"`, jeśli nie jesteś w katalogu skilla.)
 

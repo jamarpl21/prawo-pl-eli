@@ -1,7 +1,7 @@
 {
   "name": "prawo-pl-saos",
   "description": "Polskie orzecznictwo z publicznego API SAOS (saos.org.pl): wyroki, postanowienia i uchwały Sądu Najwyższego, Trybunału Konstytucyjnego, sądów powszechnych i KIO. Wyszukiwanie po frazie, sygnaturze, sądzie, sędzim, powołanym przepisie i dacie; pełna treść uzasadnień, powołane przepisy i orzeczenia. Read-only — JAK sądy stosują przepisy (treść przepisów: prawo-pl-eli).",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "author": {
     "name": "Krzysztof Gibek"
   },

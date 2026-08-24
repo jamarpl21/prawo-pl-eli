@@ -1,6 +1,6 @@
 ---
 name: prawo-eu-eurlex
-version: 2.0.0
+version: 2.0.1
 description: >-
   Odpytuje OFICJALNE repozytorium prawa UE — CELLAR/EUR-Lex Urzędu Publikacji (SPARQL + REST,
   bez klucza): wyszukiwanie aktów, pełny tekst PO POLSKU i w 23 innych językach, WERSJE
@@ -47,16 +47,33 @@ bez klucza API). Skrypt leży **obok tego pliku SKILL.md** — NIE zakładaj, ż
 `${CLAUDE_PLUGIN_ROOT}/skills/prawo-eu-eurlex`). Uruchamiaj wyłącznie helper z bieżącego pakietu:
 
 ```
-# Claude Code: przy ładowaniu skilla podstawia ${CLAUDE_PLUGIN_ROOT} (pełna ścieżka poniżej).
+# 1) Claude Code: przy ładowaniu skilla podstawia ${CLAUDE_PLUGIN_ROOT} (pełna ścieżka poniżej).
 EURLEX="${CLAUDE_PLUGIN_ROOT}/skills/prawo-eu-eurlex/scripts/eurlex.py"
-# Codex / Claude Desktop / instalacja ręczna: katalog TEGO pliku SKILL.md (Claude Code podaje go
-# jako „Base directory for this skill”, Codex w liście skilli) — podstaw go zamiast <katalog skilla>.
+# 2) Codex / Claude Desktop / instalacja ręczna: katalog TEGO pliku SKILL.md (Claude Code podaje go
+#    jako „Base directory for this skill”, Codex w liście skilli) — podstaw go zamiast <katalog skilla>.
 [ -f "$EURLEX" ] || EURLEX="<katalog skilla>/scripts/eurlex.py"
-[ -f "$EURLEX" ] || { echo "BŁĄD: brak helpera obok SKILL.md: $EURLEX" >&2; exit 1; }
+# 3) Piaskownica (Cowork, czat z code execution): katalog pluginu bywa NIEWIDOCZNY dla powłoki — wtedy
+#    pobierz DOKŁADNIE tę wersję helpera (tag = wersja z nagłówka tego pliku). Suma SHA-256 jest
+#    sprawdzana w kodzie przed zapisem i przed każdym uruchomieniem; niezgodna = helper nie startuje.
+[ -f "$EURLEX" ] || EURLEX=$(python3 - <<'EOF'
+import hashlib, os, sys, urllib.request
+WERSJA, SHA256 = "2.0.1", "6e6e8aa6646d8578345b1b06107922b6d6a1851bb42019683d5d5f2a074eeb33"
+URL = f"https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/v{WERSJA}/plugins/prawo-eu-eurlex/skills/prawo-eu-eurlex/scripts/eurlex.py"
+p = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"prawo-eu-eurlex-{WERSJA}", "eurlex.py")
+try:
+    dane = open(p, "rb").read() if os.path.exists(p) else urllib.request.urlopen(URL, timeout=30).read()
+except Exception as e:
+    sys.exit(f"BŁĄD: nie udało się pobrać helpera ({e}). Bez helpera NIE cytuj prawa z pamięci ani z portali — poinformuj użytkownika.")
+if hashlib.sha256(dane).hexdigest() != SHA256:
+    os.path.exists(p) and os.remove(p)
+    sys.exit("BŁĄD: suma SHA-256 helpera nie zgadza się z SKILL.md — helper NIE zostanie uruchomiony. Nie cytuj prawa z pamięci ani z portali — poinformuj użytkownika.")
+os.makedirs(os.path.dirname(p), exist_ok=True); open(p, "wb").write(dane); print(p)
+EOF
+) && [ -f "$EURLEX" ] || exit 1
 python3 "$EURLEX" <komenda> [...]
 ```
 
-Nie pobieraj helpera z sieci i nie szukaj go przez `find` po katalogach użytkownika ani systemu.
+Nie szukaj helpera przez `find` po katalogach użytkownika ani systemu i nie pobieraj go z żadnego innego źródła niż przypięty tag z sumą wyżej (żadnego `main`, żadnej innej wersji z cache) — inna wersja helpera to inne wyniki.
 
 (W przykładach niżej `python3 scripts/eurlex.py` oznacza `python3 "$EURLEX"`, jeśli nie jesteś
 w katalogu skilla.)

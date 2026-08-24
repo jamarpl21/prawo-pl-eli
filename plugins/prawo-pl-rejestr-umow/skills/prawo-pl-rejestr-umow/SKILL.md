@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-rejestr-umow
-version: 2.0.0
+version: 2.0.1
 description: >-
   Odpytuje publiczne API Centralnego Rejestru Umów JSFP (rejestrumow.gov.pl) — jawny
   rejestr umów zawieranych od 1.07.2026 przez jednostki sektora finansów publicznych:
@@ -46,16 +46,33 @@ leży w katalogu pluginów; w Claude Code: `${CLAUDE_PLUGIN_ROOT}/skills/prawo-p
 Uruchamiaj wyłącznie helper z bieżącego pakietu:
 
 ```
-# Claude Code: przy ładowaniu skilla podstawia ${CLAUDE_PLUGIN_ROOT} (pełna ścieżka poniżej).
+# 1) Claude Code: przy ładowaniu skilla podstawia ${CLAUDE_PLUGIN_ROOT} (pełna ścieżka poniżej).
 REJ="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-rejestr-umow/scripts/rejestrumow.py"
-# Codex / Claude Desktop / instalacja ręczna: katalog TEGO pliku SKILL.md (Claude Code podaje go
-# jako „Base directory for this skill”, Codex w liście skilli) — podstaw go zamiast <katalog skilla>.
+# 2) Codex / Claude Desktop / instalacja ręczna: katalog TEGO pliku SKILL.md (Claude Code podaje go
+#    jako „Base directory for this skill”, Codex w liście skilli) — podstaw go zamiast <katalog skilla>.
 [ -f "$REJ" ] || REJ="<katalog skilla>/scripts/rejestrumow.py"
-[ -f "$REJ" ] || { echo "BŁĄD: brak helpera obok SKILL.md: $REJ" >&2; exit 1; }
+# 3) Piaskownica (Cowork, czat z code execution): katalog pluginu bywa NIEWIDOCZNY dla powłoki — wtedy
+#    pobierz DOKŁADNIE tę wersję helpera (tag = wersja z nagłówka tego pliku). Suma SHA-256 jest
+#    sprawdzana w kodzie przed zapisem i przed każdym uruchomieniem; niezgodna = helper nie startuje.
+[ -f "$REJ" ] || REJ=$(python3 - <<'EOF'
+import hashlib, os, sys, urllib.request
+WERSJA, SHA256 = "2.0.1", "2e68aa08505ed5b99630b661de43a91ebf231323685a182404eb7751c74e96d2"
+URL = f"https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/v{WERSJA}/plugins/prawo-pl-rejestr-umow/skills/prawo-pl-rejestr-umow/scripts/rejestrumow.py"
+p = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"prawo-pl-rejestr-umow-{WERSJA}", "rejestrumow.py")
+try:
+    dane = open(p, "rb").read() if os.path.exists(p) else urllib.request.urlopen(URL, timeout=30).read()
+except Exception as e:
+    sys.exit(f"BŁĄD: nie udało się pobrać helpera ({e}). Bez helpera NIE cytuj prawa z pamięci ani z portali — poinformuj użytkownika.")
+if hashlib.sha256(dane).hexdigest() != SHA256:
+    os.path.exists(p) and os.remove(p)
+    sys.exit("BŁĄD: suma SHA-256 helpera nie zgadza się z SKILL.md — helper NIE zostanie uruchomiony. Nie cytuj prawa z pamięci ani z portali — poinformuj użytkownika.")
+os.makedirs(os.path.dirname(p), exist_ok=True); open(p, "wb").write(dane); print(p)
+EOF
+) && [ -f "$REJ" ] || exit 1
 python3 "$REJ" <komenda> [...]
 ```
 
-Nie pobieraj helpera z sieci i nie szukaj go przez `find` po katalogach użytkownika ani systemu.
+Nie szukaj helpera przez `find` po katalogach użytkownika ani systemu i nie pobieraj go z żadnego innego źródła niż przypięty tag z sumą wyżej (żadnego `main`, żadnej innej wersji z cache) — inna wersja helpera to inne wyniki.
 
 (W przykładach niżej `python3 scripts/rejestrumow.py` oznacza `python3 "$REJ"`, jeśli nie
 jesteś w katalogu skilla.)

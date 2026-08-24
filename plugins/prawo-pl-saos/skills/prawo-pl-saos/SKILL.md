@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-saos
-version: 2.0.0
+version: 2.0.1
 description: >-
   Odpytuje PUBLICZNE API SAOS (saos.org.pl) — bazę polskiego ORZECZNICTWA: wyroki, postanowienia
   i uchwały Sądu Najwyższego (SN), Trybunału Konstytucyjnego (TK), sądów powszechnych (SA/SO/SR)
@@ -42,16 +42,33 @@ Skrypt leży **obok tego pliku SKILL.md** (`<katalog skilla>/scripts/saos.py`) �
 Code: `${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-saos`). Uruchamiaj wyłącznie helper z bieżącego pakietu:
 
 ```
-# Claude Code: przy ładowaniu skilla podstawia ${CLAUDE_PLUGIN_ROOT} (pełna ścieżka poniżej).
+# 1) Claude Code: przy ładowaniu skilla podstawia ${CLAUDE_PLUGIN_ROOT} (pełna ścieżka poniżej).
 SAOS="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-saos/scripts/saos.py"
-# Codex / Claude Desktop / instalacja ręczna: katalog TEGO pliku SKILL.md (Claude Code podaje go
-# jako „Base directory for this skill”, Codex w liście skilli) — podstaw go zamiast <katalog skilla>.
+# 2) Codex / Claude Desktop / instalacja ręczna: katalog TEGO pliku SKILL.md (Claude Code podaje go
+#    jako „Base directory for this skill”, Codex w liście skilli) — podstaw go zamiast <katalog skilla>.
 [ -f "$SAOS" ] || SAOS="<katalog skilla>/scripts/saos.py"
-[ -f "$SAOS" ] || { echo "BŁĄD: brak helpera obok SKILL.md: $SAOS" >&2; exit 1; }
+# 3) Piaskownica (Cowork, czat z code execution): katalog pluginu bywa NIEWIDOCZNY dla powłoki — wtedy
+#    pobierz DOKŁADNIE tę wersję helpera (tag = wersja z nagłówka tego pliku). Suma SHA-256 jest
+#    sprawdzana w kodzie przed zapisem i przed każdym uruchomieniem; niezgodna = helper nie startuje.
+[ -f "$SAOS" ] || SAOS=$(python3 - <<'EOF'
+import hashlib, os, sys, urllib.request
+WERSJA, SHA256 = "2.0.1", "71f87c1eda5e2d8a6084ac8226d3a9513a74564062a937248816040850d7d655"
+URL = f"https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/v{WERSJA}/plugins/prawo-pl-saos/skills/prawo-pl-saos/scripts/saos.py"
+p = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"prawo-pl-saos-{WERSJA}", "saos.py")
+try:
+    dane = open(p, "rb").read() if os.path.exists(p) else urllib.request.urlopen(URL, timeout=30).read()
+except Exception as e:
+    sys.exit(f"BŁĄD: nie udało się pobrać helpera ({e}). Bez helpera NIE cytuj prawa z pamięci ani z portali — poinformuj użytkownika.")
+if hashlib.sha256(dane).hexdigest() != SHA256:
+    os.path.exists(p) and os.remove(p)
+    sys.exit("BŁĄD: suma SHA-256 helpera nie zgadza się z SKILL.md — helper NIE zostanie uruchomiony. Nie cytuj prawa z pamięci ani z portali — poinformuj użytkownika.")
+os.makedirs(os.path.dirname(p), exist_ok=True); open(p, "wb").write(dane); print(p)
+EOF
+) && [ -f "$SAOS" ] || exit 1
 python3 "$SAOS" <komenda> [...]
 ```
 
-Nie pobieraj helpera z sieci i nie szukaj go przez `find` po katalogach użytkownika ani systemu.
+Nie szukaj helpera przez `find` po katalogach użytkownika ani systemu i nie pobieraj go z żadnego innego źródła niż przypięty tag z sumą wyżej (żadnego `main`, żadnej innej wersji z cache) — inna wersja helpera to inne wyniki.
 
 (W przykładach niżej `python3 scripts/saos.py` oznacza `python3 "$SAOS"`, jeśli nie jesteś w katalogu skilla.)
 
