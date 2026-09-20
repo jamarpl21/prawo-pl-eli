@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-rejestr-umow
-version: 2.0.3
+version: 2.1.0
 description: >-
   Odpytuje publiczne API Centralnego Rejestru Umów JSFP (rejestrumow.gov.pl) — jawny
   rejestr umów zawieranych od 1.07.2026 przez jednostki sektora finansów publicznych:
@@ -56,7 +56,7 @@ REJ="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-rejestr-umow/scripts/rejestrumow.py"
 #    sprawdzana w kodzie przed zapisem i przed każdym uruchomieniem; niezgodna = helper nie startuje.
 [ -f "$REJ" ] || REJ=$(python3 - <<'EOF'
 import hashlib, os, sys, urllib.request
-WERSJA, SHA256 = "2.0.3", "e4bfd1e56d0cdd5ab8a0d0ce16bc069b54b2a5a7114c55057df5337ef5d00c69"
+WERSJA, SHA256 = "2.1.0", "f20e6ac2fcbf4149eee161775803ccc658f318d65e93aa85a01b4bef33416278"
 URL = f"https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/v{WERSJA}/plugins/prawo-pl-rejestr-umow/skills/prawo-pl-rejestr-umow/scripts/rejestrumow.py"
 p = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"prawo-pl-rejestr-umow-{WERSJA}", "rejestrumow.py")
 try:

@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-saos
-version: 2.0.3
+version: 2.1.0
 description: >-
   Odpytuje PUBLICZNE API SAOS (saos.org.pl) — bazę polskiego ORZECZNICTWA: wyroki, postanowienia
   i uchwały Sądu Najwyższego (SN), Trybunału Konstytucyjnego (TK), sądów powszechnych (SA/SO/SR)
@@ -22,6 +22,13 @@ Skill do **orzecznictwa** (judykatury) polskiego: wyroków, postanowień i uchwa
 **SN, TK, sądy powszechne (SA/SO/SR), KIO**. Używaj go zawsze, gdy pytanie dotyczy tego, **jak sądy
 stosują/interpretują przepis**, gdy trzeba znaleźć **konkretny wyrok po sygnaturze**, ustalić **linię
 orzeczniczą** albo poprzeć argument w piśmie procesowym judykaturą.
+
+## Portal MS jako źródło orzeczeń sądów powszechnych
+
+Dla SA/SO/SR, gdy potrzebna jest weryfikacja cytatu u źródła, najnowsza publikacja,
+PDF albo orzeczenie brakujące w SAOS, użyj **prawo-pl-orzeczenia-ms** (Portal Orzeczeń MS).
+Pobiera metrykę, pełną treść i RSS bez przeglądarki. Nie zastępuje CBOSA dla NSA/WSA
+ani źródeł SN/TK/KIO. Brak flagi prawomocności w portalu MS oznacza status nieustalony.
 
 ## Podział ról (przepis ≠ orzeczenie)
 
@@ -52,7 +59,7 @@ SAOS="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-saos/scripts/saos.py"
 #    sprawdzana w kodzie przed zapisem i przed każdym uruchomieniem; niezgodna = helper nie startuje.
 [ -f "$SAOS" ] || SAOS=$(python3 - <<'EOF'
 import hashlib, os, sys, urllib.request
-WERSJA, SHA256 = "2.0.3", "fc15f27dac0fafab2752aaaf122de38d97817dbecb5a96cf333ee34dc706ed61"
+WERSJA, SHA256 = "2.1.0", "4c64d2350fbd1f39948d93a442bc489795ec65efe1e8a37d285d4ba7cd804486"
 URL = f"https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/v{WERSJA}/plugins/prawo-pl-saos/skills/prawo-pl-saos/scripts/saos.py"
 p = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"prawo-pl-saos-{WERSJA}", "saos.py")
 try:

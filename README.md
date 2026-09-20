@@ -1,4 +1,4 @@
-# gibek-skills: prawo polskie i unijne + orzecznictwo (7 skilli)
+# gibek-skills: prawo polskie i unijne + orzecznictwo (8 skilli)
 
 [![CI](https://github.com/jamarpl21/prawo-pl-eli/actions/workflows/release.yml/badge.svg)](https://github.com/jamarpl21/prawo-pl-eli/actions/workflows/release.yml)
 [![Release](https://img.shields.io/github/v/release/jamarpl21/prawo-pl-eli)](https://github.com/jamarpl21/prawo-pl-eli/releases/latest)
@@ -11,10 +11,10 @@ Zmiany w kolejnych wydaniach: [CHANGELOG.md](CHANGELOG.md).
 **Prawo polskie i unijne oraz orzecznictwo z OFICJALNYCH źródeł — zamiast cytowania z pamięci.**
 *Cross-tool agent skills (Claude Code + OpenAI Codex): Polish primary law (Sejm ELI API), local law
 (voivodeship journals), EU law (CELLAR/EUR-Lex), Polish case-law (SAOS), administrative courts
-case-law (CBOSA), Polish DPA decisions (UODO) and the public contracts register of Polish public
+case-law (CBOSA), primary common-court judgments (MS), Polish DPA decisions (UODO) and the public contracts register of Polish public
 finance sector entities (Centralny Rejestr Umów).*
 
-Repo zawiera siedem bliźniaczych pluginów/skilli (wspólny marketplace `gibek-skills`, wersjonowane razem):
+Repo zawiera osiem bliźniaczych pluginów/skilli (wspólny marketplace `gibek-skills`, wersjonowane razem):
 
 | Plugin / skill | Źródło | Zakres |
 |---|---|---|
@@ -22,6 +22,7 @@ Repo zawiera siedem bliźniaczych pluginów/skilli (wspólny marketplace `gibek-
 | **prawo-pl-edzienniki** | API ELI 16 dzienników wojewódzkich (np. [edzienniki.duw.pl](https://edzienniki.duw.pl)) | prawo miejscowe: uchwały gmin/powiatów/sejmików, akty wojewody |
 | **prawo-eu-eurlex** | [CELLAR/EUR-Lex](https://publications.europa.eu/webapi/rdf/sparql) | prawo UE: rozporządzenia, dyrektywy, wersje skonsolidowane (CELEX) |
 | **prawo-pl-saos** | [API SAOS](https://www.saos.org.pl/api) | polskie orzecznictwo: SN, TK, sądy powszechne, KIO |
+| **prawo-pl-orzeczenia-ms** | [Portal Orzeczeń MS](https://orzeczenia.ms.gov.pl) (HTML/RSS) | orzeczenia SA/SO/SR u źródła, metryka, pełna treść, PDF i RSS |
 | **prawo-pl-cbosa** | [CBOSA](https://orzeczenia.nsa.gov.pl) (brak API — scraping) | orzecznictwo sądów administracyjnych: NSA + 16 WSA |
 | **prawo-pl-uodo** | [API Portalu Orzeczeń UODO](https://orzeczenia.uodo.gov.pl/api-doc/) | decyzje Prezesa UODO (RODO): kary, upomnienia, nakazy |
 | **prawo-pl-rejestr-umow** | [API Centralnego Rejestru Umów](https://rejestrumow.gov.pl) | umowy jednostek sektora finansów publicznych (JSFP) od 1.07.2026 |
@@ -88,6 +89,24 @@ Most między nimi: ustal akt w ELI, potem `szukaj --przepis "<akt>"` w SAOS. **U
 **wtórna** (agregat) — sądy administracyjne (NSA/WSA) są w niej praktycznie nieobecne (dla nich:
 **prawo-pl-cbosa** niżej), a do dosłownego cytatu warto zajrzeć do portalu sądu.
 
+## prawo-pl-orzeczenia-ms
+
+Bezpośredni dostęp do **Portalu Orzeczeń Sądów Powszechnych MS**: wybrane orzeczenia
+SA/SO/SR, także publikacje nieobecne jeszcze w SAOS. Helper `orzeczenia_ms.py` obsługuje
+`szukaj`, `sygnatura`, `metryka`, `orzeczenie`, `przepisy`, `pdf` i `rss`.
+
+```bash
+python3 plugins/prawo-pl-orzeczenia-ms/skills/prawo-pl-orzeczenia-ms/scripts/orzeczenia_ms.py sygnatura I ACa 1410/23 --json
+python3 plugins/prawo-pl-orzeczenia-ms/skills/prawo-pl-orzeczenia-ms/scripts/orzeczenia_ms.py rss --limit 5
+```
+
+Wymaga tylko standardowej biblioteki Pythona; dostęp HTTPS z przetestowanym User-Agentem
+`curl/8.7.1` działał 20.09.2026 bez przeglądarki. F5/TSPD nadal może odmówić dostępu;
+taka odpowiedź to błąd, nie zero trafień. Metryka rozdziela datę wyroku i publikacji.
+Brak oznaczenia prawomocności to `null`; `--strict` blokuje wtedy pobranie dokumentu.
+RSS to ograniczone okno publikacji, nie kompletne archiwum. Szczegóły i filtry:
+[SKILL.md](plugins/prawo-pl-orzeczenia-ms/skills/prawo-pl-orzeczenia-ms/SKILL.md).
+
 ## prawo-pl-cbosa
 
 Czwarty skill wypełnia największą lukę: **orzecznictwo sądów administracyjnych** (NSA + 16 WSA) —
@@ -135,7 +154,7 @@ od 1.07.2026; podstawa prawna (art. 34a–34b u.f.p.) → **prawo-pl-eli**.
 
 Wszystkie skille są w otwartym standardzie **[Agent Skills](https://agentskills.io)** (`SKILL.md`), więc działają w
 **Claude Code** i **OpenAI Codex**. Silniki (`scripts/eli.py`, `scripts/edzienniki.py`, `scripts/eurlex.py`,
-`scripts/saos.py`, `scripts/cbosa.py`, `scripts/uodo.py`, `scripts/rejestrumow.py`) to czysty Python
+`scripts/saos.py`, `scripts/cbosa.py`, `scripts/uodo.py`, `scripts/rejestrumow.py`, `scripts/orzeczenia_ms.py`) to czysty Python
 (tylko stdlib), wszystko **read-only**.
 
 ## Wymagania
@@ -146,7 +165,7 @@ Wszystkie skille są w otwartym standardzie **[Agent Skills](https://agentskills
   Konstytucja) albo gdy HTML jest tylko pierwszą stroną (wszystkie dzienniki wojewódzkie). Bez pdftotext
   silnik sięga po tekst zastępczy z głośnym ostrzeżeniem, a `--strict` go odrzuca.
 - dostęp do internetu (`api.sejm.gov.pl`, hosty e-dzienników wojewódzkich, `publications.europa.eu`,
-  `www.saos.org.pl`, `orzeczenia.nsa.gov.pl`, `orzeczenia.uodo.gov.pl`, `rejestrumow.gov.pl`)
+  `www.saos.org.pl`, `orzeczenia.ms.gov.pl`, `orzeczenia.nsa.gov.pl`, `orzeczenia.uodo.gov.pl`, `rejestrumow.gov.pl`)
 
 ## Instalacja
 
@@ -158,6 +177,7 @@ Wszystkie skille są w otwartym standardzie **[Agent Skills](https://agentskills
 /plugin install prawo-pl-edzienniki@gibek-skills
 /plugin install prawo-eu-eurlex@gibek-skills
 /plugin install prawo-pl-saos@gibek-skills
+/plugin install prawo-pl-orzeczenia-ms@gibek-skills
 /plugin install prawo-pl-cbosa@gibek-skills
 /plugin install prawo-pl-uodo@gibek-skills
 /plugin install prawo-pl-rejestr-umow@gibek-skills
@@ -195,6 +215,7 @@ codex plugin add prawo-pl-eli@gibek-skills
 codex plugin add prawo-pl-edzienniki@gibek-skills
 codex plugin add prawo-eu-eurlex@gibek-skills
 codex plugin add prawo-pl-saos@gibek-skills
+codex plugin add prawo-pl-orzeczenia-ms@gibek-skills
 codex plugin add prawo-pl-cbosa@gibek-skills
 codex plugin add prawo-pl-uodo@gibek-skills
 codex plugin add prawo-pl-rejestr-umow@gibek-skills
@@ -212,7 +233,7 @@ Sklonuj repo i podlinkuj sam katalog skilla (otwarty standard Agent Skills):
 
 ```bash
 git clone https://github.com/jamarpl21/prawo-pl-eli
-for s in prawo-pl-eli prawo-pl-edzienniki prawo-eu-eurlex prawo-pl-saos prawo-pl-cbosa prawo-pl-uodo prawo-pl-rejestr-umow; do
+for s in prawo-pl-eli prawo-pl-edzienniki prawo-eu-eurlex prawo-pl-saos prawo-pl-cbosa prawo-pl-uodo prawo-pl-rejestr-umow prawo-pl-orzeczenia-ms; do
   SKILL="$PWD/prawo-pl-eli/plugins/$s/skills/$s"
   ln -s "$SKILL" ~/.claude/skills/$s    # Claude Code
   ln -s "$SKILL" ~/.agents/skills/$s    # OpenAI Codex
@@ -224,12 +245,12 @@ done
 Każdy tag `v*` publikuje po jednym zipie na plugin w GitHub Releases
 (`prawo-pl-eli-<wersja>.zip`, `prawo-pl-edzienniki-<wersja>.zip`, `prawo-eu-eurlex-<wersja>.zip`,
 `prawo-pl-saos-<wersja>.zip`, `prawo-pl-cbosa-<wersja>.zip`, `prawo-pl-uodo-<wersja>.zip`,
-`prawo-pl-rejestr-umow-<wersja>.zip`):
+`prawo-pl-rejestr-umow-<wersja>.zip`, `prawo-pl-orzeczenia-ms-<wersja>.zip`):
 
 ```bash
-claude --plugin-dir ./prawo-pl-saos-v2.0.3.zip
+claude --plugin-dir ./prawo-pl-saos-v2.1.0.zip
 # albo zdalnie, bez pobierania:
-claude --plugin-url https://github.com/jamarpl21/prawo-pl-eli/releases/download/v2.0.3/prawo-pl-saos-v2.0.3.zip
+claude --plugin-url https://github.com/jamarpl21/prawo-pl-eli/releases/download/v2.1.0/prawo-pl-saos-v2.1.0.zip
 ```
 
 ## Użycie jako samodzielne CLI (bez żadnego LLM-a)
@@ -422,14 +443,14 @@ python3 scripts/rejestrumow.py umowa <idUmowy>                          # → wy
 ## Struktura
 
 ```
-.claude-plugin/marketplace.json          # marketplace dla Claude Code (siedem pluginów)
+.claude-plugin/marketplace.json          # marketplace dla Claude Code (osiem pluginów)
 .agents/plugins/marketplace.json         # marketplace dla Codex (Claude czyta .claude-plugin/)
-plugins/<plugin>/                        # prawo-pl-eli | prawo-pl-edzienniki | prawo-eu-eurlex | prawo-pl-saos | prawo-pl-cbosa | prawo-pl-uodo | prawo-pl-rejestr-umow
+plugins/<plugin>/                        # prawo-pl-eli | prawo-pl-edzienniki | prawo-eu-eurlex | prawo-pl-saos | prawo-pl-cbosa | prawo-pl-uodo | prawo-pl-rejestr-umow | prawo-pl-orzeczenia-ms
 ├── .claude-plugin/plugin.json           # manifest pluginu — Claude
 ├── .codex-plugin/plugin.json            # manifest pluginu — Codex ("skills": "./skills/")
 └── skills/<plugin>/                      # Agent Skills — WSPÓLNE dla obu narzędzi
     ├── SKILL.md
-    ├── scripts/<silnik>.py               # eli.py | edzienniki.py | eurlex.py | saos.py | cbosa.py | uodo.py | rejestrumow.py
+    ├── scripts/<silnik>.py               # eli.py | edzienniki.py | eurlex.py | saos.py | cbosa.py | uodo.py | rejestrumow.py | orzeczenia_ms.py
     └── references/api.md                 # referencja endpointów źródła
 tools/validate.py                        # walidator manifestów wszystkich pluginów (używany w CI)
 tools/test_*.py                          # testy jednostkowe silników, offline (używane w CI)
@@ -445,13 +466,13 @@ tools/test_*.py                          # testy jednostkowe silników, offline 
 
 ## Wersjonowanie
 
-Wszystkie pluginy są wersjonowane **razem (lockstep)** — jedna wersja (obecnie **2.0.3**) zadeklarowana
+Wszystkie pluginy są wersjonowane **razem (lockstep)** — jedna wersja (obecnie **2.1.0**) zadeklarowana
 we wszystkich miejscach, identyczna; `tools/validate.py` wymusza to w CI:
 
 - `plugins/<plugin>/.claude-plugin/plugin.json` i `.codex-plugin/plugin.json` (pole `version`) — wszystkie pluginy,
 - wpisy wszystkich pluginów w obu marketplace'ach (`.claude-plugin/marketplace.json`, `.agents/plugins/marketplace.json`),
-- frontmattery `SKILL.md` (pole `version`),
-- silniki: `eli.py`, `edzienniki.py`, `eurlex.py`, `saos.py`, `cbosa.py`, `uodo.py`, `rejestrumow.py` (`__version__`; CLI: `--version`),
+- frontmattery `SKILL.md` (`metadata.version`, w starszych skillach pole `version`),
+- silniki: `eli.py`, `edzienniki.py`, `eurlex.py`, `saos.py`, `cbosa.py`, `uodo.py`, `rejestrumow.py`, `orzeczenia_ms.py` (`__version__`; CLI: `--version`),
 - blok „3) Piaskownica” w każdym `SKILL.md`: wersja (= tag `v<wersja>`) i **suma SHA-256 silnika** —
   walidator liczy sumę pliku i odrzuca rozjazd (wypisuje oczekiwaną wartość).
 
@@ -464,7 +485,7 @@ istnieje dopiero po wypchnięciu tagu, a marketplace śledzi `main`).
 Przed tagowaniem uzupełnij `CHANGELOG.md`: przenieś gotowe wpisy z sekcji `Niewydane` do sekcji
 `## X.Y.Z — RRRR-MM-DD`. Sprawdź ją poleceniem `python3 tools/release_notes.py vX.Y.Z`.
 GitHub Actions dołącza treść tej sekcji do opisu wydania i blokuje publikację, jeśli wpisu brakuje.
-Po publikacji sprawdź opis GitHub Release oraz dostępność wszystkich siedmiu paczek.
+Po publikacji sprawdź opis GitHub Release oraz dostępność wszystkich ośmiu paczek.
 
 ## Audyt merytoryczny (sierpień 2026) i wydanie 2.0
 

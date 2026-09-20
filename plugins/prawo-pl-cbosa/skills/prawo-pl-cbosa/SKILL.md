@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-cbosa
-version: 2.0.3
+version: 2.1.0
 description: >-
   Przeszukuje CBOSA — Centralną Bazę Orzeczeń Sądów Administracyjnych (orzeczenia.nsa.gov.pl):
   wyroki, postanowienia i uchwały NSA oraz 16 WSA (~2,4 mln orzeczeń od 2004 r.). Używaj przy
@@ -24,6 +24,13 @@ podatkowych, postępowania przed organami** — czyli tam, gdzie właściwe są 
 **CBOSA nie ma oficjalnego API** — silnik czyta publiczne strony HTML wyszukiwarki (read-only,
 bez logowania, z throttlingiem ≥0,5 s). To najbardziej kompletne i urzędowe źródło orzecznictwa
 administracyjnego; SAOS (skill prawo-pl-saos) sądów administracyjnych praktycznie nie ma.
+
+## Portal MS jako źródło orzeczeń sądów powszechnych
+
+Dla SA/SO/SR, gdy potrzebna jest weryfikacja cytatu u źródła, najnowsza publikacja,
+PDF albo orzeczenie brakujące w SAOS, użyj **prawo-pl-orzeczenia-ms** (Portal Orzeczeń MS).
+Pobiera metrykę, pełną treść i RSS bez przeglądarki. Nie zastępuje CBOSA dla NSA/WSA
+ani źródeł SN/TK/KIO. Brak flagi prawomocności w portalu MS oznacza status nieustalony.
 
 ## Podział ról (który skill do czego)
 
@@ -54,7 +61,7 @@ CBOSA="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-cbosa/scripts/cbosa.py"
 #    sprawdzana w kodzie przed zapisem i przed każdym uruchomieniem; niezgodna = helper nie startuje.
 [ -f "$CBOSA" ] || CBOSA=$(python3 - <<'EOF'
 import hashlib, os, sys, urllib.request
-WERSJA, SHA256 = "2.0.3", "b7a6498b14c6f4d5de11020cff67e0198774bef80e9688d580d9c64783296886"
+WERSJA, SHA256 = "2.1.0", "0c974c8d390b1bb679b7a5b156f64443a0de61aa2cf12781ef69a00df3bf8c06"
 URL = f"https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/v{WERSJA}/plugins/prawo-pl-cbosa/skills/prawo-pl-cbosa/scripts/cbosa.py"
 p = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"prawo-pl-cbosa-{WERSJA}", "cbosa.py")
 try:

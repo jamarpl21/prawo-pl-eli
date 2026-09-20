@@ -33,7 +33,7 @@ Sekcje body wyszukiwania (API ignoruje nieznane pola PO CICHU — zła nazwa = c
 """
 import sys, json, re, time, argparse, urllib.request, urllib.parse, urllib.error
 
-__version__ = "2.0.3"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "2.1.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://rejestrumow.gov.pl/api-dp/v1"
 CONTENT_HOSTS = ("rejestrumow.gov.pl",)
 

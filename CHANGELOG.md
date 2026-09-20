@@ -2,6 +2,14 @@
 
 ## Niewydane
 
+## 2.1.0 — 2026-09-20
+
+- Dodano ósmy plugin `prawo-pl-orzeczenia-ms`: wyszukiwanie orzeczeń SA/SO/SR bezpośrednio w Portalu Orzeczeń MS, metryki, pełne uzasadnienia, powołane przepisy, eksport PDF i kanały RSS.
+- Dostęp do portalu MS działa przez standardową bibliotekę Pythona z przetestowanym User-Agentem, bez `agent-browser`, JavaScriptu i dodatkowych bibliotek. Blokada F5/TSPD lub niekompletna odpowiedź jest zgłaszana jako błąd, a nie brak orzeczeń.
+- Nowy silnik oddziela datę wyroku od daty publikacji, zachowuje indeksy górne i rozpoznaje tekstowe oraz graficzne oznaczenie nieprawomocności i sygnalizuje nieustalony status; `--strict` blokuje pobieranie dokumentu bez potwierdzenia prawomocności.
+- Udokumentowano filtry wyszukiwarki, ograniczony zakres RSS oraz dobór źródła MS/SAOS/CBOSA; dodano plugin do obu marketplace’ów i walidacji wydania.
+- Dodano 29 testów nowego silnika, opartych na odpowiedziach portalu i przypadkach błędnych; przed wydaniem zweryfikowano także wyszukiwanie, pobieranie treści, PDF i RSS na żywo.
+
 ## 2.0.3 — 2026-09-20
 
 - Dodano kontakt przez LinkedIn w polu `author.url` wszystkich siedmiu pluginów, w manifestach Claude i Codex oraz wpisach autorów w marketplace Claude.

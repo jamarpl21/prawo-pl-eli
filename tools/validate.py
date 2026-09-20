@@ -18,6 +18,7 @@ PLUGINS = [  # (plugin, [engines]) — plugin może mieć kilka silników (np. e
     ("prawo-pl-edzienniki", ["edzienniki.py"]),
     ("prawo-eu-eurlex", ["eurlex.py"]),
     ("prawo-pl-saos", ["saos.py"]),
+    ("prawo-pl-orzeczenia-ms", ["orzeczenia_ms.py"]),
     ("prawo-pl-cbosa", ["cbosa.py"]),
     ("prawo-pl-uodo", ["uodo.py"]),
     ("prawo-pl-rejestr-umow", ["rejestrumow.py"]),
@@ -66,9 +67,12 @@ for plugin, engine_names in PLUGINS:
             for k in ("name:", "description:", "version:"):
                 if k not in fm:
                     errors.append(f"{skill_rel}: frontmatter missing '{k}'")
-            m = re.search(r"^version:\s*(\S+)\s*$", fm, re.M)
+            # New skills use Agent Skills metadata.version; retain legacy top-level version.
+            m = re.search(r"^(?:  )?version:\s*(\S+)\s*$", fm, re.M)
             if m:
                 versions[skill_rel] = m.group(1).strip("'\"")
+            else:
+                errors.append(f"{skill_rel}: missing parseable version or metadata.version")
             m = re.search(r"description: >-\n((?:  .*\n)+)", text)
             if m:
                 desc = " ".join(l.strip() for l in m.group(1).splitlines())
