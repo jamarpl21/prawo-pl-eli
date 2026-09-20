@@ -24,7 +24,7 @@ import sys, json, re, time, argparse, shutil, subprocess, tempfile, os
 import urllib.request, urllib.parse, urllib.error
 from html.parser import HTMLParser
 
-__version__ = "2.0.1"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "2.0.2"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://api.sejm.gov.pl/eli"
 CONTENT_HOSTS = ("api.sejm.gov.pl",)
 # Pamięć podręczna udanych GET-ów bez parametrów (metadane, odniesienia) w obrębie jednego
@@ -937,6 +937,10 @@ def cmd_tekst(a):
     # użytkownikowi samego tekstu; zamiast tego tekst dostaje GŁOŚNE ostrzeżenie
     try:
         refs = _get(path + "/references", soft=True)
+        if not isinstance(refs, dict) or any(
+                not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows)
+                for rows in refs.values()):
+            raise VerificationUnknown("nieoczekiwana odpowiedź endpointu /references")
     except VerificationUnknown as e:
         if strict:
             raise
@@ -978,8 +982,8 @@ def cmd_tekst(a):
             print(w)
         return
     html = _get(path + "/text.html")
-    if isinstance(html, (dict, list)):
-        html = json.dumps(html, ensure_ascii=False)
+    if not isinstance(html, str):
+        sys.exit("BŁĄD: API zwróciło nieoczekiwaną odpowiedź zamiast tekstu HTML aktu.")
     txt = html_to_text(html if isinstance(html, str) else "")
     zrodlo = "z text.html; HTML→tekst"
     if not txt:

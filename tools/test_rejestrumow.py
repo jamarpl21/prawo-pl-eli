@@ -29,6 +29,36 @@ def ns(**kw):
     return types.SimpleNamespace(**base)
 
 
+class TestListResponseValidation(unittest.TestCase):
+    def test_bad_list_responses_fail_before_output(self):
+        responses = [None, [], {}, {"error": "Service unavailable"},
+                     {"content": None, "totalMatchingElements": 0},
+                     {"content": [None], "totalMatchingElements": 1},
+                     {"content": [], "totalMatchingElements": "0"},
+                     {"content": [], "totalMatchingElements": False},
+                     {"content": [], "totalMatchingElements": -1},
+                     {"content": [], "totalMatchingElements": 1}]
+        for command in (["najnowsze"], ["szukaj", "remont"]):
+            for flags in ([], ["--json"], ["--strict"], ["--json", "--strict"]):
+                for response in responses:
+                    with self.subTest(command=command, flags=flags, response=response):
+                        out = io.StringIO()
+                        with mock.patch.object(rejestrumow, "_req", return_value=response), \
+                                mock.patch.object(sys, "argv", ["rejestrumow.py", *command, *flags]), \
+                                contextlib.redirect_stdout(out):
+                            with self.assertRaisesRegex(SystemExit, "BŁĄD"):
+                                rejestrumow.main()
+                        self.assertEqual(out.getvalue(), "")
+
+    def test_valid_empty_latest_list_is_not_an_api_error(self):
+        out = io.StringIO()
+        with mock.patch.object(rejestrumow, "_req", return_value={"content": [], "totalMatchingElements": 0}), \
+                mock.patch.object(sys, "argv", ["rejestrumow.py", "najnowsze", "--strict", "--json"]), \
+                contextlib.redirect_stdout(out):
+            rejestrumow.main()
+        self.assertIn('"totalMatchingElements": 0', out.getvalue())
+
+
 class TestFiltry(unittest.TestCase):
     def test_puste(self):
         self.assertEqual(rejestrumow._filtry(ns()), {})

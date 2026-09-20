@@ -33,7 +33,7 @@ Sekcje body wyszukiwania (API ignoruje nieznane pola PO CICHU — zła nazwa = c
 """
 import sys, json, re, time, argparse, urllib.request, urllib.parse, urllib.error
 
-__version__ = "2.0.1"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "2.0.2"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://rejestrumow.gov.pl/api-dp/v1"
 CONTENT_HOSTS = ("rejestrumow.gov.pl",)
 
@@ -273,6 +273,18 @@ def _brak_wynikow():
              "Pamiętaj: rejestr obejmuje umowy zawarte od 1.07.2026.")
 
 
+def _sprawdz_liste(d):
+    """Nie myl obiektu błędu lub zmiany schematu API z pustą listą umów."""
+    if (not isinstance(d, dict)
+            or not isinstance(d.get("content"), list)
+            or any(not isinstance(item, dict) for item in d["content"])
+            or type(d.get("totalMatchingElements")) is not int
+            or d["totalMatchingElements"] < 0):
+        sys.exit("BŁĄD: API rejestru zwróciło nieoczekiwaną odpowiedź (lista umów: "
+                 "wymagane content jako lista obiektów i totalMatchingElements jako nieujemna liczba całkowita).")
+    return d
+
+
 def _sprawdz_strone(d, limit, strona):
     """Pusta strona ≠ zero trafień: odróżniamy prawdziwe zero, stronę poza zbiorem i stronę
     poza oknem API (offset ≥ 10 000, gdzie API zwraca pustą listę i ZANIŻA total do 10 000)."""
@@ -314,8 +326,9 @@ def _lista(d, limit, strona):
 def cmd_najnowsze(a):
     a.limit = _limit(a.limit, glosno=True)
     d = _szukaj({}, a.limit, sort="publicationDateDesc")
-    if not isinstance(d, dict):
-        sys.exit("BŁĄD: API rejestru zwróciło nieoczekiwaną odpowiedź (lista umów).")
+    _sprawdz_liste(d)
+    if not d["content"] and d["totalMatchingElements"] > 0:
+        sys.exit("BŁĄD: API zwróciło pustą pierwszą stronę mimo pasujących umów — spróbuj ponownie.")
     if a.json:
         print(json.dumps(d, ensure_ascii=False, indent=2)); return
     print(f"Ostatnio opublikowane w Centralnym Rejestrze Umów "
@@ -342,13 +355,12 @@ def cmd_szukaj(a):
     if a.strona * a.limit >= OKNO:
         # offset ≥ 10 000: API zwraca pustą listę i ZANIŻA totalMatchingElements do 10 000 —
         # realną liczbę trafień bierzemy z pierwszej strony (limit 1), żeby komunikat nie kłamał
-        d = _szukaj(body, 1, 0, a.sort)
+        d = _sprawdz_liste(_szukaj(body, 1, 0, a.sort))
         if isinstance(d, dict):
             d["content"] = []
     else:
         d = _szukaj(body, a.limit, a.strona, a.sort)
-    if not isinstance(d, dict):
-        sys.exit("BŁĄD: API rejestru zwróciło nieoczekiwaną odpowiedź (wyniki wyszukiwania).")
+    _sprawdz_liste(d)
     _sprawdz_okno_strict(a, d)
     _sprawdz_strone(d, a.limit, a.strona)  # zero / poza zakresem / poza oknem → komunikat + exit ≠ 0, także z --json
     if a.json:

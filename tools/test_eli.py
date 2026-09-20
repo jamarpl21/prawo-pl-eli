@@ -381,6 +381,38 @@ class _Response:
 class EliVerificationContractTests(unittest.TestCase):
     """found/verified_absent/unknown - blad transportu nie moze wygladac jak potwierdzony brak."""
 
+    def test_malformed_references_block_strict_and_warn_otherwise(self):
+        for refs in (None, [], "<html>Service unavailable</html>",
+                     {"error": "Service unavailable"}, {"relacja": [None]}):
+            for strict in (False, True):
+                with self.subTest(refs=refs, strict=strict):
+                    args = argparse.Namespace(sygnatura=["DU", "2024", "18"],
+                                              strict=strict, pdf=None, fragment=None)
+                    out = io.StringIO()
+                    with mock.patch.object(eli, "_get", side_effect=[refs, "<p>Treść testowa</p>"]), \
+                            contextlib.redirect_stdout(out):
+                        if strict:
+                            with self.assertRaises(eli.VerificationUnknown):
+                                eli.cmd_tekst(args)
+                            self.assertEqual(out.getvalue(), "")
+                        else:
+                            eli.cmd_tekst(args)
+                            self.assertIn("nie udało się zweryfikować aktualności", out.getvalue())
+                            self.assertIn("Treść testowa", out.getvalue())
+
+    def test_json_error_is_not_act_text(self):
+        for body in ({"error": "Service unavailable"}, [], None):
+            for strict in (False, True):
+                with self.subTest(body=body, strict=strict):
+                    args = argparse.Namespace(sygnatura=["DU", "2024", "18"],
+                                              strict=strict, pdf=None, fragment=None)
+                    out = io.StringIO()
+                    with mock.patch.object(eli, "_get", side_effect=[{}, body]), \
+                            contextlib.redirect_stdout(out):
+                        with self.assertRaisesRegex(SystemExit, "zamiast tekstu HTML"):
+                            eli.cmd_tekst(args)
+                    self.assertEqual(out.getvalue(), "")
+
     def test_soft_transport_error_is_unknown(self):
         with mock.patch.object(eli._opener, "open", side_effect=urllib.error.URLError("offline")), \
                 mock.patch.object(eli.time, "sleep"):

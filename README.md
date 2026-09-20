@@ -4,6 +4,8 @@
 [![Release](https://img.shields.io/github/v/release/jamarpl21/prawo-pl-eli)](https://github.com/jamarpl21/prawo-pl-eli/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
+Kontakt: [Krzysztof Gibek na LinkedIn](https://www.linkedin.com/in/kgibek/).
+
 **Prawo polskie i unijne oraz orzecznictwo z OFICJALNYCH źródeł — zamiast cytowania z pamięci.**
 *Cross-tool agent skills (Claude Code + OpenAI Codex): Polish primary law (Sejm ELI API), local law
 (voivodeship journals), EU law (CELLAR/EUR-Lex), Polish case-law (SAOS), administrative courts
@@ -223,9 +225,9 @@ Każdy tag `v*` publikuje po jednym zipie na plugin w GitHub Releases
 `prawo-pl-rejestr-umow-<wersja>.zip`):
 
 ```bash
-claude --plugin-dir ./prawo-pl-saos-v2.0.1.zip
+claude --plugin-dir ./prawo-pl-saos-v2.0.2.zip
 # albo zdalnie, bez pobierania:
-claude --plugin-url https://github.com/jamarpl21/prawo-pl-eli/releases/download/v2.0.1/prawo-pl-saos-v2.0.1.zip
+claude --plugin-url https://github.com/jamarpl21/prawo-pl-eli/releases/download/v2.0.2/prawo-pl-saos-v2.0.2.zip
 ```
 
 ## Użycie jako samodzielne CLI (bez żadnego LLM-a)
@@ -441,7 +443,7 @@ tools/test_*.py                          # testy jednostkowe silników, offline 
 
 ## Wersjonowanie
 
-Wszystkie pluginy są wersjonowane **razem (lockstep)** — jedna wersja (obecnie **2.0.1**) zadeklarowana
+Wszystkie pluginy są wersjonowane **razem (lockstep)** — jedna wersja (obecnie **2.0.2**) zadeklarowana
 we wszystkich miejscach, identyczna; `tools/validate.py` wymusza to w CI:
 
 - `plugins/<plugin>/.claude-plugin/plugin.json` i `.codex-plugin/plugin.json` (pole `version`) — wszystkie pluginy,

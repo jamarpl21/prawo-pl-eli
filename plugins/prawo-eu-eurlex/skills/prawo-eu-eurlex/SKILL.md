@@ -1,6 +1,6 @@
 ---
 name: prawo-eu-eurlex
-version: 2.0.1
+version: 2.0.2
 description: >-
   Odpytuje OFICJALNE repozytorium prawa UE — CELLAR/EUR-Lex Urzędu Publikacji (SPARQL + REST,
   bez klucza): wyszukiwanie aktów, pełny tekst PO POLSKU i w 23 innych językach, WERSJE
@@ -57,7 +57,7 @@ EURLEX="${CLAUDE_PLUGIN_ROOT}/skills/prawo-eu-eurlex/scripts/eurlex.py"
 #    sprawdzana w kodzie przed zapisem i przed każdym uruchomieniem; niezgodna = helper nie startuje.
 [ -f "$EURLEX" ] || EURLEX=$(python3 - <<'EOF'
 import hashlib, os, sys, urllib.request
-WERSJA, SHA256 = "2.0.1", "6e6e8aa6646d8578345b1b06107922b6d6a1851bb42019683d5d5f2a074eeb33"
+WERSJA, SHA256 = "2.0.2", "1ac48e8b78f2e062f7d30dac87551c7372d580ac9a514c3216b4adc9114194e0"
 URL = f"https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/v{WERSJA}/plugins/prawo-eu-eurlex/skills/prawo-eu-eurlex/scripts/eurlex.py"
 p = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"prawo-eu-eurlex-{WERSJA}", "eurlex.py")
 try:

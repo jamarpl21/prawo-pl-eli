@@ -19,6 +19,24 @@ eurlex = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(eurlex)
 
 
+class TestEmptyConsolidations(unittest.TestCase):
+    def test_no_consolidation_does_not_claim_no_amendments(self):
+        out = io.StringIO()
+        with mock.patch.object(eurlex, "_konsolidacje", return_value=[]), \
+                contextlib.redirect_stdout(out):
+            eurlex.cmd_skonsolidowany(argparse.Namespace(celex=["32016R0679"], json=False))
+        self.assertNotIn("akt nie był zmieniany", out.getvalue())
+        self.assertIn("nie potwierdza braku zmian", out.getvalue())
+        self.assertIn("odniesienia 32016R0679", out.getvalue())
+
+    def test_empty_json_remains_a_list(self):
+        out = io.StringIO()
+        with mock.patch.object(eurlex, "_konsolidacje", return_value=[]), \
+                contextlib.redirect_stdout(out):
+            eurlex.cmd_skonsolidowany(argparse.Namespace(celex=["32016R0679"], json=True))
+        self.assertEqual(json.loads(out.getvalue()), [])
+
+
 class TestCelexNorm(unittest.TestCase):
     def test_formy_celex(self):
         cases = [
