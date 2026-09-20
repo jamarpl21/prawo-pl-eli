@@ -6,6 +6,8 @@
 
 Kontakt: [Krzysztof Gibek na LinkedIn](https://www.linkedin.com/in/kgibek/).
 
+Zmiany w kolejnych wydaniach: [CHANGELOG.md](CHANGELOG.md).
+
 **Prawo polskie i unijne oraz orzecznictwo z OFICJALNYCH źródeł — zamiast cytowania z pamięci.**
 *Cross-tool agent skills (Claude Code + OpenAI Codex): Polish primary law (Sejm ELI API), local law
 (voivodeship journals), EU law (CELLAR/EUR-Lex), Polish case-law (SAOS), administrative courts
@@ -225,9 +227,9 @@ Każdy tag `v*` publikuje po jednym zipie na plugin w GitHub Releases
 `prawo-pl-rejestr-umow-<wersja>.zip`):
 
 ```bash
-claude --plugin-dir ./prawo-pl-saos-v2.0.2.zip
+claude --plugin-dir ./prawo-pl-saos-v2.0.3.zip
 # albo zdalnie, bez pobierania:
-claude --plugin-url https://github.com/jamarpl21/prawo-pl-eli/releases/download/v2.0.2/prawo-pl-saos-v2.0.2.zip
+claude --plugin-url https://github.com/jamarpl21/prawo-pl-eli/releases/download/v2.0.3/prawo-pl-saos-v2.0.3.zip
 ```
 
 ## Użycie jako samodzielne CLI (bez żadnego LLM-a)
@@ -443,7 +445,7 @@ tools/test_*.py                          # testy jednostkowe silników, offline 
 
 ## Wersjonowanie
 
-Wszystkie pluginy są wersjonowane **razem (lockstep)** — jedna wersja (obecnie **2.0.2**) zadeklarowana
+Wszystkie pluginy są wersjonowane **razem (lockstep)** — jedna wersja (obecnie **2.0.3**) zadeklarowana
 we wszystkich miejscach, identyczna; `tools/validate.py` wymusza to w CI:
 
 - `plugins/<plugin>/.claude-plugin/plugin.json` i `.codex-plugin/plugin.json` (pole `version`) — wszystkie pluginy,
@@ -458,6 +460,11 @@ w silnikach → `sha256` każdego silnika + nowa wersja do bloku „3) Piaskowni
 `version` w pozostałych miejscach → `python3 tools/validate.py && for t in tools/test_*.py; do python3 $t; done`
 → `git tag vX.Y.Z` → **`git push origin main vX.Y.Z`** (commit i tag razem: adres pobierania helpera
 istnieje dopiero po wypchnięciu tagu, a marketplace śledzi `main`).
+
+Przed tagowaniem uzupełnij `CHANGELOG.md`: przenieś gotowe wpisy z sekcji `Niewydane` do sekcji
+`## X.Y.Z — RRRR-MM-DD`. Sprawdź ją poleceniem `python3 tools/release_notes.py vX.Y.Z`.
+GitHub Actions dołącza treść tej sekcji do opisu wydania i blokuje publikację, jeśli wpisu brakuje.
+Po publikacji sprawdź opis GitHub Release oraz dostępność wszystkich siedmiu paczek.
 
 ## Audyt merytoryczny (sierpień 2026) i wydanie 2.0
 

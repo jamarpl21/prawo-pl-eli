@@ -1,9 +1,10 @@
 {
   "name": "prawo-pl-uodo",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "description": "Decyzje Prezesa UODO z oficjalnego API Portalu Orzeczeń UODO (orzeczenia.uodo.gov.pl): kary za naruszenia RODO, upomnienia, nakazy. Wyszukiwanie pełnotekstowe i po tytule/dacie; pełna treść decyzji po sygnaturze. Read-only, bez klucza.",
   "author": {
-    "name": "Krzysztof Gibek"
+    "name": "Krzysztof Gibek",
+    "url": "https://www.linkedin.com/in/kgibek/"
   },
   "homepage": "https://github.com/jamarpl21/prawo-pl-eli",
   "repository": "https://github.com/jamarpl21/prawo-pl-eli",

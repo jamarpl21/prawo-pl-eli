@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-uodo
-version: 2.0.2
+version: 2.0.3
 description: >-
   Odpytuje OFICJALNE API Portalu Orzeczeń UODO (orzeczenia.uodo.gov.pl) — decyzje Prezesa
   Urzędu Ochrony Danych Osobowych: kary pieniężne za naruszenia RODO, upomnienia, nakazy,
@@ -54,7 +54,7 @@ UODO="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-uodo/scripts/uodo.py"
 #    sprawdzana w kodzie przed zapisem i przed każdym uruchomieniem; niezgodna = helper nie startuje.
 [ -f "$UODO" ] || UODO=$(python3 - <<'EOF'
 import hashlib, os, sys, urllib.request
-WERSJA, SHA256 = "2.0.2", "2c6010ea79d91846ce30d5667752347c41bbdbfa3b46d7988b8b667bf57b50fb"
+WERSJA, SHA256 = "2.0.3", "7b93c77f5730578887be15beae778b92d97a177016803def051d40ca4e12f035"
 URL = f"https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/v{WERSJA}/plugins/prawo-pl-uodo/skills/prawo-pl-uodo/scripts/uodo.py"
 p = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"prawo-pl-uodo-{WERSJA}", "uodo.py")
 try:
