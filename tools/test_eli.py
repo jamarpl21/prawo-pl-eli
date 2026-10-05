@@ -1290,25 +1290,30 @@ class TestPdfZeszytDzU2000_2011(unittest.TestCase):
 
 
 def _bbox(strony):
-    """[(szer, wys, [(x0, y0, słowo)])] → HTML jak z `pdftotext -bbox` (x1 = x0 + 6 pt na znak)."""
+    """[(szer, wys, [(x0, y0, słowo[, x1[, y1]])])] → HTML jak z `pdftotext -bbox` (domyślnie x1 = x0 + 6 pt
+    na znak, y1 = y0 + 11)."""
     out = ['<doc>']
     for w, h, slowa in strony:
         out.append(f'<page width="{w}" height="{h}">')
-        for x0, y0, t in slowa:
-            out.append(f'<word xMin="{x0}" yMin="{y0}" xMax="{x0 + 6 * len(t)}" yMax="{y0 + 11}">{t}</word>')
+        for x0, y0, t, *reszta in slowa:
+            x1 = reszta[0] if reszta else x0 + 6 * len(t)
+            y1 = reszta[1] if len(reszta) > 1 else y0 + 11
+            out.append(f'<word xMin="{x0}" yMin="{y0}" xMax="{x1}" yMax="{y1}">{t}</word>')
         out.append("</page>")
     return "\n".join(out + ["</doc>"])
 
 
 def _wiersz(y, tekst, x0=71.0, x1=480.0):
-    """Wiersz treści justowany do prawej krawędzi `x1` (ostatnie słowo kończy się dokładnie na x1)."""
+    """Wiersz treści justowany do prawej krawędzi `x1` (ostatnie słowo kończy się dokładnie na x1); szerokość
+    znaku dobrana tak, żeby wiersz się zmieścił (najwyżej 6 pt), odstępy między słowami równe."""
     slowa = tekst.split()
+    znaki = sum(len(t) for t in slowa)
+    cw = min(6.0, (x1 - x0 - 4 * (len(slowa) - 1)) / znaki)
+    odstep = (x1 - x0 - cw * znaki) / max(1, len(slowa) - 1)
     out, x = [], x0
-    for i, t in enumerate(slowa):
-        if i == len(slowa) - 1:
-            x = x1 - 6 * len(t)
-        out.append((x, y, t))
-        x += 6 * len(t) + 4
+    for t in slowa:
+        out.append((round(x, 2), y, t, round(x + cw * len(t), 2)))
+        x += cw * len(t) + odstep
     return out
 
 
@@ -1472,6 +1477,307 @@ class TestTekstUjednolicony(unittest.TestCase):
         self.assertNotIn("(stan prawny na 2026-03-25). Sklejanie", out)
         self.assertIn("od 2026-11-05: Nowe brzmienie § 1 1 w art. 461", out)
         self.assertLess(out.index("JESZCZE NIE OBOWIĄZUJĄ"), out.index("Art. 461."))
+
+
+def _notka(x0, y0, wiersze, dy=11.5, cw=4.6):
+    """Notka z marginesu: wiersze tekstu od lewego brzegu `x0`, co `dy` pt (wysokość słowa 11 pt jak w PDF U)."""
+    out = []
+    for i, w in enumerate(wiersze):
+        x = x0
+        for t in w.split():
+            out.append((round(x, 2), round(y0 + i * dy, 2), t, round(x + cw * len(t), 2)))
+            x += cw * len(t) + 3.4
+    return out
+
+
+def _strona_u(*grupy):
+    """Strona PDF U: nagłówek, 30 wierszy treści justowanej do 468 pt (co 20.7 pt) + słowa `grupy`."""
+    tresc = [(70.9, 28.6, "©Kancelaria", 118.0), (121.0, 28.6, "Sejmu", 150.0), (439.1, 28.6, "s.", 444.9),
+             (447.2, 28.6, "13/40", 467.8)]
+    for i in range(30):
+        tresc += _wiersz(80 + 20.7 * i, f"wiersz {i + 1} treści przepisu justowany do prawej krawędzi kolumny", 56.6, 468.0)
+    return (595.32, 841.92, tresc + [s for g in grupy for s in g])
+
+
+class TestPrzegladTekstowU(unittest.TestCase):
+    """Przegląd 186 tekstów ujednoliconych (PDF U, 2026-10): poprawnie oddanych było 72% notek z marginesu, a w 44
+    aktach kawałki notek wpadały w treść przepisów (liczba mnoga „wejdą w życie”, notka pod 0,93 wysokości strony,
+    data wydruku w notce, notki nachodzące na siebie, próg zaburzony tabelą, notka przy innym artykule)."""
+
+    def test_liczba_mnoga_i_warianty_frazy_oraz_daty_bez_dn(self):
+        for t, data in (("Dodane pkt 6 i 7 w art. 2 wejdą w życie z dn. 1.11.2028 r. (Dz. U. poz. 507).", "2028-11-01"),
+                        ("Zmiana w ust. 3 w art. 5 wejdzie w życie z 1.01.2027 r. (Dz. U. z 2025 r. poz. 1705).", "2027-01-01"),
+                        ("Przepis uchylający pkt 4 w art. 73 wejdzie w życie 1.09.2026 r. (Dz. U. poz. 781).", "2026-09-01"),
+                        ("Dodany ust. 2 w art. 9 wejdziei w życie z dn. 1.03.2027 r.", "2027-03-01"),
+                        ("Utraci moc z dniem 1 lipca 2026 r. (Dz. U. z 2023 r. poz. 1890).", "2026-07-01"),
+                        ("Przepisy uchylające art. 47a i art. 47b utracą moc z dniem 2 stycznia 2029 r.", "2029-01-02"),
+                        ("Pkt 4 i 5 w art. 6 wchodzą w życie z dniem 1 stycznia 2027 r.", "2027-01-01")):
+            with self.subTest(t=t):
+                self.assertTrue(eli._PDF_NOTKA.search(t))
+                self.assertEqual(eli._data_wejscia(t), data)
+
+    def test_termin_okreslony_w_komunikacie_jest_przyszly_bez_daty(self):
+        t = ("Art. 42c. Treść.\n[margines: Dodane art. 42c– 42w wejdą w życie z dniem określonym w komunikacie, o którym "
+             "mowa w art. 33 ustawy z dnia 15 maja 2024 r. (Dz. U. poz. 854).]\n"
+             "[margines: Wejdzie w życie po upływie 7 dni od dnia ogłoszenia w Dzienniku Ustaw]")
+        self.assertEqual(eli._termin_bez_daty(t.split("\n")[1]), "komunikat")
+        self.assertEqual(eli._termin_bez_daty(t.split("\n")[2]), "nieznany")
+        self.assertEqual(eli._termin_bez_daty("[przypis 3)] W brzmieniu ustalonym przez art. 1, która weszła w życie z dniem 1 lipca 2024 r."), "")
+        # czas przeszły („utracił moc" — przypis o wyroku TK) to ani przyszła data, ani termin nieznany
+        for przeszly in ("[przypis 10)] Utracił moc z dniem 26 stycznia 2024 r. na podstawie wyroku Trybunału Konstytucyjnego.",
+                         "[przypis 3)] Ustawa utraciła moc na podstawie art. 54 ust. 1 pkt 3 ustawy z dnia 26 lipca 1991 r."):
+            self.assertEqual((eli._data_wejscia(przeszly), eli._termin_bez_daty(przeszly)), ("", ""))
+            self.assertEqual(eli._zmiany_w_tekscie(przeszly, "2026-10-05"), ([], []))
+        przyszle, minione = eli._zmiany_w_tekscie(t, "2026-10-05")
+        self.assertEqual([d for d, _ in przyszle], ["komunikat", "nieznany"])
+        out = "\n".join(eli._ostrzezenie_przyszle(t, True, dzis="2026-10-05"))
+        self.assertIn("JESZCZE NIE OBOWIĄZUJĄ (dziś 2026-10-05): 2 (w tym 2 bez daty wejścia w życie)", out)
+        self.assertIn("  - termin wejścia w życie nieznany — określi komunikat: Dodane art. 42c", out)
+
+    def test_ostrzezenie_zbiorcze_obejmuje_notki_bez_daty_takze_przy_dlugiej_liscie(self):
+        t = "\n".join([f"[margines: Zmiana w art. {i} wejdzie w życie z dn. 1.0{1 + i % 9}.2027 r.]" for i in range(20)]
+                      + ["[margines: Zmiana w art. 99 wejdzie w życie z dniem określonym w komunikacie, o którym mowa w art. 1.]"])
+        out = eli._ostrzezenie_przyszle(t, True, dzis="2026-10-05", maks=5)
+        self.assertIn(": 21 (w tym 1 bez daty", out[0])
+        self.assertTrue(out[1].startswith("  - termin wejścia w życie nieznany — określi komunikat: Zmiana w art. 99"))
+
+    def test_notki_nachodzace_na_siebie_maja_rozne_brzegi(self):
+        # DU 2026 622 s. 357: druga notka przesunięta w lewo (x0 484,4), zaczyna się 3 pt pod końcem pierwszej
+        pierwsza = _notka(492.7, 604.6, ["Zmiana (usunięcie", "wyrazu) w § 3 w", "art. 297 wejdzie", "w życie z dn.",
+                                         "1.10.2026 r. (Dz.", "U. z 2026 r. poz.", "846)."])
+        druga = _notka(484.4, 688.1, ["Nowe brzmienie", "§ 4 w art. 297", "wejdzie w życie z", "dn. 1.01.2027 r.",
+                                      "(Dz. U. z 2026 r.", "poz. 1098)."])
+        _, notki, _ = eli._pdf_notki_z_bbox(eli._pdf_slowa(_bbox([_strona_u(pierwsza, druga)])))
+        wszystkie = [n for v in notki[0].values() for n in v]
+        self.assertEqual(wszystkie, [
+            "Zmiana (usunięcie wyrazu) w § 3 w art. 297 wejdzie w życie z dn. 1.10.2026 r. (Dz. U. z 2026 r. poz. 846).",
+            "Nowe brzmienie § 4 w art. 297 wejdzie w życie z dn. 1.01.2027 r. (Dz. U. z 2026 r. poz. 1098)."])
+
+    def test_ogon_notki_bez_frazy_i_notka_przy_dole_strony_obok_daty_wydruku(self):
+        # DU 2026 880 s. 52: „(ust. 1 i ust. 2 pkt 1 wszedł w życie)" 17 pt pod notką; DU 2026 30 s. 13: notka sięga
+        # 831 pt (> 0,93 wysokości), a data wydruku „2026-06-17" stoi w stopce tuż obok
+        notka = _notka(492.5, 660.1, ["Dodany rozdział", "8a (art. 56a–56f)", "wejdzie w życie z", "dn. 2.04.2027 r.",
+                                      "(Dz. U. z 2025 r.", "poz. 1669)."])
+        ogon = _notka(492.5, 734.9, ["(ust. 1 i ust. 2 pkt", "1 wszedł w życie)"])
+        dol = _notka(492.5, 765.5, ["Przepis uchylający", "art. 9 wejdzie w", "życie z dn.", "1.11.2028 r. (Dz.", "U. z 2026 r. poz.",
+                                    "507)."], dy=11.0)
+        strona = _strona_u(notka, ogon, dol, [(425.7, 796.6, "2026-06-17", 467.8)])
+        _, notki, info = eli._pdf_notki_z_bbox(eli._pdf_slowa(_bbox([strona])))
+        wszystkie = [n for v in notki[0].values() for n in v]
+        self.assertEqual(wszystkie, [
+            "Dodany rozdział 8a (art. 56a–56f) wejdzie w życie z dn. 2.04.2027 r. (Dz. U. z 2025 r. poz. 1669). "
+            "(ust. 1 i ust. 2 pkt 1 wszedł w życie)",
+            "Przepis uchylający art. 9 wejdzie w życie z dn. 1.11.2028 r. (Dz. U. z 2026 r. poz. 507)."])
+        self.assertEqual(info["data_wydruku"], "2026-06-17")
+
+    def test_notka_przechodzaca_na_nastepna_strone(self):
+        koniec = _notka(492.5, 760.0, ["Dodany art. 42x", "wejdzie w życie z", "dniem określonym w", "komunikacie, o którym"])
+        dalej = _notka(492.5, 54.1, ["mowa w art. 33", "ustawy (Dz. U. poz. 854)."])
+        _, notki, _ = eli._pdf_notki_z_bbox(eli._pdf_slowa(_bbox([_strona_u(koniec), _strona_u(dalej)])))
+        self.assertEqual([n for v in notki[0].values() for n in v],
+                         ["Dodany art. 42x wejdzie w życie z dniem określonym w komunikacie, o którym mowa w art. 33 "
+                          "ustawy (Dz. U. poz. 854)."])
+        self.assertEqual(notki[1], {})      # strona z samym dokończeniem notki też jest przycinana (bez wycieku)
+
+    def test_krawedz_tekstu_nie_przesuwa_sie_przez_tabele(self):
+        # DU 2025 1154: kolumna liczb kończąca się na 518 pt w wielu wierszach dawała próg 518 (notki wpadały w treść)
+        tabela = [w for i in range(40) for w in ((56.6, 300 + 11 * i, "Lp.", 70.0), (120.0, 300 + 11 * i, "stawka", 150.0),
+                                                 (300.0, 300 + 11 * i, "zł", 310.0), (490.0, 300 + 11 * i, "12,50", 518.0))]
+        strony = eli._pdf_slowa(_bbox([_strona_u(), (595.32, 841.92, tabela)]))
+        self.assertEqual(eli._pdf_prawa_krawedz(strony), 468)
+
+    def test_notka_tuz_za_krawedzia_tekstu_i_strona_przycinana_przed_nia(self):
+        # DU 2026 75: treść do 481,8 pt, notka od 482,4 pt — przycięcie na 482 pt nie gubi ani treści, ani notki
+        tresc = [w for i in range(30) for w in _wiersz(80 + 20.7 * i, "Rzeczypospolitej Polskiej od co najmniej stu lat", 56.6, 481.8)]
+        notka = _notka(482.4, 685.8, ["Dodany pkt 2a w", "ust. 2 w art. 2", "wejdzie w życie z", "dn. 16.12.2026 r."])
+        prog, marg, _ = eli._pdf_margines(eli._pdf_slowa(_bbox([(595.32, 841.92, tresc + notka)])))
+        self.assertTrue(481.8 < prog < 482.4)
+        przyciecie, strona = marg[0]
+        self.assertEqual(przyciecie, 482)
+        self.assertEqual([n for v in strona.values() for n in v],
+                         ["Dodany pkt 2a w ust. 2 w art. 2 wejdzie w życie z dn. 16.12.2026 r."])
+
+    def test_notka_przy_naglowku_strony_trafia_do_pierwszego_wiersza_tresci(self):
+        # DU 2025 1431 s. 147: notka na wysokości nagłówka (k = 1) trafiała do pustego wiersza i znikała
+        raw = ("©Kancelaria Sejmu                                                   s. 147/446\n\n\n"
+               "3)    [minister właściwy do spraw wewnętrznych] <Komendant Główny Policji> – w przypadku lotniska.\n"
+               "      2. Organy, o których mowa w ust. 1, opiniują plany.\n")
+        t = eli.pdf_layout_do_tekstu(raw, {}, {0: {1: ["Zmiana w pkt 3 w ust. 1 w art. 87[7] wejdzie w życie z dn. "
+                                                       "1.10.2026 r. (Dz. U. z 2026 r. poz. 864)."]}})
+        self.assertIn("<Komendant Główny Policji> – w przypadku lotniska.\n[margines: Zmiana w pkt 3 w ust. 1 w art. 87 7 "
+                      "wejdzie w życie z dn. 1.10.2026 r. (Dz. U. z 2026 r. poz. 864).]", t)
+
+    def test_notka_przypieta_do_artykulu_ktorego_dotyczy(self):
+        raw = ("©Kancelaria Sejmu                                                   s. 30/200\n"
+               "      Art. 100. § 1. Sąd orzeka postanowieniem.\n"
+               "      § 2. Sąd uzasadnia postanowienie.\n"
+               "      <Art. 100a. § 1. Nowy przepis o posiedzeniu.>\n"
+               "      Art. 101. § 1. Dalszy przepis.\n"
+               "      <Rozdział 6a\n"
+               "      Art. 102. Kolejny.\n")
+        notki = {0: {3: ["Dodany art. 100a wejdzie w życie z dn. 1.10.2029 r. (Dz. U. z 2020 r. poz. 2320)."],
+                     5: ["Zmiana w § 2 w art. 100 wejdzie w życie z dniem określonym w komunikacie, o którym mowa w art. 101 "
+                         "ustawy z dnia 5 maja 2024 r."],
+                     7: ["Dodany rozdział 6a (art. 102–102c) wejdzie w życie z dn. 1.11.2028 r."]}}
+        t = eli.pdf_layout_do_tekstu(raw, {}, notki)
+        # „Dodany art. 100a" stał przy § 2 art. 100 — trafia pod nagłówek art. 100a
+        self.assertIn("<Art. 100a. § 1. Nowy przepis o posiedzeniu.>\n[margines: Dodany art. 100a", t)
+        # art. 101 po frazie „wejdzie w życie" to przepis INNEJ ustawy — liczy się „§ 2 w art. 100"
+        self.assertIn("§ 2. Sąd uzasadnia postanowienie.\n[margines: Zmiana w § 2 w art. 100", t)
+        self.assertIn("<Rozdział 6a\n[margines: Dodany rozdział 6a", t)
+
+    def test_podstawa_z_kropka_w_srodku_listy_i_bez_z_przed_rokiem(self):
+        self.assertEqual(eli._podstawa_ujednolicenia("Opracowano na podstawie: t.j. Dz. U. z 2026 r. poz. 13, 426. 737, 912."),
+                         {(2026, 13), (2026, 426), (2026, 737), (2026, 912)})
+        self.assertEqual(eli._podstawa_ujednolicenia("Opracowano na podstawie: t.j. Dz. U. z 2025 r. poz. 89, 619, 621. 1794, "
+                                                     "z 2026 r. poz. 507."),
+                         {(2025, 89), (2025, 619), (2025, 621), (2025, 1794), (2026, 507)})
+        self.assertEqual(eli._podstawa_ujednolicenia("Opracowano na podstawie: t.j. Dz. U. z 1959 r. Nr 14, poz. 78, z 1961 r. "
+                                                     "Nr 32, poz. 161, 1971 r. Nr 27, poz. 250."),
+                         {(1959, 78), (1961, 161), (1971, 250)})
+
+    def test_indeks_gorny_sklejony_z_numerem_artykulu(self):
+        # DU 2025 1459: -layout daje „Art. 131.", a to art. 13¹ — indeks górny jest mniejszy i podniesiony
+        slowa = [(96.5, 250.0, "Art.", 117.4, 263.3), (120.4, 250.0, "13", 132.4, 263.3), (132.4, 248.9, "1", 136.4, 257.8),
+                 (136.5, 250.0, ".", 139.5, 263.3), (142.5, 250.0, "1.", 151.5, 263.3), (154.7, 250.0, "W", 166.0, 263.3),
+                 (96.5, 280.0, "Art.", 117.4, 293.3), (120.4, 280.0, "131.", 139.5, 293.3), (142.5, 280.0, "Dalej.", 170.0, 293.3)]
+        [(_, _, ws)] = eli._pdf_slowa(_bbox([(595.32, 841.92, slowa)]))
+        self.assertTrue(eli._pdf_indeks_gorny(ws[1], ws[2]))
+        self.assertFalse(eli._pdf_indeks_gorny(ws[0], ws[1]))
+        strona = "      Art. 131. 1. W razie rozwiązania stosunku pracy.\n      Art. 131. Dalej.\n"
+        oznaczona = eli._pdf_oznacz_indeksy(strona, ws)
+        self.assertEqual(oznaczona, "      Art. 13[1]. 1. W razie rozwiązania stosunku pracy.\n      Art. 131. Dalej.\n")
+        t = eli.pdf_layout_do_tekstu(oznaczona)
+        self.assertEqual(len(eli._hity_naglowka(t, "art. 13^1")), 1)
+        self.assertEqual(len(eli._hity_naglowka(t, "art. 131")), 1)
+        self.assertIn("Art. 13 1. 1. W razie", t)
+        # litera przed indeksem („art. 6b³", DU 2026 884)
+        self.assertEqual(len(eli._hity_naglowka("Art. 6b. A.\n\nArt. 6b 3. B.", "art. 6b(3)")), 1)
+        # w notce z marginesu indeks górny też jest oznaczony
+        self.assertEqual(eli._pdf_tekst_wiersza(ws[:4]), "Art. 13[1].")
+
+    def test_struktura_podkreslnik_jako_indeks_gorny(self):
+        # k.s.h. DU 2024 18: /struct ma „Art. 7_1." — to art. 7¹; --fragment "art. 7_1" dawał „Nie znaleziono"
+        t = "Art. 7. (uchylony)\n\nArt. 7 1. § 1. Jeżeli przepis ustawy tak stanowi.\n\nArt. 71. § 1. Sąd rejestrowy."
+        self.assertEqual(eli._hity_naglowka(t, "art. 7_1"), [t.index("Art. 7 1.")])
+        self.assertEqual(eli._hity_naglowka(t, "Art. 7_1."), [t.index("Art. 7 1.")])
+        out = io.StringIO()
+        with mock.patch.object(eli, "_get", return_value=[{"id": "arti_7_1", "type": "arti", "title": "Art. 7_1."}]), \
+                contextlib.redirect_stdout(out):
+            eli.cmd_struktura(argparse.Namespace(sygnatura=["DU", "2024", "18"], json=False, filtr=None, poziom=None))
+        self.assertIn('arti_7_1  [arti]  Art. 7_1.  (--fragment "art. 7(1)")', out.getvalue())
+
+    def test_rozstrzelony_tytul_dlugi_z_granicami_wyrazow_z_bbox(self):
+        # MP 2025 726: „M IN I S TR A F IN AN SÓ W I G O SPO DA RK I 1)" — odstęp liter ≈1 pt, między wyrazami ≈4,4 pt
+        kawalki = [(187.0, "M", 196.4), (197.4, "IN", 209.4), (210.5, "I", 214.4), (215.4, "S", 220.9), (222.0, "TR", 236.7),
+                   (237.8, "A", 245.0), (249.4, "F", 255.5), (256.6, "IN", 268.6), (269.7, "AN", 285.0), (286.1, "SÓ", 300.3),
+                   (301.4, "W", 311.4), (315.9, "I", 319.8), (324.2, "G", 331.9), (332.9, "O", 340.7), (341.8, "SPO", 363.1),
+                   (364.2, "DA", 379.6), (380.7, "RK", 396.5), (397.7, "I", 401.5)]
+        slowa = [(x0, 256.5, t, x1, 267.5) for x0, t, x1 in kawalki] + [(402.9, 257.5, "1)", 408.3, 263.3)]
+        slowa += [(150.0, 300.0, "USTAWA", 190.0, 311.0), (194.0, 300.0, "O", 200.0, 311.0), (204.0, 300.0, "PODATKU", 250.0, 311.0),
+                  (254.0, 300.0, "I", 257.0, 311.0), (261.0, 300.0, "OPŁATACH", 310.0, 311.0)]
+        [(_, _, ws)] = eli._pdf_slowa(_bbox([(595.32, 841.92, slowa)]))
+        strona = ("                                      M IN I S TR A F IN AN SÓ W I G O SPO DA RK I 1)\n"
+                  "                          USTAWA O PODATKU I OPŁATACH\n")
+        self.assertEqual(eli._pdf_rozstrzelone(strona, ws),
+                         "                                      MINISTRA FINANSÓW I GOSPODARKI1)\n"
+                         "                          USTAWA O PODATKU I OPŁATACH\n")
+
+    def test_przypis_przy_naglowku_rozdzialu_obejmuje_jego_artykuly(self):
+        # k.wyb. (PDF T): przypis przy „Rozdział 11b" — rozdział wejdzie w życie 18.02.2027, art. 103e nie ma własnego
+        txt = ("Art. 103c. Stary przepis.\n\nRozdział 11b\n[przypis 4)] Rozdział dodany przez art. 1 pkt 1 ustawy z dnia "
+               "23 stycznia 2026 r. (Dz. U. poz. 178), która wejdzie w życie z dniem 18 lutego 2027 r.\n\nPortal poparcia\n\n"
+               "Art. 103d. § 1. Wyborcom udostępnia się usługę.\n\nArt. 103e. Minister określi wzór.\n\nRozdział 12\n\n"
+               "Art. 104. Dalej.")
+        [(naglowek, przy)] = eli._naglowki_nadrzedne(txt, txt.index("Art. 103e."))
+        self.assertEqual(naglowek, "Rozdział 11b")
+        self.assertTrue(przy[0].startswith("[przypis 4)] Rozdział dodany"))
+        self.assertEqual(eli._naglowki_nadrzedne(txt, txt.index("Art. 104.")), [])
+        meta = {"ELI": "DU/2026/1261", "legalStatusDate": "2026-08-25", "textHTML": False, "displayAddress": "Dz.U. 2026 poz. 1261",
+                "entryIntoForce": None, "texts": [{"fileName": "D20261261.pdf", "type": "T"}]}
+
+        def fake_get(path, params=None, soft=False):
+            return {} if path.endswith("/references") else "" if path.endswith("/text.html") else meta
+        out = io.StringIO()
+        with mock.patch.object(eli, "_get", side_effect=fake_get), \
+                mock.patch.object(eli, "_tekst_z_pdf", return_value=(txt, "https://api.sejm.gov.pl/x.pdf", "")), \
+                mock.patch.object(eli, "_dzis", return_value="2026-10-05"), \
+                mock.patch.object(sys, "argv", ["eli.py", "tekst", "DU", "2026", "1261", "--fragment", "art. 103e"]), \
+                contextlib.redirect_stdout(out):
+            eli.main()
+        out = out.getvalue()
+        self.assertIn("UWAGA: ten fragment leży w jednostce „Rozdział 11b”", out)
+        self.assertIn("od 2027-02-18: przepis z przypisem 4) wejdzie w życie z dniem 18 lutego 2027 r.", out)
+
+    def test_punkt_w_brzmieniu_przyszlym_to_nie_odsylacz_do_przypisu(self):
+        # „<6) udostępnianie…" (DU 2026 30): „<" przed numerem punktu — punkt 6, a nie przypis 6
+        t = eli.pdf_layout_do_tekstu("      Art. 5. 1. Wpisowi podlegają:\n<6) udostępnianie informacji o spółce cywilnej;>\n")
+        self.assertIn("<6) udostępnianie informacji", t)
+        self.assertNotIn("[przypis 6)]", t)
+
+    def test_przypis_z_kilkoma_akapitami_nie_wpada_w_tresc(self):
+        # k.s.h. art. 459–460: przypis 10) ma akapit z adnotacją o wyroku TK — po pustym wierszu, wcięty
+        raw = ("        Art. 460.10) § 1. Do dnia złożenia wniosku rozwiązaniu może zapobiec uchwała.\n"
+               "        § 2. Przepisu § 1 nie stosuje się w przypadku orzeczenia sądowego.\n\n\n\n"
+               "10)\n"
+               "      Utracił moc z dniem 26 stycznia 2024 r. na podstawie wyroku Trybunału Konstytucyjnego.\n\n"
+               "      Wyrok Trybunału Konstytucyjnego został opublikowany w Dz. U. z adnotacją.\n")
+        t = eli.pdf_layout_do_tekstu(raw)
+        self.assertTrue(t.endswith("\n§ 2. Przepisu § 1 nie stosuje się w przypadku orzeczenia sądowego."), t[-200:])
+        self.assertIn("[przypis 10)] Utracił moc z dniem 26 stycznia 2024 r. na podstawie wyroku Trybunału Konstytucyjnego. "
+                      "Wyrok Trybunału Konstytucyjnego został opublikowany w Dz. U. z adnotacją.", t)
+
+
+def _dwa_szerokie_lamy(wiersze):
+    """Jak `_dwa_lamy`, ale z szeroką rynną (lewy łam do kol. ~50, prawy od kol. 64) — jak w zeszytach 2000–2011."""
+    return "\n".join(("    " + l).ljust(64) + p if p else "    " + l for l, p in wiersze) + "\n"
+
+
+class TestZeszytPrzypisyIPodpisWLamie(unittest.TestCase):
+    """Zeszyty Dz.U. 1990–2011: przypisy z dołu lewego łamu trafiały między łamy (w środek treści), a podpis
+    dosunięty do prawej krawędzi lewego łamu przy pustym prawym łamie zamykał blok i przestawiał kolejność."""
+
+    STRONA = ("Dziennik Ustaw Nr 105                         — 7006 —                            Poz. 991\n\n"
+              "                                                  991\n"
+              "                                    ROZPORZĄDZENIE MINISTRA KULTURY1)\n\n"
+              "                                         z dnia 2 czerwca 2003 r.\n\n"
+              + _dwa_szerokie_lamy([
+                  ("Na podstawie art. 20 ust. 5 ustawy z dnia 4 lutego", "§ 1. Rozporządzenie określa kategorie urządzeń"),
+                  ("1994 r. o prawie autorskim i prawach pokrewnych", "i nośników służących do utrwalania utworów."),
+                  ("zarządza się, co następuje:", "§ 2. Rozporządzenie wchodzi w życie po upływie"),
+                  ("", "14 dni od dnia ogłoszenia."),
+                  ("———————", ""),
+                  ("1) Minister Kultury kieruje działem administracji", ""),
+                  ("   rządowej — kultura i ochrona dziedzictwa.", "")]))
+
+    def test_przypisy_z_dolu_lewego_lamu(self):
+        t = eli.pdf_layout_do_tekstu(eli.pdf_zeszyt_do_aktu(self.STRONA, 2003, 991))
+        self.assertIn("ROZPORZĄDZENIE MINISTRA KULTURY\n[przypis 1)] Minister Kultury kieruje działem administracji rządowej "
+                      "— kultura i ochrona dziedzictwa.", t)
+        self.assertIn("zarządza się, co następuje:\n§ 1. Rozporządzenie określa", t)
+        self.assertNotIn("———", t)
+        self.assertNotIn("nie odnaleziono", t)
+
+    def test_podpis_przy_prawej_krawedzi_lewego_lamu_nie_zamyka_bloku(self):
+        # układ jak w PDF_ZESZYT_2003 (wąska rynna): krótki podpis „W. Dąbrowski" dosunięty do prawej krawędzi lewego
+        # łamu zaczyna się dalej niż 0,35 szerokości strony — wcześniej uznany za wyśrodkowany, zamykał blok
+        strona = ("                                                  991\n"
+                  "                                    ROZPORZĄDZENIE MINISTRA KULTURY\n\n"
+                  + _dwa_lamy([
+                      ("§ 1. Rozporządzenie określa wysokość opłat od", "Załącznik do rozporządzenia Ministra"),
+                      ("urządzeń i czystych nośników, które służą do", "Kultury z dnia 2 czerwca 2003 r."),
+                      ("utrwalania utworów. § 2. Rozporządzenie wcho-", "1. Magnetofony — 3 %"),
+                      ("dzi w życie z dniem ogłoszenia.", "2. Kserokopiarki — 1 %"),
+                      ("Minister Kultury:".rjust(44), ""),
+                      ("W. Dąbrowski".rjust(44), ""),
+                      ("", "3. Skanery — 1 %"),
+                      ("", "4. Nagrywarki — 1 %")]))
+        t = eli._pdf_lamy(strona)
+        # podpis zostaje na końcu lewego łamu, przed załącznikiem z prawego — a nie w środku listy z prawego łamu
+        self.assertLess(t.index("W. Dąbrowski"), t.index("Załącznik do rozporządzenia"))
+        self.assertLess(t.index("2. Kserokopiarki"), t.index("3. Skanery"))
+        # wyśrodkowany numer pozycji i tytuł nadal zamykają blok (zostają nad łamami)
+        self.assertLess(t.index("ROZPORZĄDZENIE MINISTRA KULTURY"), t.index("§ 1. Rozporządzenie"))
 
 
 class TestMetaVacatioCytatUchylenie(unittest.TestCase):

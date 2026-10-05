@@ -109,15 +109,16 @@ Sygnaturę można podać w wielu formach: `DU 2000 1037`, `DU/2024/18`, `"Dz.U. 
   `python3 scripts/eli.py tekst DU 2024 18 --fragment "art. 299"` (trafia w nagłówek artykułu, nie w odesłania)
   `python3 scripts/eli.py tekst DU 2024 18 --fragment "przedawnienie"` (wyszukiwanie pełnotekstowe)
   `--pdf ŚCIEŻKA` zapisuje urzędowy PDF (preferuje tekst jednolity). Indeks górny podawaj w nawiasie
-  albo unicodem: art. 299¹ → `--fragment "art. 299(1)"` lub `"art. 299¹"`; sufiks literowy normalnie:
-  `"art. 66c"`. Nagłówki przepisów niedawno dodanych lub zmienionych mają w tekście jednolitym
+  albo unicodem: art. 299¹ → `--fragment "art. 299(1)"` lub `"art. 299¹"` (zapis z `struktura`, „Art. 7_1.”,
+  też działa: `"art. 7_1"`); sufiks literowy normalnie: `"art. 66c"`, a z indeksem: `"art. 6b(3)"`. Nagłówki przepisów niedawno dodanych lub zmienionych mają w tekście jednolitym
   odsyłacz do przypisu („Art. 66c 6)Dodany przez…") — `--fragment` to obsługuje.
   **„Nie znaleziono frazy" NIE znaczy, że przepisu nie ma w akcie** (zwłaszcza przy nietypowym
   oznaczeniu jednostki): sprawdź jeszcze samym numerem (`--fragment "66c"`) albo słowem z treści,
   zanim napiszesz, że przepis nie istnieje. Gdy nagłówka nie ma, narzędzie samo pokazuje trafienia
   pełnotekstowe z ostrzeżeniem — mogą to być odesłania z innych przepisów, nie sam przepis.
 - **struktura** — spis jednostek redakcyjnych (tytuły/działy/rozdziały/artykuły):
-  `python3 scripts/eli.py struktura DU 2024 18 --filtr "Art. 299"` (opcje: `--filtr`, `--poziom N`)
+  `python3 scripts/eli.py struktura DU 2024 18 --filtr "Art. 299"` (opcje: `--filtr`, `--poziom N`);
+  indeks górny API zapisuje jako „Art. 7_1.” — obok stoi gotowa fraza `(--fragment "art. 7(1)")`
 - **odniesienia** — powiązania: nowelizacje, podstawa prawna, tekst jednolity, akty wykonawcze:
   `python3 scripts/eli.py odniesienia DU 2024 18`
 - każda komenda przyjmuje `--json` oraz `--strict`; obie flagi działają przed komendą i po niej.
@@ -152,8 +153,10 @@ podstawie: …", a pozycje listy nowelizacji są oznaczone „[UWZGLĘDNIONA w t
 drugi raz) albo „[poza listą „Opracowano na podstawie”…]". W samym tekście: `[ … ]` = brzmienie obecne,
 które zostanie zastąpione; `< … >` = brzmienie PRZYSZŁE; linia `[margines: … wejdzie w życie z dn. …]` podaje
 datę. Przed tekstem narzędzie wypisuje „UWAGA — PRZEPISY, KTÓRE JESZCZE NIE OBOWIĄZUJĄ" z datami (także dla
-przypisów t.j. „wejdzie w życie z dniem …", np. k.c. art. 860 § 3–4 od 2028-11-01) i ostrzega, gdy fragment
-leży wewnątrz bloku `<DZIAŁ …>`. **Na dziś cytuj brzmienie z `[ … ]` (albo stwierdź brak przepisu, gdy jest
+przypisów t.j. „wejdzie w życie z dniem …", np. k.c. art. 860 § 3–4 od 2028-11-01); notka bez daty („z dniem
+określonym w komunikacie…") ma pozycję „termin wejścia w życie nieznany — określi komunikat" i też znaczy, że
+przepis JESZCZE NIE obowiązuje. Ostrzega też, gdy fragment leży wewnątrz bloku `<DZIAŁ …>` albo w rozdziale/dziale,
+przy którego nagłówku stoi przypis/notka o wejściu w życie (k.wyb. „Rozdział 11b” → art. 103d–103e od 2027-02-18). **Na dziś cytuj brzmienie z `[ … ]` (albo stwierdź brak przepisu, gdy jest
 tylko `< … >`); brzmienie z `< … >` cytuj wyłącznie jako przyszłe, z datą.** `--strict` tego nie blokuje
 (tekst jest oznaczony i sprawdzalny) — decyzja należy do Ciebie. Gdy część stron PDF nie ma warstwy
 tekstowej (skan), narzędzie pisze „N z M stron … nie ma warstwy tekstowej" — tej treści w wyniku nie ma.

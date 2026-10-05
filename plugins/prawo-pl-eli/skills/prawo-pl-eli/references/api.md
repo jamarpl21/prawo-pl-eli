@@ -65,9 +65,11 @@ nagłówki „Dziennik Ustaw Nr N — S — Poz. X"/„Monitor Polski Nr N — S
 strony zeszytu („TREŚĆ: Poz.: …") oraz znak wodny www.rcl.gov.pl (2010–2011), a w 2000–2009 poprawia
 polskie litery (fonty „…PL" w kodach Mac CE opisanych jako Mac Roman: „Za∏àcznik" → „Załącznik" — rozpoznawane po
 treści strony, nie po roku: DU 2010 poz. 1 też je ma); tabele zostają w całości, stopka wydawnicza zeszytu
-(„Egzemplarze bieżące…", „Wydawca:", ISSN, cena) nie trafia do ostatniego aktu. Ograniczenia: przypisy z dołu
-lewego łamu wychodzą między łamami; krótki wiersz wyśrodkowany w lewym łamie (np. podpis) może przestawić
-kolejność łamów na tej stronie. Strony bez warstwy tekstowej (skany) są zgłaszane („N z M stron…").
+(„Egzemplarze bieżące…", „Wydawca:", ISSN, cena) nie trafia do ostatniego aktu. Przypisy pod kreską z dołu
+łamu („———————" + „1) Minister Kultury kieruje…") wychodzą jako `[przypis 1)] …` pod akapitem z odsyłaczem, a nie
+między łamami; podpis dosunięty do prawej krawędzi lewego łamu nie przestawia kolejności łamów (blok zamyka tylko
+wiersz wyśrodkowany na stronie: numer pozycji, tytuł). Strony bez warstwy tekstowej (skany) są zgłaszane
+(„N z M stron…").
 
 **Lata 1990–1999.** PDF zeszytu to skan z warstwą tekstową z OCR (`tekst` dopisuje to do nagłówka wyniku).
 Helper rozpoznaje nagłówki stron zniekształcone przez OCR, z myślnikami ASCII albo bez nich („Dziennik Ustaw Nr 55
@@ -87,11 +89,22 @@ aktami), jak przed zmianą. PDF-y typu U i T (wybierane przed O) nie przechodzą
 PDF typu U (tekst ujednolicony Kancelarii Sejmu, nieurzędowy) to t.j. z WPISANYMI późniejszymi zmianami: notka
 „Opracowano na podstawie: t.j. Dz. U. z 2026 r. poz. 468, 473, 830, 1003, 1046." na 1. stronie, brzmienie
 zastępowane w `[ … ]`, brzmienie przyszłe w `< … >` i notka na prawym marginesie „Nowe brzmienie … wejdzie
-w życie z dn. 5.11.2026 r. (Dz. U. … poz. …)". Helper czyta współrzędne słów (`pdftotext -bbox`), przycina
-strony z notkami do szerokości treści (notka nie wpada w przepis), wypisuje notkę jako `[margines: …]` pod
-akapitem, podaje „Opracowano na podstawie" i datę wydruku w nagłówku, oznacza pozycje listy nowelizacji jako
-uwzględnione / spoza listy i ostrzega o brzmieniu, które wejdzie w życie po dniu dzisiejszym. Bez `pdftotext` helper sięga po najnowszy STARSZY t.j. z HTML — z nagłówkiem
+w życie z dn. 5.11.2026 r. (Dz. U. … poz. …)". Helper czyta współrzędne słów (`pdftotext -bbox`): margines to
+słowa za prawą krawędzią justowanego tekstu (wyznaczoną z wierszy prozy, więc tabela jej nie przesuwa), notka to
+„pudełko" wierszy o wspólnym lewym brzegu (dwie nachodzące na siebie notki mają różne brzegi), także w liczbie
+mnogiej („wejdą w życie", „utracą moc"), z ogonem bez frazy („(ust. 1 … wszedł w życie)") i do samego dołu strony
+(data wydruku obok nie wchodzi do notki). Strona jest przycinana tuż przed kolumną notek (notka nie wpada
+w przepis), notka wychodzi jako `[margines: …]` pod akapitem, przy którym stoi — a gdy wymienia artykuł („Dodany
+art. 100a", „§ 2 w art. 125 1") albo rozdział/dział, którego akapit jest na tej samej stronie gdzie indziej, pod
+tym artykułem/nagłówkiem. Indeks górny, który `-layout` skleja z liczbą („Art. 131." = art. 13¹), jest
+rozpoznawany po współrzędnych (mniejszy, podniesiony) i wychodzi jak w HTML: „Art. 13 1.". Helper podaje
+„Opracowano na podstawie" (także z kropką zamiast przecinka w liście: „poz. 13, 426. 737, 912.") i datę wydruku
+w nagłówku, oznacza pozycje listy nowelizacji jako uwzględnione / spoza listy i ostrzega o brzmieniu, które
+wejdzie w życie po dniu dzisiejszym — także bez „dn." („z 1.01.2027 r.") i bez daty („z dniem określonym
+w komunikacie…" → „termin wejścia w życie nieznany — określi komunikat", traktowane jak przyszłe). Bez `pdftotext` helper sięga po najnowszy STARSZY t.j. z HTML — z nagłówkiem
 „NIEAKTUALNE BRZMIENIE MOŻLIWE" i listą zmian aktu bazowego po jego `legalStatusDate`; `--strict` to blokuje.
+Rozstrzelony tytuł („M IN I S TR A F IN AN SÓ W…", MP 2025 726) jest sklejany wg współrzędnych z zachowaniem
+granic wyrazów („MINISTRA FINANSÓW I GOSPODARKI").
 
 ### Kody `type` w `texts[]`
 - `H` — HTML (`text.html`)
