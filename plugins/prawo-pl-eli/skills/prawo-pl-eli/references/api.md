@@ -59,14 +59,30 @@ t.j. DU/2026/468, świeże pozycje (DU/2026/694). Helper `tekst` czyta wtedy WŁ
 typ U > T > O) przez `pdftotext -layout` i czyści go (nagłówki „Dziennik Ustaw – N – Poz. X"/„©Kancelaria
 Sejmu", stopki z datą, sklejanie zawiniętych wierszy i dzielonych wyrazów, indeks górny `68[1]` → „68 1" jak
 w HTML, odsyłacze do przypisów „§ 1.3)" → „§ 1." + linia `[przypis 3)] …` z dołu strony, obwieszczenie sprzed
-załącznika oznaczone „» "). Ogłoszony PDF (typ O) aktu Dz.U. i M.P. 2000–2011 to strony całego zeszytu w dwóch
+załącznika oznaczone „» "). Ogłoszony PDF (typ O) aktu Dz.U. i M.P. 1990–2011 to strony całego zeszytu w dwóch
 łamach: helper czyta łamy po kolei, wycina akt od wiersza z numerem jego pozycji do numeru następnej, usuwa
-nagłówki „Dziennik Ustaw Nr N — S — Poz. X"/„Monitor Polski Nr N — S — Poz. X" i znak wodny www.rcl.gov.pl (2010–2011), a w 2000–2009 poprawia
+nagłówki „Dziennik Ustaw Nr N — S — Poz. X"/„Monitor Polski Nr N — S — Poz. X", winietę i spis treści pierwszej
+strony zeszytu („TREŚĆ: Poz.: …") oraz znak wodny www.rcl.gov.pl (2010–2011), a w 2000–2009 poprawia
 polskie litery (fonty „…PL" w kodach Mac CE opisanych jako Mac Roman: „Za∏àcznik" → „Załącznik" — rozpoznawane po
 treści strony, nie po roku: DU 2010 poz. 1 też je ma); tabele zostają w całości, stopka wydawnicza zeszytu
 („Egzemplarze bieżące…", „Wydawca:", ISSN, cena) nie trafia do ostatniego aktu. Ograniczenia: przypisy z dołu
 lewego łamu wychodzą między łamami; krótki wiersz wyśrodkowany w lewym łamie (np. podpis) może przestawić
 kolejność łamów na tej stronie. Strony bez warstwy tekstowej (skany) są zgłaszane („N z M stron…").
+
+**Lata 1990–1999.** PDF zeszytu to skan z warstwą tekstową z OCR (`tekst` dopisuje to do nagłówka wyniku).
+Helper rozpoznaje nagłówki stron zniekształcone przez OCR, z myślnikami ASCII albo bez nich („Dziennik Ustaw Nr 55
+-   2134 -   Poz. 351 i 352", „Dzienn ik Ustaw Nr 98 ~ 3089 ~ Poz. 602", nagłówek rozbity na dwa wiersze),
+łamy jednego aktu przesunięte o kilka znaków względem rynny strony, numer pozycji z okruchami OCR („463 .") lub
+z jedną błędnie odczytaną cyfrą w numerze NASTĘPNEJ pozycji („600" zamiast „500"), sygnaturę pod numerem
+(„Sygn. akt", „Rej . 184/94") i ogłoszenia wydawcy przed stopką („Pojedyncze egzemplarze… można nabywać",
+„Uprzejmie informujemy…"). Pomiar na próbie 80 aktów z 1990–1999 (34 z HTML w API): w 24 aktach z HTML, które
+nie są w całości skanem, odsetek słów HTML we właściwej kolejności 0,58 → 0,90, precyzja 0,34 → 0,88; w próbie
+25 aktów z 2000–2011 żaden nie wypadł gorzej. NIE naprawia: przekłamań OCR
+w literach i cyfrach („TRYBUNAtU", „1O") ani wyrazów rozbitych spacją („sk ładu", „zm ieniaj ące") — liczby,
+daty i kwoty sprawdzaj w PDF; ok. 7% stron to skany bez warstwy tekstowej (5% aktów w całości — wtedy `tekst`
+nie ma czego wypisać, zostaje `--pdf`); część PDF-ów obejmuje tylko pierwsze strony zeszytu z aktem, więc koniec
+aktu bywa poza plikiem; gdy numer pozycji SAMEGO aktu jest źle odczytany, wynik obejmuje cały PDF (z sąsiednimi
+aktami), jak przed zmianą. PDF-y typu U i T (wybierane przed O) nie przechodzą przez tę ścieżkę.
 
 PDF typu U (tekst ujednolicony Kancelarii Sejmu, nieurzędowy) to t.j. z WPISANYMI późniejszymi zmianami: notka
 „Opracowano na podstawie: t.j. Dz. U. z 2026 r. poz. 468, 473, 830, 1003, 1046." na 1. stronie, brzmienie

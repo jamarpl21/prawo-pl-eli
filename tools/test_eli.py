@@ -1272,7 +1272,7 @@ class TestPdfZeszytDzU2000_2011(unittest.TestCase):
         for strona in PDF_LAYOUT.split("\f"):
             self.assertEqual(eli._pdf_lamy(strona), strona)
 
-    def test_tekst_z_pdf_tylko_dla_ogloszonego_aktu_2000_2011(self):
+    def test_tekst_z_pdf_tylko_dla_ogloszonego_aktu_1990_2011(self):
         def tekst(meta):
             with mock.patch.object(eli, "_get_bytes", return_value=b"%PDF"), \
                     mock.patch.object(eli, "pdftotext_dostepny", return_value=True), \
@@ -1283,7 +1283,7 @@ class TestPdfZeszytDzU2000_2011(unittest.TestCase):
             with self.subTest(meta=ten):
                 self.assertIn("ROZPORZĄDZENIE MINISTRA KULTURY", tekst(ten))
                 self.assertNotIn("MINISTRA ZDROWIA", tekst(ten))
-        for inny in (dict(o, year=2012), dict(o, year=1999),
+        for inny in (dict(o, year=2012), dict(o, year=1989),
                      dict(o, texts=[{"fileName": "D20030991Lj.pdf", "type": "U"}])):
             with self.subTest(meta=inny):
                 self.assertIn("MINISTRA ZDROWIA", tekst(inny))   # bez zmian: cały tekst jak dotąd
@@ -1549,6 +1549,221 @@ class TestZeszytStopkaIZnakWodny(unittest.TestCase):
             l for l, _ in wiersze) * 5)
         t = eli.pdf_layout_do_tekstu(eli.pdf_zeszyt_do_aktu(strona, 2003, None))
         self.assertIn("4 Radio z magnetofonem i odtwarzaczem płyt CD 1,5", t)
+
+
+# Zeszyt Dz.U. 1998 Nr 55 (prawdziwy wynik `pdftotext -layout`, skrócony spis treści): winieta i spis treści,
+# poz. 351 w dwóch łamach, nagłówek strony z myślnikami ASCII („-   2134 -"), początek poz. 352.
+PDF_ZESZYT_1998 = "\n".join((
+    '                         DZIENNIK USTAW',
+    '                         RZECZYPOSPOLITEJ POLSKIEJ',
+    '                                      Warszawa, dnia 6 maja 1998 r.                                            Nr 55',
+    'TREŚĆ:',
+    'Poz.:',
+    '                                                USTAWA',
+    '351 -    z dnia 20 marca 1998 r. o zmianie ustawy o rewaloryzacji emerytur i rent, o zasadach usta -',
+    '         lania emerytur i rent oraz o zmianie niektórych ustaw                                       2133',
+    '',
+    '                           WYROK TRYBUNAŁU KONSTYTUCYJNEGO',
+    '363 -    z dnia 8 kwietnia 1998 r. sygn . akt K. 10/97                                              . 2156',
+    '',
+    '',
+    '',
+    '                                                             351',
+    '                                                          USTAWA',
+    '',
+    '                                                   z dnia 20 marca 1998 r.',
+    '',
+    '              o zmianie ustawy o rewaloryzacji emerytur i rent, o zasadach ustalania emerytur i rent',
+    '                                       oraz o zmianie niektórych ustaw.',
+    '',
+    '    Art. 1. W ustawie z dnia 17 października 1991 r. o re -       poz. 636 i Nr 147, poz. 687 oraz z 1997 r. Nr 30, poz. 164,',
+    'waloryzacji emerytur i rent, o zasadach ustalania eme-            Nr 106, poz. 676, Nr 111 , poz. 725 i Nr 141, poz. 943)',
+    'rytur i rent oraz o zmian ie niektórych ustaw (Dz. U.             wprowadza się następuj ące zmian y :',
+    'Nr 104, poz. 450, z 1992 r. Nr 21, poz. 84, z 1993 r. Nr 127,',
+    '                                                                   1) wart. 2 w ust. 1 pkt 3a otrzymuje brzmienie:',
+    'poz. 583 i Nr 129, poz. 602, z 1994 r. Nr 84, poz. 385,',
+    'z 1995 r. Nr 4, poz. 17, Nr 95, poz. 473 i Nr 138, poz. 681,          ,,3a) okresy   działalności      kombatanckiej,   działal\xad',
+    'Z 1996 r. Nr 87, poz. 395, Nr 100, poz. 461 , Nr 136,                       ności równorzędnej z tą działalnośc ią, a także',
+    '\x0cDziennik Ustaw Nr 55                               -   2134 -                                         Poz. 351 i 352',
+    '',
+    '           okresy zaliczane do okresów tej działalności        Art. 2. 1. Ponowne ustalenie wysokości świadcze\xad',
+    '           oraz okresy podlegania represjom wojennym       nia, przy uwzględnieniu nowych okresów składko\xad',
+    '           i okresu powojennego, określone w przepi-       wych, następuje na wniosek uprawnionego.',
+    '           sach o kombatantach oraz niektórych oso-            2. Podwyższone świadczenia wraz z należnymi od-',
+    '           bach będących ofiarami represji wojennych       setkami wypłaca się za okres od dnia 11 września',
+    '           i okresu powojennego,";                         1997 r., jeżeli wniosek w tej sprawie został zgłoszony',
+    ' 2) wart. 4 w ust. 1 skreśla się pkt 1;                    w ciągu 2 lat od dnia wejścia w życie ustawy.',
+    '                                                                Art. 3. Ustawa wchodzi w życie z dniem ogłoszenia.',
+    ' 3) wart. 6 w ust. 4 skreśla się wyrazy "z zastrzeżeniem',
+    '    art. 4 ust. 2".                                          Prezydent Rzeczypospolitej Polskiej: A. Kwaśniewski',
+    '',
+    '',
+    '                                                       352',
+    '                                 ROZPORZĄDZENIE PREZESA RADY MINISTRÓW',
+    '',
+    '                                            z dnia 30 kwietnia 1998 r.',
+    '',
+    'w sprawie organizacji pracy, składu oraz zasad wynagradzania członków komisji rozpatrującej wnioski o wy-',
+    '                       rażenie zgody na zatrudnienie osób, które pełniły funkcje publiczne.',
+    '',
+    '',
+    '    Na podstawie art. 7 ust. 6 ustawy z dnia 21 sierp-         § 6. 1. Przewodniczący komisji zapewnia sprawne',
+    'nia 1997 r. o ograniczeniu prowadzenia działalności go-    i zgodne z prawem funkcjonowanie komisji, w szcze-',
+    'spodarczej przez osoby pełniące funkcje publiczne          gólności:',
+    '(Dz. U. Nr 106, poz. 679) zarządza się, co następuje:',
+    '                                                             1) wyznacza skład do rozpatrzenia danej sprawy,',
+    '   §   1. Rozporządzenie określa organizację pracy              w tym przewodniczącego składu,',
+    'i skład komisji rozpatrującej wnioski o wyrażenie zgo-',
+    'dy na zatrudnienie u przedsiębiorcy osób, przed upły\xad        2) informuje Prezesa Rady Ministrów o okolicznoś\xad',
+    'wem roku od zaprzestania zajmowania przez nie stano-            ciach uzasadniających odwołanie członka komisji,',
+    'wiska lub pełnienia funkcji publicznej, oraz wnioski        3) składa Prezesowi Rady Ministrów coroczne spra -',
+    'o wydanie opinii, czy działalność gospodarcza małżon\xad          wozdanie z prac komisji,',
+)) + "\n"
+
+# Zeszyt Dz.U. 1992 Nr 60, strona 1 (prawdziwy wynik `pdftotext -layout`, skrócony spis treści): spis treści
+# na całą szerokość nad łamami, lewy łam poz. 302 wchodzi w rynnę („Europejs-       1991 r."), poz. 303 obok.
+PDF_ZESZYT_1992 = "\n".join((
+    '                          DZIENNIK USTAW',
+    '                         RZECZYPOSPOLITEJ POLSKIEJ',
+    '                                     Warszawa, dnia 13 sierpnia 1992 r.                                           Nr 60',
+    'TRE$Ć:',
+    'Poz.:',
+    '                                             USTAWY:',
+    '302 -   z dnia 4 lipca 1992 r. o ratyfikacji Układu Europejskiego ustanawiającego stowarzyszenie między',
+    '        Rzecząpospolitą Polską a Wspólnotami Europejskimi i ich Państwami Członkowskimi, sporządzone-',
+    '        go w Brukseli dnia 16 grudnia 1991 r. .                                                         1101',
+    '303 -   z dnia 30 lipca 1992 r. o ustanowieniu $więta Wojska Polskiego .                                   1101',
+    '',
+    '',
+    '',
+    '',
+    '                                                               302',
+    '                                                           USTAWA',
+    '',
+    '                                                      z dnia 4 lipca 1992 r',
+    '',
+    'o ratyfikacji Układu Europejskiego ustanawiającego stowarzyszenie między Rzecząpospolitą Polską a Wspól-',
+    ' notami Europejskimi i ich Państwami Członkowskimi, sporządzonego w Brukseli dnia 16 grudnia 1991 r.',
+    '',
+    '     Art. 1. Wyraża się zgodę na dokonanie przez Prezy-            Członkowskimi, sporządzonego w Brukseli dnia 16 grudnia',
+    'denta Rzeczypospolitej Polskiej ratyfikacji Układu Europejs-       1991 r.',
+    'kiego ustanawiającego stowarzyszenie między Rzecząpos\xad',
+    'politą Polską a Wspólnotami Europejskimi i ich Państwami                Art. 2. Ustawa wchodzi w życie z dniem ogłoszenia.',
+    '',
+    '                                                                                 Prezydent Rzeczypospolitej Polskiej: L. Wałęsa',
+    '',
+    '',
+    '',
+    '                                                               303',
+    '                                                           USTAWA',
+    '',
+    '                                                     z dnia 30 lipca 1992 r.',
+    '',
+    '                                       o ustanowieniu $więta Wojska Polskiego.',
+    '',
+    '    Art. 1. Dzień 15 sierpnia ustanawia się Świętem Wojs-              3. Sposób obchodzenia w Siłach Zbrojnych Święta',
+    'ka Polskiego.                                                      Wojska Polskiego oraz innych świąt wojskowych określa',
+    '                                                                   Minister Obrony Narodowej, a w jednostkach wojskowych',
+    '    Art. 2. 1. W rodzajach Sił Zbrojnych, wojsk i służb,           podporządkowanych Ministrowi Spraw Wewnętrznych',
+    'w jednostkach wojskowych i ich związkaćh organizacyjnych           - Minister Obrony Narodowej w porozumieniu z Ministrem',
+    'mogą być obchodzone również inne święta wojskowe,                  Spraw Wewnętrznych.',
+    'ustanowione dla nich przez Ministra Obrony Narodowej,',
+    'a w stosunku do jednostek wojskowych podporządkowa\xad                    Art. 3. Traci moc dekret z dnia 7 października 1950 r.',
+    'nych Ministrowi Spraw Wewnętrznych - przez Ministra                o ustanowieniu dnia 12 października Dniem Wojska Pol-',
+    'Spraw Wewnętrznych.                                                skiego (Dz. U. Nr 45, poz. 411).',
+    '    2. Obchody Święta Wojska Polskiego i innych świąt                   Art. 4. Ustawa wchodzi w życie z dniem ogłoszenia.',
+    'wojskowych organizuje się w formie uroczystej, ustalonej',
+    'w ceremoniale wojskowym.                                                         Prezydent Rzeczypospolitej Polskiej: L. Wałęsa',
+)) + "\n"
+
+
+class TestPdfZeszytLata90(unittest.TestCase):
+    """Zeszyty Dz.U./M.P. 1990–1999: skan z warstwą tekstową z OCR — nagłówki z myślnikami ASCII albo zniekształcone,
+    spis treści na pierwszej stronie, łamy przesunięte względem rynny, okruchy OCR przy numerze pozycji."""
+
+    def test_akt_z_zeszytu_1998_bez_naglowka_ascii_i_sasiada(self):
+        t = eli.pdf_layout_do_tekstu(eli.pdf_zeszyt_do_aktu(PDF_ZESZYT_1998, 1998, 351))
+        self.assertTrue(t.startswith("351\n"), t[:40])
+        for obce in ("Dziennik Ustaw", "2134", "TREŚĆ", "352", "ROZPORZĄDZENIE PREZESA", "Na podstawie art. 7"):
+            self.assertNotIn(obce, t, obce)
+        # nagłówek strony nie wpada w środek akapitu, który przechodzi na następną stronę
+        self.assertIn("działalnośc ią, a także okresy zaliczane do okresów tej działalności", t)
+        poz = [t.index(f) for f in ("Art. 1. W ustawie", "2) wart. 4", "3) wart. 6", "Art. 2. 1. Ponowne",
+                                     "2. Podwyższone", "Art. 3. Ustawa wchodzi", "A. Kwaśniewski")]
+        self.assertEqual(poz, sorted(poz))
+
+    def test_sasiedni_akt_z_tego_samego_zeszytu(self):
+        t = eli.pdf_layout_do_tekstu(eli.pdf_zeszyt_do_aktu(PDF_ZESZYT_1998, 1998, 352))
+        self.assertTrue(t.startswith("352\n"), t[:40])
+        self.assertNotIn("Kwaśniewski", t)
+        self.assertLess(t.index("§ 1. Rozporządzenie określa"), t.index("§ 6. 1. Przewodniczący"))
+
+    def test_spis_tresci_nie_zaslania_rynny_a_lam_przesuniety_przez_ocr(self):
+        t = eli.pdf_layout_do_tekstu(eli.pdf_zeszyt_do_aktu(PDF_ZESZYT_1992, 1992, 302))
+        self.assertIn("Art. 1. Wyraża się zgodę na dokonanie przez Prezydenta Rzeczypospolitej Polskiej ratyfikacji "
+                      "Układu Europejskiego ustanawiającego stowarzyszenie między Rzecząpospolitą Polską a Wspólnotami "
+                      "Europejskimi i ich Państwami Członkowskimi, sporządzonego w Brukseli dnia 16 grudnia 1991 r.", t)
+        for obce in ("TRE$Ć", "303", "Święta Wojska", "1101"):
+            self.assertNotIn(obce, t, obce)
+        # luz rynny tylko dla lat 90. — dla 2000–2011 łamy dzielone jak dotąd
+        self.assertEqual(eli._pdf_lamy(PDF_ZESZYT_2003.split("\f")[0], luz=0),
+                         eli._pdf_lamy(PDF_ZESZYT_2003.split("\f")[0]))
+
+    def test_naglowki_stron_znieksztalcone_przez_ocr(self):
+        for naglowek in ("Dziennik Ustaw Nr 24                  319                  Poz. 141 i 142",
+                         "Dzienr.!k Ustaw Nr 119              -    1655 -           Poz. 517",
+                         "Dzienn ik Ustaw Nr 98 ~ 3089 ~ Poz. 602",
+                         "Monitor Polski Nr 65 .. 834 Poz. 578, 579 i 580",
+                         "Dziennik Ustaw Nr 119 - 1619 ' Paz, 513, 514 i 515",
+                         "  •\n\nDziennik Ustaw Nr 7                 -     80          Poz. 25 i 26",
+                         "\f                     -    2186    -                     Poz. 428 i 429\nDziennik Ustaw Nr 85"):
+            with self.subTest(naglowek=naglowek):
+                strona = naglowek + "\n\n   § 1. Treść przepisu (Monitor Polski Nr 41, poz. 264).\n"
+                self.assertEqual(eli._pdf_bez_naglowkow_stron(strona).strip("\f\n "),
+                                 "§ 1. Treść przepisu (Monitor Polski Nr 41, poz. 264).")
+        # wiersz treści na górze strony zostaje, także cytat „Dziennik Ustaw Nr …" bez „Poz."
+        for tresc in ("Dziennik Ustaw Nr 5 ogłasza się w terminie", "   § 2. Dalsza treść.", "1"):
+            self.assertEqual(eli._pdf_bez_naglowkow_stron(tresc + "\n"), tresc + "\n")
+
+    def test_numer_pozycji_z_okruchami_ocr_i_sygnatura(self):
+        raw = ("                    463 .\n            USTAWA\n   Art. 1. Treść.\n"
+               "                    464\n            Rej . 184/94\n   Inny akt.\n")
+        self.assertEqual(eli._pdf_wytnij_akt(raw, 463).split("\n")[-1], "   Art. 1. Treść.")
+        raw = "                    346\nSygn. akt W. 7/96\n   UCHWAŁA\n   Treść.\n   347\n   OBWIESZCZENIE\n"
+        self.assertNotIn("OBWIESZCZENIE", eli._pdf_wytnij_akt(raw, 346))
+
+    def test_zle_odczytana_cyfra_numeru_nastepnej_pozycji(self):
+        raw = ("     499\n   USTAWA\n   Art. 1. Treść.\n"
+               "     600\n   ROZPORZĄDZENIE RADY MINISTRÓW\n   § 1. Cudzy akt.\n")
+        self.assertNotIn("Cudzy akt", eli._pdf_wytnij_akt(raw, 499, ocr=True))
+        self.assertIn("Cudzy akt", eli._pdf_wytnij_akt(raw, 499))     # 2000–2011: numer musi się zgadzać
+
+    def test_ogloszenia_wydawcy_przed_stopka_lat_90(self):
+        raw = (_dwa_lamy([("§ 1. Ustala się stawki.", "§ 2. Wchodzi w życie z dniem ogłoszenia."),
+                          ("", "Minister Finansów: G. Kołodko")] + [("", "")] * 6)
+               + "Pojedyncze' egzemplarze Dziennika Ustaw i Monitora Polskiego można nabywać za gotówkę:\n"
+               "w Warszawie: - w punkcie sprzedaży Urzędu Rady Ministrów, al. I Armii Wojska Polskiego 2/4\n"
+               "Egzemplarze b i eżące o raz z lat u b ieg łych m ożna nabyw ać na podstawie zamówienia\n"
+               "                       Wydawca: Urząd Rady Ministrów\n"
+               "Zam. 1423                    ISSN 0867-3411                     Cena 4000 zł\n")
+        t = eli.pdf_layout_do_tekstu(eli.pdf_zeszyt_do_aktu(raw, 1993, None))
+        self.assertIn("Minister Finansów: G. Kołodko", t)
+        for smiec in ("Pojedyncze", "Egzemplarze", "Wydawca", "ISSN"):
+            self.assertNotIn(smiec, t)
+        # 2000–2011: tylko dotychczasowe frazy stopki
+        self.assertIn("Pojedyncze", eli.pdf_layout_do_tekstu(eli.pdf_zeszyt_do_aktu(raw, 2003, None)))
+
+    def test_tekst_z_pdf_lat_90_oznacza_ocr(self):
+        meta = {"publisher": "DU", "year": 1998, "pos": 351, "texts": [{"fileName": "D19980351.pdf", "type": "O"}]}
+        info = {}
+        with mock.patch.object(eli, "_get_bytes", return_value=b"%PDF"), \
+                mock.patch.object(eli, "pdftotext_dostepny", return_value=True), \
+                mock.patch.object(eli, "pdf_do_tekstu_layout", return_value=PDF_ZESZYT_1998):
+            t = eli._tekst_z_pdf("/acts/DU/1998/351", "", meta, info)[0]
+        self.assertTrue(t.startswith("351\n"), t[:40])
+        self.assertNotIn("ROZPORZĄDZENIE PREZESA", t)
+        self.assertTrue(info.get("ocr"))
+        self.assertNotIn("puste_strony", info)
 
 
 class TestAudyt2026Cache(unittest.TestCase):

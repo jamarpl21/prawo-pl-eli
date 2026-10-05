@@ -157,6 +157,8 @@ leży wewnątrz bloku `<DZIAŁ …>`. **Na dziś cytuj brzmienie z `[ … ]` (al
 tylko `< … >`); brzmienie z `< … >` cytuj wyłącznie jako przyszłe, z datą.** `--strict` tego nie blokuje
 (tekst jest oznaczony i sprawdzalny) — decyzja należy do Ciebie. Gdy część stron PDF nie ma warstwy
 tekstowej (skan), narzędzie pisze „N z M stron … nie ma warstwy tekstowej" — tej treści w wyniku nie ma.
+Ogłoszony PDF Dz.U./M.P. z lat 1990–1999 ma warstwę tekstową z OCR skanu (nagłówek wyniku to mówi): litery
+i cyfry bywają przekłamane, a wyrazy rozbite spacją — **liczby, daty, kwoty i dosłowny cytat sprawdź w `--pdf`**.
 
 ### Akty bazowe głównych kodeksów (pomiń `szukaj`)
 

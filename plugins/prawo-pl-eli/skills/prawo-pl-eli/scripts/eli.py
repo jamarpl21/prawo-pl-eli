@@ -635,8 +635,8 @@ def pdf_layout_do_tekstu(raw, info=None, notki=None):
     return t.strip()
 
 
-# Dz.U. i M.P. 2000–2011: PDF ogłoszonego aktu (typ O) to strony całego zeszytu, złożone w dwóch łamach, więc
-# zawiera też akty wydrukowane na tych samych stronach. W latach 2000–2009 polskie litery są w fontach
+# Dz.U. i M.P. 1990–2011: PDF ogłoszonego aktu (typ O) to strony całego zeszytu, złożone w dwóch łamach, więc
+# zawiera też akty wydrukowane na tych samych stronach (w latach 90. — skan z warstwą tekstową z OCR). W latach 2000–2009 polskie litery są w fontach
 # QuarkXPress „…PL" z kodami Mac Central European, które PDF opisuje jako Mac Roman: pdftotext daje
 # „Za∏àcznik", „rozporzàdzenia", „wyp∏at´". Tabela zmienia też prawdziwe „à", „ç", „è" (np. francuskie
 # teksty umów), dlatego tylko dla tych lat.
@@ -649,6 +649,7 @@ _PDF_MIN_LAM = 0.35   # wiersz tylko na lewo od rynny, a zaczyna się dalej niż
 _PDF_RYNNA_WOLNE = 0.5   # rynna: tyle niepustych wierszy strony ma w niej spację…
 _PDF_RYNNA_OBA = 0.15    # …a tyle ma tekst po obu jej stronach
 _PDF_TABELA = 0.3   # tyle wierszy bloku z ≥2 przerwami ≥3 spacji = wiersze tabeli, nie dwa łamy
+_PDF_LUZ_OCR = 8     # lata 90. (OCR): o tyle znaków łam jednego aktu może odbiegać od rynny strony
 _MOJIBAKE = "∏Ê˝ƒÑ¸Â˚¡"   # bez „à"/„´": te bywają prawdziwe (francuski tekst umowy)
 
 
@@ -667,7 +668,7 @@ def _pdf_bez_znaku_wodnego(raw):
     return "\n".join(out)
 
 
-def _pdf_lamy(strona):
+def _pdf_lamy(strona, luz=0):
     """Strona z `pdftotext -layout` złożona w dwóch łamach → najpierw lewy łam, potem prawy.
 
     -layout stawia łamy obok siebie, więc sklejanie wierszy mieszałoby je („ustawy z dnia § 4. 1. Minimalna
@@ -675,6 +676,10 @@ def _pdf_lamy(strona):
     przechodzące (tytuł aktu, tabela na całą szerokość), nagłówek strony i wiersze wyśrodkowane (numer pozycji aktu)
     zostają na swoim miejscu i dzielą stronę na bloki; każdy blok to lewy łam, potem prawy, oba bez wcięcia
     strony. Strona bez takiej rynny wraca bez zmian.
+
+    `luz` (OCR skanów z lat 90.): łamy jednego aktu bywają przesunięte o kilka znaków względem rynny strony
+    („…Układu Europejs-       1991 r." wchodzi lewym łamem w rynnę). Wiersz przecinający rynnę, który ma przerwę
+    ≥3 spacji najwyżej `luz` znaków od niej, dzieli się w tej przerwie zamiast zamykać blok.
     """
     lines = strona.split("\n")
     niepuste = [l for l in lines if l.strip()]
@@ -693,30 +698,42 @@ def _pdf_lamy(strona):
     if rynna is None or najl < _PDF_RYNNA_WOLNE * len(niepuste):
         return strona
 
-    def w_lamie(l):
-        if not wolne(l, rynna) or _PDF_NAGLOWEK.match(l):
-            return False
-        return bool(l[rynna:].strip()) or len(l) - len(l.lstrip(" ")) < _PDF_MIN_LAM * szer
+    def podzial(k):
+        """Kolumna, w której wiersz `k` dzieli się na łamy, albo None (wiersz zostaje na swoim miejscu)."""
+        l = lines[k]
+        if _PDF_NAGLOWEK.match(l) or _pdf_numer_pozycji(lines, k):
+            return None
+        if wolne(l, rynna):
+            if l[rynna:].strip() or len(l) - len(l.lstrip(" ")) < _PDF_MIN_LAM * szer:
+                return rynna
+            return None
+        przerwy = [m for m in re.finditer(r" {3,}", l) if m.start() - luz <= rynna <= m.end() + luz
+                   and l[:m.start()].strip() and l[m.end():].strip()] if luz else []
+        if not przerwy:
+            return None
+        m = min(przerwy, key=lambda m: abs((m.start() + m.end()) // 2 - rynna))
+        return (m.start() + m.end()) // 2
 
     def bez_wciecia(ws):
         wc = min((len(l) - len(l.lstrip(" ")) for l in ws if l.strip()), default=0)
         return [l[wc:].rstrip() for l in ws]
-    out, blok = [], []
+    out, blok = [], []     # blok: [(wiersz, kolumna podziału)]
 
     def zamknij():
-        tresc = [l.strip() for l in blok if l.strip()]
+        tresc = [l.strip() for l, _ in blok if l.strip()]
         # blok z wierszami tabeli (≥2 wewnętrzne przerwy ≥3 spacji: „4   Radio z magnetofonem…   1,5") — nie łamy;
         # zostaje w całości, jak dotąd
         tabela = sum(len(re.findall(r"\S {3,}(?=\S)", l)) >= 2 for l in tresc) >= _PDF_TABELA * len(tresc)
         if not tresc or tabela:
-            out.extend(blok)
+            out.extend(l for l, _ in blok)
         else:
-            out.extend(bez_wciecia([l[:rynna] for l in blok]))
-            out.extend(bez_wciecia([l[rynna:] for l in blok]))
+            out.extend(bez_wciecia([l[:x] for l, x in blok]))
+            out.extend(bez_wciecia([" " * x + l[x:] for l, x in blok]))
         blok.clear()
-    for l in lines:
-        if not l.strip() or w_lamie(l):
-            blok.append(l)
+    for k, l in enumerate(lines):
+        x = podzial(k) if l.strip() else rynna
+        if x is not None:
+            blok.append((l, x))
         else:
             zamknij()
             out.append(l)
@@ -724,24 +741,37 @@ def _pdf_lamy(strona):
     return "\n".join(out)
 
 
-def _pdf_wytnij_akt(raw, poz):
-    """Tekst zeszytu → tylko akt poz. `poz`: od wiersza z samym numerem pozycji (nad tytułem aktu) do
-    wiersza z numerem następnej pozycji albo do końca. Bez znalezionego numeru tekst wraca bez zmian."""
-    lines = raw.split("\n")
+def _pdf_numer_pozycji(lines, i, n=None):
+    """Czy wiersz `i` to sam numer pozycji aktu (`n` albo dowolny) nad tytułem aktu?"""
+    t = lines[i].strip("\f ")
+    # OCR z lat 90. dokleja do numeru okruchy („463 .", „602 '")
+    if not (re.sub(r"[\s.,'`]+$", "", t) == str(n) if n is not None else t.isdigit() and len(t) <= 5):
+        return False
+    # pod numerem pozycji stoi tytuł aktu WIELKIMI LITERAMI („ROZPORZĄDZENIE MINISTRA ZDROWIA1)", „UCHWAŁA Nr 85 RADY MINISTRÓW") albo numer
+    # rejestru postanowienia Prezydenta („Rej. 250/2002") albo sygnatura uchwały TK („Sygn. akt W. 7/96"; OCR: „Rej . 184/94"); komórka tabeli / „Załącznik nr 2" / nagłówek strony — nie
+    dalej = next((l.strip("\f ") for l in lines[i + 1:i + 9]
+                  if l.strip("\f ") and not _PDF_NAGLOWEK.match(l) and not _PDF_STOPKA.match(l)), "")
+    litery = [c for c in dalej if c.isalpha()]
+    return bool(re.match(r"(?:Rej|Sygn)\s?\.", dalej)) or bool(litery) and sum(c.isupper() for c in litery) >= 0.8 * len(litery)
 
-    def numer(i, n):
-        if lines[i].strip("\f ") != str(n):
-            return False
-        # pod numerem pozycji stoi tytuł aktu WIELKIMI LITERAMI („ROZPORZĄDZENIE MINISTRA ZDROWIA1)", „UCHWAŁA Nr 85 RADY MINISTRÓW") albo numer
-        # rejestru postanowienia Prezydenta („Rej. 250/2002"); komórka tabeli / „Załącznik nr 2" / nagłówek strony — nie
-        dalej = next((l.strip("\f ") for l in lines[i + 1:i + 9]
-                      if l.strip("\f ") and not _PDF_NAGLOWEK.match(l) and not _PDF_STOPKA.match(l)), "")
-        litery = [c for c in dalej if c.isalpha()]
-        return dalej.startswith("Rej.") or bool(litery) and sum(c.isupper() for c in litery) >= 0.8 * len(litery)
-    od = next((i for i in range(len(lines)) if numer(i, poz)), None)
+
+def _pdf_wytnij_akt(raw, poz, ocr=False):
+    """Tekst zeszytu → tylko akt poz. `poz`: od wiersza z samym numerem pozycji (nad tytułem aktu) do
+    wiersza z numerem następnej pozycji albo do końca. Bez znalezionego numeru tekst wraca bez zmian.
+    `ocr` (lata 90.): numer następnej pozycji może mieć jedną cyfrę źle odczytaną („600" zamiast „500")."""
+    lines = raw.split("\n")
+    od = next((i for i in range(len(lines)) if _pdf_numer_pozycji(lines, i, poz)), None)
     if od is None:
         return raw
-    do = next((i for i in range(od + 1, len(lines)) if numer(i, poz + 1)), len(lines))
+    nast = str(poz + 1)
+
+    def nastepny(i):
+        if _pdf_numer_pozycji(lines, i, poz + 1):
+            return True
+        t = lines[i].strip("\f ")
+        return ocr and len(t) == len(nast) and t != str(poz) and sum(a != b for a, b in zip(t, nast)) == 1 \
+            and _pdf_numer_pozycji(lines, i)
+    do = next((i for i in range(od + 1, len(lines)) if nastepny(i)), len(lines))
     return "\n".join(lines[od:do])
 
 
@@ -749,18 +779,26 @@ def _pdf_wytnij_akt(raw, poz):
 # do tekstu OSTATNIEGO aktu w zeszycie. Początek stopki rozpoznajemy po stałych frazach z lat 2000–2011.
 _PDF_STOPKA_ZESZYTU = re.compile(r"Egzemplarze bieżące oraz archiwalne|Wydawca: Kancelaria|Szanowni Państwo"
                                  r"|WYDZIAŁ WYDAWNICTW I POLIGRAFII")
+# Lata 90. (OCR, porównanie bez spacji: „Egzemplarze b i eżące"): stopkę poprzedzają ogłoszenia wydawcy — punkty
+# sprzedaży („Pojedyncze egzemplarze Dziennika Ustaw i Monitora Polskiego można nabywać…"), prenumerata,
+# „Uprzejmie informujemy, iż nakładem…" — też nie są treścią aktu
+_PDF_STOPKA_ZESZYTU_OCR = re.compile(r"Egzemp\w{2,5}bieżące|Pojedyncze\W{0,2}egzemplarze|^Wydawca:|SzanowniPaństwo"
+                                     r"|[Uu]przejmieinformuj|Cena(?:rocznej)?prenumeraty|WYDZIAŁWYDAWNICTW")
 
 
-def _pdf_bez_stopki_zeszytu(raw):
+def _pdf_bez_stopki_zeszytu(raw, ocr=False):
     """Usuwa stopkę wydawniczą z ostatniej strony zeszytu (tej z „ISSN …"); bez niej tekst wraca bez zmian.
-    Działa na wyniku `-layout` PRZED rozdzieleniem łamów — stopka jest na całą szerokość strony, pod oboma łamami."""
+    Działa na wyniku `-layout` PRZED rozdzieleniem łamów — stopka jest na całą szerokość strony, pod oboma łamami.
+    `ocr` (lata 90.): początek stopki także po frazach `_PDF_STOPKA_ZESZYTU_OCR`."""
+    def poczatek(l):
+        return _PDF_STOPKA_ZESZYTU.search(l) or ocr and _PDF_STOPKA_ZESZYTU_OCR.search(re.sub(r"\s", "", l))
     strony = raw.split("\f")
     nr = next((i for i in range(len(strony) - 1, -1, -1) if re.search(r"ISSN\s*\d{4}-\d{3}[\dX]", strony[i])), None)
     if nr is None:
         return raw
     for i in range(nr, -1, -1):
         linie = strony[i].split("\n")
-        k = next((j for j, l in enumerate(linie) if _PDF_STOPKA_ZESZYTU.search(l)), None)
+        k = next((j for j, l in enumerate(linie) if poczatek(l)), None)
         if k is not None:
             strony[i] = "\n".join(linie[:k])
             for j in range(i + 1, nr + 1):
@@ -771,20 +809,79 @@ def _pdf_bez_stopki_zeszytu(raw):
     return raw
 
 
+# Lata 1990–1999: warstwa tekstowa zeszytu to OCR skanu, więc nagłówek strony bywa zniekształcony, z myślnikami
+# ASCII albo bez nich („Dziennik Ustaw Nr 24   319   Poz. 141 i 142", „Dzienn ik Ustaw Nr 98 ~ 3089 ~ Poz. 602",
+# „Dzienr.!k Ustaw Nr 119 - 1655 - Poz. 517", „Monitor Polski Nr 65 .. 834 Poz. 578", samo „- 2186 - Poz. 428").
+# Dopasowanie do wiersza BEZ spacji i tylko do pierwszego niepustego wiersza strony.
+_PDF_NAGLOWEK_OCR = re.compile(r"(?:Dz\S{2,8}Ustaw|MonitorPolski)\S{0,2}Nr\S{0,40}?P[oa]z[.,]"
+                               r"|[-—–~.,:']*\d{1,5}[-—–~.,:']*P[oa]z[.,]|[-—–~]+\d{1,5}[-—–~]+$")
+_PDF_NAGLOWEK_RESZTA = re.compile(r"(?:Dz\S{2,8}Ustaw|MonitorPolski)\S{0,2}Nr[\d.,]{1,6}\S{0,2}$")
+# „TREŚĆ:" nad spisem treści na pierwszej stronie zeszytu (OCR: „TRE$Ć:", „TREŚC:", „TREŚĆ,")
+_PDF_TRESC = re.compile(r"^\s*TRE\S{1,3}\s*$")
+
+
+def _pdf_bez_naglowkow_stron(raw):
+    """Usuwa nagłówek strony zeszytu (także zniekształcony przez OCR, patrz `_PDF_NAGLOWEK_OCR`) z początku każdej
+    strony, razem z okruchami nad nim („•", „I") i z drugą połową nagłówka, którą OCR dał w osobnym wierszu
+    („- 2186 - Poz. 428 i 429" + „Dziennik Ustaw Nr 85")."""
+    strony = raw.split("\f")
+    for n, s in enumerate(strony):
+        linie = s.split("\n")
+        smieci, naglowek = [], False
+        for k, l in enumerate(linie):
+            t = re.sub(r"\s", "", l)
+            if not t:
+                continue
+            if _PDF_NAGLOWEK_OCR.match(t) or naglowek and _PDF_NAGLOWEK_RESZTA.match(t):
+                for j in smieci + [k]:
+                    linie[j] = ""
+                smieci, naglowek = [], True
+                continue
+            if len(t) <= 2 and not naglowek:
+                smieci.append(k)
+                continue
+            break
+        strony[n] = "\n".join(linie)
+    return "\f".join(strony)
+
+
+def _pdf_bez_spisu_tresci(raw):
+    """Pierwsza strona zeszytu: winieta („DZIENNIK USTAW … Warszawa, dnia … Nr 55") i spis treści („TREŚĆ: Poz.:
+    351 - z dnia …  2133") aż do numeru pierwszej pozycji wymienionej w spisie. Spis biegnie przez całą szerokość
+    strony, więc zasłaniałby rynnę między łamami aktu pod nim. Bez numeru pozycji na tej stronie — bez zmian."""
+    strony = raw.split("\f")
+    for n, s in enumerate(strony):
+        linie = s.split("\n")
+        niepuste = [k for k, l in enumerate(linie) if l.strip()][:8]
+        t = next((k for k in niepuste if _PDF_TRESC.match(linie[k])), None)
+        if t is None:
+            continue
+        w_spisie = {m.group(1) for l in linie[t + 1:] for m in [re.match(r"\s*(\d{1,5})\s*[-—–~.,]", l)] if m}
+        od = next((k for k in range(t + 1, len(linie)) if linie[k].strip() in w_spisie
+                   and _pdf_numer_pozycji(linie, k)), None)
+        if od is not None:
+            strony[n] = "\n".join(linie[od:])
+    return "\f".join(strony)
+
+
 def pdf_zeszyt_do_aktu(raw, rok, poz):
-    """`pdftotext -layout` PDF-u ogłoszonego aktu Dz.U./M.P. 2000–2011 → tekst tylko tego aktu, łam po łamie,
-    z polskimi literami (2000–2009). Wynik idzie dalej do `pdf_layout_do_tekstu`."""
+    """`pdftotext -layout` PDF-u ogłoszonego aktu Dz.U./M.P. 1990–2011 → tekst tylko tego aktu, łam po łamie,
+    z polskimi literami (2000–2009), bez nagłówków stron, spisu treści i stopki zeszytu. Dla lat 90. (OCR skanu)
+    także nagłówki zniekształcone przez OCR, łamy przesunięte względem rynny strony i ogłoszenia wydawcy przed
+    stopką. Wynik idzie dalej do `pdf_layout_do_tekstu`."""
     if rok >= 2010:
         raw = _pdf_bez_znaku_wodnego(raw)
     # fonty Mac CE poznaje się po treści (DU 2010 poz. 1 ma je mimo roku): strona bez żadnej polskiej litery,
     # za to ze znakami „∏", „Ê", „˝"… — tabela tylko dla takich stron
     raw = "\f".join(s.translate(_MAC_CE) if any(c in s for c in _MOJIBAKE)
                      and not any(c in s for c in "ąęłńśźżĄĘŁŃŚŹŻ") else s for s in raw.split("\f"))
-    raw = _pdf_bez_stopki_zeszytu(raw)
+    raw = _pdf_bez_stopki_zeszytu(raw, ocr=rok < 2000)
+    raw = _pdf_bez_naglowkow_stron(raw)
+    raw = _pdf_bez_spisu_tresci(raw)
     # sam numer strony zeszytu („— 3052 —") na stronie bez nagłówka „Dziennik Ustaw Nr …"
     raw = re.sub(r"(?m)^[ \f]*[—–]\s*\d{1,5}\s*[—–][ ]*$", lambda m: "\f" if "\f" in m.group(0) else "", raw)
-    raw = "\f".join(_pdf_lamy(s) for s in raw.split("\f"))
-    return _pdf_wytnij_akt(raw, poz) if poz else raw
+    raw = "\f".join(_pdf_lamy(s, luz=_PDF_LUZ_OCR if rok < 2000 else 0) for s in raw.split("\f"))
+    return _pdf_wytnij_akt(raw, poz, ocr=rok < 2000) if poz else raw
 
 
 def _wybierz_pdf(meta):
@@ -1490,14 +1587,18 @@ def _tekst_z_pdf(path, label, meta, info=None):
     info["typ"] = pick["type"]
     # strony bez warstwy tekstowej (skany: DU 2010 poz. 1 ma 564 z 566) — ich treści w wyniku nie będzie
     strony = [p for p in raw.split("\f")][:-1] if raw.endswith("\f") else raw.split("\f")
+    # nagłówek strony nie jest treścią — także zniekształcony przez OCR skanu z lat 90. („Dzienn ik Ustaw Nr 98 ~ 3089 ~ Poz. 602")
     puste = sum(1 for p in strony if len(re.sub(r"[\W\d_]", "", "\n".join(
-        l for l in p.split("\n") if not _PDF_NAGLOWEK.match(l)))) < 20)
+        l for l in p.split("\n") if not _PDF_NAGLOWEK.match(l)
+        and not _PDF_NAGLOWEK_OCR.match(re.sub(r"\s", "", l))))) < 20)
     if raw and puste:
         info["puste_strony"] = (puste, len(strony))
     rok = meta.get("year")
     if raw and pick["type"] == "O" and meta.get("publisher") in ("DU", "MP") and isinstance(rok, int) \
-            and 2000 <= rok <= 2011:
+            and 1990 <= rok <= 2011:
         raw = pdf_zeszyt_do_aktu(raw, rok, meta.get("pos"))
+        if rok < 2000:
+            info["ocr"] = True      # warstwa tekstowa zeszytów z lat 90. to OCR skanu
     txt = pdf_layout_do_tekstu(raw, info, notki) if raw else ""
     if not txt:
         return "", url, "pdftotext nie zwrócił tekstu (PDF bez warstwy tekstowej albo błąd konwersji)"
@@ -1589,6 +1690,9 @@ def cmd_tekst(a):
                 ostrz = _oznacz_uwzglednione(ostrz, _podstawa_ujednolicenia(info_pdf["podstawa"]))
             else:
                 opis = (f"stan prawny na {meta['legalStatusDate']}" if meta.get("legalStatusDate") else "tekst ogłoszony")
+                if info_pdf.get("ocr"):
+                    opis += ("; warstwa tekstowa tego PDF to OCR skanu z lat 90. — możliwe przekłamane litery i cyfry "
+                             "oraz rozbite wyrazy („sk ładu”), a liczby, daty i kwoty sprawdź w PDF")
             if info_pdf.get("puste_strony"):
                 n, m = info_pdf["puste_strony"]
                 ostrz.insert(0, f"UWAGA: {n} z {m} stron tego PDF nie ma warstwy tekstowej (skan albo strona pusta) — "
