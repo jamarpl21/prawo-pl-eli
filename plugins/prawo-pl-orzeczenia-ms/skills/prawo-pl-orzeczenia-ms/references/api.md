@@ -74,7 +74,10 @@ frazę w ścieżce (`/details/<fraza>/<ID>`); ID to ostatni segment. W `.title` 
   zwracała zakładka „Treść” (także w przeglądarce i na podportalach sądów) dla 9 z 14
   sprawdzonych dokumentów — wszystkie świeżo opublikowane i bez zakładek „Powołane przepisy”/
   „Orzeczenia podobne” w metryce; dla nich `/regulations` daje 200 z pustym `<ol id="regulations">`.
-  To obserwacja korelacji, nie udokumentowany mechanizm portalu.
+  Dalsza weryfikacja 2026-10-05 (ok. 45 dokumentów, curl): treść zwraca każdy dokument opublikowany
+  do 2026-09-23, „Błąd danych” — każdy opublikowany od 2026-09-24, niezależnie od sądu; to samo na
+  podportalach sądów. Zaplecze `https://apiorzeczenia.wroclaw.sa.gov.pl/ncourt-api/judgement/details?id=<ID>`
+  oddaje dla nich metrykę (XML), a SAOS (który stamtąd importuje) — pustą treść. Awaria po stronie MS.
 - PDF: adres odczytywany z `/content.pdffile/...` na stronie treści; nie budować ścieżki
   do pliku ręcznie. Sprawdzać sygnaturę `%PDF-` przed zapisem.
 

@@ -852,5 +852,23 @@ class TestUzasadnienieData(unittest.TestCase):
         self.assertIsNone(saos._uwaga_uzasadnienie({"judgmentType": "SENTENCE"}, ""))
 
 
+class TestPustaTrescPoAwariiMS(unittest.TestCase):
+    """2026-10-05: portal MS nie wydaje treści orzeczeń publikowanych od 24.09.2026 — SAOS ma je bez tekstu."""
+
+    def _orzeczenie(self, publikacja):
+        data = {"data": {"id": 553102, "courtType": "COMMON", "judgmentType": "SENTENCE", "judgmentDate": "2026-09-16",
+                         "courtCases": [{"caseNumber": "II K 295/25"}], "textContent": "",
+                         "source": {"code": "COMMON_COURT", "publicationDate": publikacja}}}
+        out = io.StringIO()
+        with mock.patch.object(saos, "_get", return_value=data), \
+                mock.patch.object(sys, "argv", ["saos.py", "orzeczenie", "553102"]), contextlib.redirect_stdout(out):
+            saos.main()
+        return out.getvalue()
+
+    def test_ostrzezenie_tylko_dla_publikacji_od_24_09_2026(self):
+        self.assertIn("portal MS nie wydaje treści nowych orzeczeń", self._orzeczenie("2026-10-02"))
+        self.assertNotIn("portal MS nie wydaje", self._orzeczenie("2026-09-23"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

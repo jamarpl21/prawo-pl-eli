@@ -572,9 +572,15 @@ def run(args, client):
             result.update(parse_content(client.get(doc_url("content", ident)), ident))
     except PortalError as e:
         what = "listy powołanych przepisów" if args.command == "przepisy" else "treści"
+        # Zweryfikowane 2026-10-05 na ok. 45 dokumentach: KAŻDY opublikowany od 2026-09-24 → „Błąd danych”,
+        # każdy wcześniejszy → treść; to samo na podportalach sądów, a SAOS (import z zaplecza MS
+        # apiorzeczenia…/ncourt-api) ma dla nich pustą treść. Awaria po stronie MS, nie silnika.
         raise Unknown(f"Portal nie udostępnia {what} tego orzeczenia: zwraca stronę „{e.reason}” (HTTP {e.code}), "
-                      "również w przeglądarce. Metryka jest dostępna (komenda metryka). Zaobserwowano to przy świeżo "
-                      "opublikowanych dokumentach — ponów później; nie cytuj treści z fragmentu wyszukiwarki.") from e
+                      "również w przeglądarce i na portalu sądu. Metryka jest dostępna (komenda metryka). "
+                      "Stan na 2026-10-05: tak odpowiada portal dla orzeczeń opublikowanych od 24.09.2026 — awaria "
+                      "po stronie MS; SAOS importuje z tego samego zaplecza i też nie ma ich treści. Treść uzyskasz "
+                      "w sądzie (wniosek o odpis) albo po naprawie portalu. NIE cytuj treści z fragmentu wyszukiwarki "
+                      "ani z pamięci.") from e
     if args.command == "pdf":
         if not result["pdf_url"]:
             raise Unknown("Portal nie udostępnił linku do PDF.")

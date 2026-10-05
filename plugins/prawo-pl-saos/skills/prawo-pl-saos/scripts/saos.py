@@ -808,6 +808,13 @@ def cmd_orzeczenie(a):
         print(f"({UWAGA_INDEKSY})")
     if not txt:
         print("(brak treści w API — otwórz źródło urzędowe wyżej)")
+        pub = (data.get("source") or {}).get("publicationDate") or ""
+        if ct == "COMMON" and pub >= "2026-09-24":
+            # 2026-10-05: zaplecze Portalu Orzeczeń MS nie wydaje treści orzeczeń publikowanych od
+            # 24.09.2026, więc SAOS importuje je bez tekstu (metryka jest)
+            print("UWAGA: to orzeczenie sądu powszechnego opublikowano w portalu MS po 23.09.2026 — od tej daty "
+                  "portal MS nie wydaje treści nowych orzeczeń („Błąd danych”), dlatego SAOS jej nie ma. Treść "
+                  "jest niedostępna u źródła; nie odtwarzaj jej z pamięci ani z fragmentów.")
         return
     if a.fragment:
         spans = _fragmenty(txt, a.fragment)

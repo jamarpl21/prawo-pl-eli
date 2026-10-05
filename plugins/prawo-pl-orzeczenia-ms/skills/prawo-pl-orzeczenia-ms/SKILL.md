@@ -83,9 +83,11 @@ python3 "$MS" rss --sad 15050000 --limit 5
   nieprawomocne”; `null` niczego nie potwierdza. Ta sama sygnatura bywa w wielu sądach
   (np. II K 1/20 w trzech) — silnik dodaje wtedy uwagę; rozróżniaj po `sad` i `id`.
 - `orzeczenie` pobiera metrykę i pełny tekst; nie zastępuj uzasadnienia fragmentem z wyszukiwarki.
-  Dla części świeżo opublikowanych dokumentów portal (także w przeglądarce) odpowiada na
-  zakładkę „Treść” stroną „Błąd danych” (HTTP 400) — silnik zwraca wtedy kod 2 z tym opisem;
-  metryka działa. Takie dokumenty nie mają w metryce zakładek „Powołane przepisy”/„Orzeczenia
+  Od 24.09.2026 (stan na 5.10.2026) portal — także w przeglądarce i na portalach sądów — odpowiada
+  na zakładkę „Treść” KAŻDEGO nowo opublikowanego orzeczenia stroną „Błąd danych” (HTTP 400); SAOS,
+  który importuje z tego samego zaplecza MS, ma dla nich pustą treść. To awaria po stronie MS:
+  silnik zwraca kod 2 z tym opisem, metryka działa. Nie szukaj treści gdzie indziej w sieci i nie
+  odtwarzaj jej z fragmentu wyszukiwarki — napisz, że treść jest niedostępna u źródła. Takie dokumenty nie mają w metryce zakładek „Powołane przepisy”/„Orzeczenia
   podobne” (obserwacja z 5.10.2026, uwaga w `uwagi`). `przepisy` pokazuje osobną listę portalu
   (może być niepełna); pusta lista dostaje uwagę i odsyła do pola „Podstawa prawna”.
   `pdf` pobiera eksport urzędowy i nie nadpisuje istniejącego pliku. Link do podobnych orzeczeń
