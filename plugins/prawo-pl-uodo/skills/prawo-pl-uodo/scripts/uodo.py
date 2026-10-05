@@ -38,6 +38,8 @@ ZNACZENIE_USE = {                           # dates[].use poza datami podstawowy
 }
 STATUS_PL = {"final": "prawomocna wg portalu", "nonfinal": "NIEPRAWOMOCNA",
              "repealed": "UCHYLONA", "published": "rekord niebędący decyzją"}
+MIESIACE_DOPELNIACZ = ("stycznia", "lutego", "marca", "kwietnia", "maja", "czerwca", "lipca", "sierpnia",
+                      "września", "października", "listopada", "grudnia")
 HEDGE_BRAK = ("UWAGA: brak w portalu ≠ nieistnienie decyzji (portal działa od 2025 r., starsze decyzje "
               "dodawane sukcesywnie) — sprawdź wyszukiwarkę na https://uodo.gov.pl i zaznacz to w odpowiedzi.")
 
@@ -144,6 +146,42 @@ def _daty(item):
     for d in item.get("dates") or []:
         out[d.get("use", "")] = d.get("date", "")
     return out
+
+
+def _walidacja(item):
+    """Wpis dates[] use=validation → opis z zakresem, np. '2025-04-17 (final, w zakresie punktu 1))'.
+    Portal zapisuje częściową prawomocność w polach text/scope — bez nich data walidacji wygląda
+    jak prawomocność całej decyzji. Zwraca (opis, zakres_tekst) albo (None, None)."""
+    for d in item.get("dates") or []:
+        if d.get("use") != "validation":
+            continue
+        zakres = re.sub(r"\s+", " ", _pl(d.get("text"))).strip()
+        dopisek = ", ".join(x for x in (d.get("status") or "", zakres) if x)
+        return (d.get("date", "?") + (f" ({dopisek})" if dopisek else "")), zakres or None
+    return None, None
+
+
+def _zapytania_cbosa(meta):
+    """Gotowe zapytania CBOSA o wyrok w sprawie skargi na decyzję Prezesa UODO.
+
+    CBOSA anonimizuje numer i dzień decyzji („decyzję … z dnia [...] marca 2025 r. nr [...]”), więc
+    po sygnaturze DKN.… nic nie znajdzie. Działa: rodzaj skarżonego organu (--organ UODO), symbol 647
+    (ochrona danych osobowych), WSA w Warszawie (co do zasady właściwy dla skarg na Prezesa UODO; trzecie zapytanie bez --sad WSA łapie wyjątki w NSA), okno
+    dat od daty decyzji i fraza „<miesiąc> <rok>” daty decyzji, której CBOSA nie zaciera. Sprawdzone
+    na żywo 2026-10-05: DKN.5131.1.2025 → II SA/Wa 837/25 na 1. stronie wyników (13 trafień)."""
+    data = _daty(meta).get("announcement", "")
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", data):
+        return []
+    fraza = f'"{MIESIACE_DOPELNIACZ[int(data[5:7]) - 1]} {data[:4]}"'
+    if re.search(r"\bkar[aęyą]?\b", _pl(meta.get("title")), re.I):
+        fraza += " kary"
+    return [
+        (f"cbosa.py szukaj '{fraza}' --organ UODO --symbol 647 --sad \"WSA Warszawa\" --rodzaj wyrok "
+         f"--od {data}", "wyrok WSA (zawężony frazą z daty decyzji)"),
+        (f"cbosa.py szukaj --organ UODO --symbol 647 --sad \"WSA Warszawa\" --od {data}",
+         "wszystkie orzeczenia WSA od daty decyzji — pełna lista, przejrzyj strony"),
+        (f"cbosa.py szukaj --organ UODO --sad NSA --od {data}", "skarga kasacyjna do NSA"),
+    ]
 
 
 def _sygnatura_z_urn(refid):
@@ -521,6 +559,8 @@ def cmd_decyzja(a):
         meta["_tresc_zrodlo"] = zrodlo
         meta["_kontrola_sadowa"] = kontrola
         meta["_uchylona"] = uchylona
+        if (meta.get("publication") or {}).get("status") == "nonfinal":
+            meta["_zapytania_cbosa"] = [k for k, _ in _zapytania_cbosa(meta)]
         print(json.dumps(meta, ensure_ascii=False, indent=2)); return
     daty = _daty(meta)
     if uchylona:
@@ -531,15 +571,40 @@ def cmd_decyzja(a):
     print(f"# {_pl(meta.get('name')) or refname}   [{refname}]")
     print(f"  URN:        {meta.get('refid', refid)}")
     inforce = "tak" if pub.get("inforce") else "nie/brak danych"
+    nonfinal = pub.get("status") == "nonfinal"
+    zastrzezenie = ""
+    if pub.get("inforce") and uchylona:
+        zastrzezenie = " (pole nie odzwierciedla uchylenia)"
+    elif pub.get("inforce") and nonfinal:
+        zastrzezenie = (" (pole NIE oznacza prawomocności ani tego, że decyzja nie została zaskarżona "
+                        "lub uchylona — status: NIEPRAWOMOCNA)")
     print(f"  Rodzaj:     {meta.get('kind', '?')}   status: {_status_opis(pub.get('status'))}"
-          f"   publication.inforce wg API: {inforce}"
-          + (" (pole nie odzwierciedla uchylenia)" if uchylona else ""))
+          f"   publication.inforce wg API: {inforce}{zastrzezenie}")
+    walidacja, zakres_walidacji = _walidacja(meta)
     print(f"  Daty:       decyzja (ogłoszenie) {daty.get('announcement', '?')}, publikacja w portalu "
-          f"{daty.get('publication', '?')}, walidacja {daty.get('validation', '—')}")
+          f"{daty.get('publication', '?')}, walidacja {walidacja or '—'}")
     print(f"  Portal:     https://orzeczenia.uodo.gov.pl (API: {BASE}/documents/public/items/{refid}/meta.json)")
-    if pub.get("status") == "nonfinal":
+    if zakres_walidacji:
+        print(f"  UWAGA:      prawomocność CZĘŚCIOWA wg portalu — walidacja dotyczy tylko: "
+              f"„{zakres_walidacji}”; pozostała część decyzji nie jest oznaczona jako prawomocna "
+              "(zwykle: zaskarżona do WSA).")
+    if nonfinal:
         print("  UWAGA:      decyzja NIEPRAWOMOCNA (status nonfinal) — przysługuje skarga do WSA; "
               "cytuj z zastrzeżeniem (kontrola sądowa: prawo-pl-cbosa).")
+        if not kontrola:
+            print("              Brak wpisów kontroli sądowej w meta.json NIE oznacza, że wyroku nie ma — "
+                  "portal dopisuje je z opóźnieniem.")
+        zapytania = _zapytania_cbosa(meta)
+        if zapytania:
+            ogl = daty.get("announcement", "")
+            przyklad = f"{MIESIACE_DOPELNIACZ[int(ogl[5:7]) - 1]} {ogl[:4]}"
+            print(f"  Wyrok sądu: NIE szukaj w CBOSA po numerze {refname} — CBOSA anonimizuje numer "
+                  f"i dzień decyzji („z dnia [...] {przyklad} r. nr [...]”), więc zero trafień "
+                  "nie dowodzi braku wyroku. Gotowe zapytania (skill prawo-pl-cbosa, scripts/):")
+            for komenda, opis in zapytania:
+                print(f"    {komenda}\n      ↳ {opis}")
+            print("    W wynikach rozpoznasz sprawę po stronie skarżącej, kwocie kary i przedmiocie "
+                  "(sentencja/uzasadnienie wyroku).")
     if kontrola:
         print("\n## Kontrola sądowa (wg meta.json portalu; treść wyroków: skill prawo-pl-cbosa)")
         for k in kontrola:

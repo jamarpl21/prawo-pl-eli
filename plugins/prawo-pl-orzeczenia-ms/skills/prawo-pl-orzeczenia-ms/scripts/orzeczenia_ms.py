@@ -279,13 +279,31 @@ def parse_meta(text, ident):
         raise Unknown("Niekompletna metryka orzeczenia.")
     # Wyklucz treść cytowanych wyroków; status czytamy wyłącznie na stronie metryki.
     status = finality(container)
+    # Pole metryki „Data uprawomocnienia” (zweryfikowane 2026-10-05, VI Ka 1622/25) to wprost
+    # podana przez sąd data prawomocności — bez niego status bywał null mimo prawomocnego wyroku.
+    final_date = polish_date(fields["Data uprawomocnienia"]) if fields.get("Data uprawomocnienia") else None
+    notes = [NOTE]
+    if final_date and status is None:
+        status = True
+        notes.append(f"Prawomocność wg pola metryki „Data uprawomocnienia”: {final_date}.")
+    elif final_date and status is False:
+        # Sprzeczne oznaczenia — zostawiamy ostrożniejsze (nieprawomocne) i mówimy o tym wprost.
+        notes.append(f"Sprzeczność w metryce: oznaczenie „orzeczenie nieprawomocne”, a pole „Data "
+                     f"uprawomocnienia” podaje {final_date}. Przyjęto: nieprawomocne — sprawdź w sądzie.")
+    elif status is False:
+        notes.append("Portal oznacza orzeczenie jako nieprawomocne.")
+    elif status is None:
+        notes.append("Portal nie potwierdza prawomocności tego orzeczenia.")
+    headings = [h.plain() for h in container.all("h2")]
+    if any(re.search(r"\s-\s+uzasadnienie\b", h) for h in headings):
+        notes.append("Dokument typu „uzasadnienie”: „Data orzeczenia” w metryce portalu bywa datą "
+                     "sporządzenia uzasadnienia, a nie datą wydania wyroku — datę wyroku sprawdź w treści.")
     return dict(id=ident, sygnatura=fields["Sygnatura"], sad=fields["Sąd"],
                 data_orzeczenia=polish_date(fields["Data orzeczenia"]),
                 data_publikacji=polish_date(fields["Data publikacji"]) if fields.get("Data publikacji") else None,
+                data_uprawomocnienia=final_date,
                 prawomocne=status, metryka=fields, url=doc_url("details", ident),
-                podobne_url=doc_url("similardocs", ident),
-                uwagi=[NOTE] + (["Portal oznacza orzeczenie jako nieprawomocne."] if status is False else
-                               ["Portal nie potwierdza prawomocności tego orzeczenia."] if status is None else []))
+                podobne_url=doc_url("similardocs", ident), uwagi=notes)
 
 
 def parse_content(text, ident):

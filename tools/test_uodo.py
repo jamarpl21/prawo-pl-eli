@@ -549,5 +549,66 @@ class TestLimitIOffset(unittest.TestCase):
         self.assertEqual(sz.call_args.args[2], 100)
 
 
+META_DKN1 = {  # DKN.5131.1.2025 (live meta.json 2026-10-05): kara 27 124 816 zł; pkt 1 prawomocny,
+    # pkt 2 uchylony przez WSA (II SA/Wa 837/25 z 2026-03-05), czego meta.json jeszcze nie ma
+    "refid": "urn:ndoc:gov:pl:uodo:2025:dkn_5131_1", "refname": "DKN.5131.1.2025", "kind": "decision",
+    "name": {"pl": "Decyzja Prezesa UODO nr DKN.5131.1.2025"},
+    "title": {"pl": "nałożenie administracyjnej kary pieniężnej za naruszenie przepisów art. 6 ust. 1 "
+                    "oraz art. 5 ust. 1 lit. a) rozporządzenia 2016/679."},
+    "publication": {"status": "nonfinal", "inforce": True, "version": "1.0.0", "pubid": None}, "parts": 1,
+    "dates": [
+        {"date": "2025-03-17", "use": "announcement", "type": "direct", "status": "nonfinal"},
+        {"date": "2025-03-18", "use": "publication", "type": "direct", "status": "nonfinal"},
+        {"date": "2025-04-17", "use": "validation", "type": "direct", "status": "final",
+         "text": "w zakresie punktu 1)", "scope": "n0a:p1"},
+    ]}
+
+
+class TestNieprawomocnaZapytaniaCbosa(unittest.TestCase):
+    """Regresja 2.1.1: decyzja nieprawomocna odsyłała do `cbosa szukaj "DKN.5131.1.2025"`, które
+    przez anonimizację numeru daje zero — zamiast tego silnik podaje skuteczne zapytania CBOSA."""
+
+    SIEC = {"dkn_5131_1/meta.json": META_DKN1, "body.html": HTML_DECYZJI}
+
+    def test_gotowe_zapytania_zamiast_numeru(self):
+        out, kod = _uruchom(["decyzja", "DKN.5131.1.2025"], self.SIEC)
+        self.assertIsNone(kod)
+        self.assertIn("cbosa.py szukaj '\"marca 2025\" kary' --organ UODO --symbol 647 "
+                      "--sad \"WSA Warszawa\" --rodzaj wyrok --od 2025-03-17", out)
+        self.assertIn("cbosa.py szukaj --organ UODO --sad NSA --od 2025-03-17", out)
+        self.assertIn("NIE szukaj w CBOSA po numerze DKN.5131.1.2025", out)
+        self.assertIn("anonimizuje", out)
+        self.assertNotIn('szukaj "DKN.5131.1.2025"', out)
+        self.assertIn("Brak wpisów kontroli sądowej w meta.json NIE oznacza", out)
+
+    def test_inforce_z_zastrzezeniem_i_zakres_walidacji(self):
+        out, _ = _uruchom(["decyzja", "DKN.5131.1.2025"], self.SIEC)
+        self.assertIn("publication.inforce wg API: tak (pole NIE oznacza prawomocności", out)
+        self.assertIn("walidacja 2025-04-17 (final, w zakresie punktu 1))", out)
+        self.assertIn("prawomocność CZĘŚCIOWA", out)
+
+    def test_json_ma_zapytania(self):
+        out, kod = _uruchom(["decyzja", "DKN.5131.1.2025", "--json"], self.SIEC)
+        self.assertIsNone(kod)
+        d = json.loads(out)
+        self.assertTrue(any("--organ UODO" in z for z in d["_zapytania_cbosa"]))
+
+    def test_fraza_bez_kary_gdy_tytul_nie_mowi_o_karze(self):
+        meta = dict(META_DKN1, title={"pl": "nakaz usunięcia danych"})
+        zap = uodo._zapytania_cbosa(meta)
+        self.assertTrue(zap[0][0].startswith("cbosa.py szukaj '\"marca 2025\"' --organ UODO"))
+        self.assertEqual(uodo._zapytania_cbosa({"dates": []}), [])
+
+    def test_walidacja_bez_zakresu_i_brak(self):
+        self.assertEqual(uodo._walidacja({"dates": [{"use": "validation", "date": "2024-01-02"}]}),
+                         ("2024-01-02", None))
+        self.assertEqual(uodo._walidacja(META_KONTROLNA), (None, None))
+
+    def test_prawomocna_bez_bloku_zapytan(self):
+        out, _ = _uruchom(["decyzja", "DKN.5131.33.2021"], {"dkn_5131_33/meta.json": META_KONTROLNA, "body.txt": "treść"})
+        self.assertNotIn("--organ UODO", out)
+        self.assertNotIn("pole NIE oznacza prawomocności", out)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

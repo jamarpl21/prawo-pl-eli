@@ -469,6 +469,12 @@ def _court_label(it):
     return div.get("name") or ""
 
 
+def _klucz_sadu(it):
+    """Tożsamość sądu trafienia: id/nazwa sądu powszechnego, a dla SN/TK/KIO — typ sądu."""
+    court = (it.get("division") or {}).get("court") or {}
+    return (it.get("courtType", ""), court.get("id") or court.get("name") or "")
+
+
 def _case_numbers(it):
     return ", ".join(c.get("caseNumber", "") for c in (it.get("courtCases") or []) if c.get("caseNumber"))
 
@@ -611,13 +617,56 @@ def _wyjasnienie_zera_sygnatury(sig):
     return linie
 
 
+_MIESIACE = ("stycznia", "lutego", "marca", "kwietnia", "maja", "czerwca", "lipca", "sierpnia",
+             "września", "października", "listopada", "grudnia")
+_DATA_NAGLOWKA = re.compile(r"\bdnia\s+(\d{1,2})\s+(" + "|".join(_MIESIACE) + r")\s+(\d{4})", re.I)
+
+
+def _data_z_naglowka(tekst, okno=400):
+    """Pierwsza data „dnia 20 maja 2026” z początku treści → ISO (albo None).
+
+    Dokument typu REASONS (uzasadnienie) ma w API datę sporządzenia uzasadnienia; nagłówek treści
+    („Warszawa, dnia 20 maja 2026 r. Sygn. akt …”) zwykle podaje datę wyroku. To heurystyka —
+    wynik oznaczamy jako do sprawdzenia."""
+    m = _DATA_NAGLOWKA.search((tekst or "")[:okno])
+    if not m:
+        return None
+    try:
+        dzien, mies, rok = int(m.group(1)), _MIESIACE.index(m.group(2).lower()) + 1, int(m.group(3))
+    except ValueError:
+        return None
+    if not 1 <= dzien <= 31:
+        return None
+    return f"{rok:04d}-{mies:02d}-{dzien:02d}"
+
+
+def _uwaga_uzasadnienie(data, tekst=""):
+    """Ostrzeżenie dla typu „uzasadnienie”: judgmentDate to data uzasadnienia, nie wyroku."""
+    if data.get("judgmentType") != "REASONS":
+        return None
+    d = data.get("judgmentDate") or "?"
+    portal = (" (portal orzeczeń MS podaje ją tak samo jako „Data orzeczenia”)"
+              if data.get("courtType") == "COMMON" else "")
+    linia = (f"UWAGA: typ „uzasadnienie” — {d} to data sporządzenia UZASADNIENIA{portal}, NIE data "
+             "wydania wyroku. Terminów i chronologii nie licz od tej daty.")
+    z_naglowka = _data_z_naglowka(tekst)
+    if z_naglowka and z_naglowka != d:
+        linia += (f"\n          W nagłówku treści: {_data_pl(z_naglowka)} — prawdopodobna data wyroku "
+                  "(heurystyka z początku tekstu — może to być data innego orzeczenia cytowanego na wstępie; "
+                  "potwierdź w sentencji).")
+    else:
+        linia += "\n          Datę wyroku ustal w treści (nagłówek/sentencja) albo w źródle oryginalnym."
+    return linia
+
+
 def _wiersz(it):
     """Jedna pozycja listy wyników (id, sygnatura, sąd, data, forma, hasła, snippet)."""
     cn = _case_numbers(it) or "—"
     ctype = CT_PL.get(it.get("courtType", ""), it.get("courtType", ""))
     court = _court_label(it)
     forma = _forma(it)
-    print(f"  [{it.get('id')}]  {cn}   ({it.get('judgmentDate', '?')})")
+    uz = " — data uzasadnienia, nie wyroku" if it.get("judgmentType") == "REASONS" else ""
+    print(f"  [{it.get('id')}]  {cn}   ({it.get('judgmentDate', '?')}{uz})")
     drugi = f"    {ctype}" + (f" — {court}" if court else "")
     if forma:
         drugi += f"  · {forma}"
@@ -711,6 +760,13 @@ def cmd_orzeczenie(a):
     print(f"# Orzeczenie [{data.get('id')}]  {cn}")
     print(f"  Sąd:    {ctype}" + (f" — {court}" if court else ""))
     print(f"  Data:   {data.get('judgmentDate', '?')}    typ: {_forma(data)}")
+    txt = html_to_text(data.get("textContent") or "")
+    uwaga_uz = _uwaga_uzasadnienie(data, txt)
+    if uwaga_uz:
+        print(f"  {uwaga_uz}")
+    publikacja = (data.get("source") or {}).get("publicationDate")
+    if publikacja:
+        print(f"  Publikacja: {publikacja}  (data publikacji w źródle — source.publicationDate)")
     js = _judges(data, maks=12)
     if js:
         print(f"  Skład:  {js}")
@@ -747,7 +803,6 @@ def cmd_orzeczenie(a):
     if summary:
         print(f"\n## Teza / streszczenie\n{summary}")
 
-    txt = html_to_text(data.get("textContent") or "")
     print(f"\n## Treść uzasadnienia ({len(txt)} znaków)")
     if ct in ZASIEG:
         print(f"({UWAGA_INDEKSY})")
@@ -786,12 +841,28 @@ def cmd_sygnatura(a):
     if a.json:
         print(json.dumps(d, ensure_ascii=False, indent=2)); return
     print(f"Sygnatura {sig!r}: dopasowań {total}\n")
+    sady = {_klucz_sadu(it) for it in items}
+    if len(sady) > 1:
+        # ta sama sygnatura w różnych sądach (np. „I ACa 100/13” w 4 sądach apelacyjnych) to RÓŻNE
+        # sprawy — bez nazwy sądu przy trafieniu łatwo zacytować cudzy wyrok
+        print(f"UWAGA: sygnatura {sig!r} występuje w {len(sady)} RÓŻNYCH sądach — to RÓŻNE sprawy, "
+              "nie wersje jednego orzeczenia. Wybierz trafienie właściwego sądu (nazwa sądu przy "
+              "każdej pozycji); dopasowanie po samej sygnaturze nie identyfikuje sprawy.\n")
     for it in items:
         cn = _case_numbers(it)
         ctype = CT_PL.get(it.get("courtType", ""), it.get("courtType", ""))
+        court = _court_label(it)
         forma = _forma(it)
-        print(f"  [{it.get('id')}]  {cn}  · {ctype}  ({it.get('judgmentDate', '?')})  {forma}".rstrip())
-    print(f"\nPełna treść: orzeczenie {items[0].get('id')}")
+        uz = " — data uzasadnienia, nie wyroku" if it.get("judgmentType") == "REASONS" else ""
+        print(f"  [{it.get('id')}]  {cn}  ({it.get('judgmentDate', '?')}{uz})  {forma}".rstrip())
+        print(f"    {ctype}" + (f" — {court}" if court else "") + f"   → orzeczenie {it.get('id')}")
+    if len(items) == 1:
+        print(f"\nPełna treść: orzeczenie {items[0].get('id')}")
+    else:
+        print("\nPełna treść: orzeczenie <id> wybranego trafienia (każda pozycja ma własne id — "
+              "sprawdź sąd, zanim zacytujesz).")
+    if isinstance(total, int) and total > len(items):
+        print(f"Pokazano {len(items)} z {total} — pełna lista: szukaj --sygnatura {sig!r} --limit 100")
 
 
 def main():

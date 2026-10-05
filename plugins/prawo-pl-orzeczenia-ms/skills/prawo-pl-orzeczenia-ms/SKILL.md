@@ -93,7 +93,11 @@ Tekst orzeczenia zachowuje akapity i indeksy górne w numerach przepisów.
 `prawomocne` to `true`/`false` przy komunikacie na stronie metryki. Wartość `false`
 zwracana jest też dla `.single_result.invalid`: oficjalny arkusz CSS wyświetla wtedy
 obraz „ORZECZENIE NIEPRAWOMOCNE” (`nieprawomocny.png`, zweryfikowano 20.09.2026).
-Brak komunikatu lub tego oznaczenia to `null`, nie domniemanie prawomocności.
+Pole metryki „Data uprawomocnienia” (np. VI Ka 1622/25: 8 czerwca 2026) daje `prawomocne: true`
+i `data_uprawomocnienia` (ISO); przy sprzeczności z oznaczeniem „nieprawomocne” zostaje `false`
+z uwagą o sprzeczności. Dla dokumentu typu „uzasadnienie” „Data orzeczenia” bywa datą
+sporządzenia uzasadnienia, nie wyroku — silnik dodaje uwagę.
+Brak komunikatu, oznaczenia i pola daty uprawomocnienia to `null`, nie domniemanie prawomocności.
 `--strict` dla `metryka`, `orzeczenie`, `przepisy` i `pdf` blokuje wynik, jeśli portal
 nie potwierdza prawomocności. Zwykły tryb udostępnia treść z ostrzeżeniem.
 Dla wyszukiwania i RSS kontrolowana jest struktura odpowiedzi, ale nie prawomocność

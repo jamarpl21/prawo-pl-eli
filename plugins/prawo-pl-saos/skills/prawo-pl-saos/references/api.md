@@ -70,6 +70,12 @@ aktu + powołane artykuły, oraz `journalTitle/journalYear/journalNo/journalEntr
 `judgmentUrl`, `publicationDate`), `judgmentForm` (tylko SN, np. „wyrok SN"), `division`, `chambers[]`,
 `receiptDate`, `meansOfAppeal`, `judgmentResult`, `lowerCourtJudgments[]`.
 
+- **`judgmentDate` przy `judgmentType=REASONS`** to data uzasadnienia, nie wyroku (547117, VI Ka 1622/25:
+  `2026-06-08`, a treść zaczyna się „Warszawa, dnia 20 maja 2026 r." — data wyroku). `source.publicationDate`
+  (`2026-06-09`) to data publikacji w źródle. Sprawdzone 2026-10-05.
+- **`division.court.name`** (sądy powszechne) jest w `items[]` wyszukiwania — `caseNumber` nie jest unikalny
+  między sądami (`I ACa 100/13` → 4 trafienia w 4 sądach apelacyjnych), więc listę trzeba opisywać sądem.
+
 ### Jakość danych (zweryfikowane 2026-08-22/23 wobec sn.pl / UZP / feedu sądów powszechnych)
 
 - **Indeksy górne.** W `textContent` SN/TK/KIO nie ma `<sup>` — numery są spłaszczone: art. 417¹ → „4171",

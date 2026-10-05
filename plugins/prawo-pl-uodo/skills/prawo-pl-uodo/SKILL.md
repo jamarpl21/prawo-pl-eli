@@ -105,6 +105,11 @@ Nie szukaj helpera przez `find` po katalogach użytkownika ani systemu i nie pob
   zakres uchylenia ustal w sentencji wyroku (CBOSA), zanim zacytujesz karę.
   Do długich decyzji: `--fragment "pieniężn"` (wycina okna wokół frazy; też podawaj rdzeń).
   Sygnatura sądowa (`decyzja "III OSK 377/23"`) to rekord bez treści — silnik to wyjaśnia i odsyła do CBOSA.
+  Decyzja **NIEPRAWOMOCNA** (status `nonfinal`) dostaje **gotowe zapytania CBOSA** (organ, symbol 647,
+  WSA w Warszawie, okno dat od daty decyzji, fraza „<miesiąc> <rok>”) — np. dla DKN.5131.1.2025:
+  `cbosa.py szukaj '"marca 2025" kary' --organ UODO --symbol 647 --sad "WSA Warszawa" --rodzaj wyrok --od 2025-03-17`
+  (wyrok II SA/Wa 837/25 uchylający pkt 2 decyzji jest na 1. stronie wyników). Linia „Daty” pokazuje
+  zakres walidacji (np. `walidacja 2025-04-17 (final, w zakresie punktu 1))` = prawomocność częściowa).
 - każda komenda przyjmuje `--json` oraz `--strict`; obie flagi działają przed komendą i po niej.
   **Kontrakt `--strict`:** w `decyzja` kończy błędem (bez wyniku, także z `--json`) decyzję bez pełnej
   treści ORAZ decyzję z wpisem uchylenia przez sąd (komunikat podaje sygnaturę wyroku i odsyła do
@@ -115,8 +120,11 @@ Nie szukaj helpera przez `find` po katalogach użytkownika ani systemu i nie pob
 
 Typowy przepływ: `szukaj "<rdzeń frazy>"` → wybierz sygnaturę → `decyzja <sygnatura>`
 → jeśli blok „Kontrola sądowa" pokazuje wyrok: `prawo-pl-cbosa sygnatura "<sygnatura wyroku>"`
-(zakres uchylenia / utrzymania); jeśli nie — i tak sprawdź CBOSA (`szukaj "<sygnatura decyzji>"`),
-bo portal nie musi znać każdej skargi.
+(zakres uchylenia / utrzymania); jeśli nie — i tak sprawdź CBOSA zapytaniami, które poda `decyzja`
+(`--organ UODO --symbol 647 --sad "WSA Warszawa" --od <data decyzji>`), bo portal nie musi znać
+każdej skargi. **Nie szukaj w CBOSA po sygnaturze decyzji** (`szukaj "DKN.5131.1.2025"`): CBOSA
+anonimizuje numer i dzień decyzji („z dnia [...] marca 2025 r. nr [...]”), więc zero trafień nie
+dowodzi braku wyroku.
 
 ## Zasady (ważne — dlaczego)
 
@@ -129,7 +137,10 @@ bo portal nie musi znać każdej skargi.
    (uchylona). Kontrolę sądową portal zapisuje w `dates[]` (uchylona / utrzymana / w toku) i przy
    statusie `final` może istnieć wpis uchylenia części decyzji (ZSPR.421.3.2018: kara 943 470 zł
    uchylona przez WSA II SA/Wa 1030/19, status nadal `final`). Pole `inforce` API jest `true` nawet
-   dla decyzji uchylonych — nie cytuj go jako „w obrocie". Zanim podasz karę z decyzji z blokiem
+   dla decyzji uchylonych i nieprawomocnych — nie cytuj go jako „w obrocie" ani „prawomocna"
+   (silnik dopisuje zastrzeżenie). Data walidacji może mieć zakres („w zakresie punktu 1)”) —
+   wtedy prawomocna jest tylko ta część decyzji. Brak wpisów kontroli sądowej w meta.json NIE
+   oznacza braku wyroku (DKN.5131.1.2025: WSA uchylił pkt 2, a meta.json tego nie miał). Zanim podasz karę z decyzji z blokiem
    „Kontrola sądowa", przeczytaj sentencję wyroku w CBOSA.
 3. **Zawsze podawaj sygnaturę + datę** (np. „decyzja Prezesa UODO z 7.08.2025, DKN.5131.9.2025")
    — sygnatura jest stabilnym identyfikatorem (URN w API).
@@ -152,6 +163,7 @@ Pytanie: „czy UODO nakładał kary za brak zgłoszenia naruszenia ochrony dany
 3. (opcjonalnie) treść art. 33 RODO: skill prawo-eu-eurlex
    (`tekst 02016R0679-20160504 --fragment "art. 33"`).
 4. Kontrola sądowa: blok „Kontrola sądowa" z `decyzja` → `prawo-pl-cbosa sygnatura "<wyrok>"`
-   (zakres uchylenia); bez wpisów w bloku — `prawo-pl-cbosa szukaj "<sygnatura decyzji>"`.
+   (zakres uchylenia); bez wpisów w bloku — zapytania CBOSA podane przez `decyzja`
+   (`--organ UODO --symbol 647 --sad "WSA Warszawa" --od <data decyzji>`), nie numer decyzji.
 5. W odpowiedzi: sygnatura + data + status (nieprawomocna? uchylona — w jakim zakresie?) + kwota
    kary z treści decyzji, skorygowana o wynik kontroli sądowej.

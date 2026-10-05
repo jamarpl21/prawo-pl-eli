@@ -18,7 +18,8 @@ serwisowe ok. 21:00. Wszystkie pola i regexy zweryfikowane na żywych stronach (
 | `sygnatura` | np. `II FSK 2870/18` |
 | `sad` | `dowolny` \| **PEŁNA nazwa**: `Naczelny Sąd Administracyjny`, `Wojewódzki Sąd Administracyjny w Warszawie`, … (`we Wrocławiu`, `w Gorzowie Wlkp.`); też historyczne `NSA oz. w …` |
 | `rodzaj` | `dowolny` \| `Wyrok` \| `Postanowienie` \| `Uchwała` |
-| `symbole` | symbol sprawy, np. `6119` |
+| `symbole` | symbol sprawy, np. `6119`; `647` = sprawy związane z ochroną danych osobowych |
+| `rodzaj_organu` | rodzaj skarżonego organu — CBOSA dopasowuje **fragment** nazwy ze słownika (`GET /cbo/servlet/slownik?sl=rodzaj_organu&naz=*&sad=dowolny`). Sprawy Prezesa UODO mają przeważnie wartość `Generalny Inspektor Ochrony Danych Osobowych` (nieliczne: `Prezes Urzędu Ochrony Danych Osobowych`) — fragment `Ochrony Danych Osobowych` łapie obie (sprawdzone 2026-10-05) |
 | `odDaty`, `doDaty` | `RRRR-MM-DD` — **wyłącznie ten format**; inny (np. `2024`, `31-12-2024`) zwraca formularz z komunikatem „Niepoprawny format daty, podaj RRRR-MM-DD!" i BEZ listy wyników |
 | `sedziowie` | nazwisko |
 | `funkcja` | `dowolna` \| `przewodniczący` \| `sprawozdawca` \| `autor uzasadnienia` |
@@ -88,7 +89,8 @@ nadzwyczajna), aktualności powołanych przepisów (→ ELI), ani tego, czy NSA 
 ## Mapowanie komend `cbosa.py` → pola
 
 `szukaj FRAZA`→`wszystkieSlowa`, `--sad`→`sad` (alias→pełna nazwa), `--sygnatura`→`sygnatura`,
-`--rodzaj`→`rodzaj`, `--symbol`→`symbole`, `--sedzia`→`sedziowie`, `--od/--do`→`odDaty/doDaty`
+`--rodzaj`→`rodzaj`, `--symbol`→`symbole`, `--organ`→`rodzaj_organu` (alias `UODO`/`GIODO`→
+`Ochrony Danych Osobowych`), `--sedzia`→`sedziowie`, `--od/--do`→`odDaty/doDaty`
 (skróty `RRRR` i `RRRR-MM` silnik uzupełnia do początku okresu dla `--od`, do końca dla `--do`),
 `--strona N`→`GET /cbo/find?p=N` (po POST). `sygnatura <S>` = `szukaj` z samym polem `sygnatura`.
 
@@ -104,6 +106,11 @@ nadzwyczajna), aktualności powołanych przepisów (→ ELI), ani tego, czy NSA 
 - **Symbole spraw** (pole `symbole`): 4-cyfrowe oznaczenia repertoriów, np. `611x` podatki
   (6112 PIT, 6110 VAT), `6014` prawo budowlane, `6320` pomoc społeczna, `6480` informacja publiczna.
   Pełny wykaz: zarządzenie Prezesa NSA (dostępne na stronach NSA).
+- **Anonimizacja numerów decyzji:** CBOSA zastępuje w sentencji i uzasadnieniu numer i dzień
+  zaskarżonej decyzji (`decyzję … z dnia [...] marca 2025 r. nr [...]`) — wyszukiwanie po znaku
+  sprawy organu (`DKN.5131.1.2025`) daje zero, które NIE dowodzi braku wyroku. Szukaj po
+  `rodzaj_organu` + `symbole` + `sad` + `odDaty` (data decyzji) i frazie `"<miesiąc> <rok>"`
+  (np. DKN.5131.1.2025 → II SA/Wa 837/25, 1. strona wyników).
 - **Powiązane instancje:** wyrok NSA linkuje wyrok WSA tej samej sprawy (i odwrotnie) — pole
   `Sygn. powiązane` z doc_id; tak buduje się pełną historię sprawy.
 - Alternatywa dla SN/TK/sądów powszechnych/KIO: API SAOS (skill prawo-pl-saos) — tam CBOSA nie sięga.

@@ -13,7 +13,8 @@ powszechnych/KIO bierz z SAOS (skill prawo-pl-saos); treść przepisów z ELI (p
 
 Komendy:
   szukaj ["<fraza>"] [--sad NSA|"WSA Warszawa"] [--sygnatura S] [--rodzaj wyrok|postanowienie|uchwala]
-         [--symbol 6119] [--sedzia N] [--od RRRR-MM-DD] [--do RRRR-MM-DD] [--strona N]
+         [--symbol 6119] [--organ UODO|"<rodzaj skarżonego organu>"] [--sedzia N]
+         [--od RRRR-MM-DD] [--do RRRR-MM-DD] [--strona N]
   orzeczenie <doc_id> [--fragment "<fraza>"]   pełne orzeczenie: metadane, sentencja, uzasadnienie
   sygnatura <sygnatura...>                      znajdź orzeczenie po sygnaturze
 Globalnie: --json  (zrzut sparsowanych danych jako JSON zamiast podsumowania; działa przed
@@ -21,6 +22,10 @@ Globalnie: --json  (zrzut sparsowanych danych jako JSON zamiast podsumowania; dz
            --strict  (blokuje wynik, gdy nie udało się zweryfikować aktualności lub kompletności:
                       TLS niezweryfikowany, nierozpoznana strona, orzeczenie NIEPRAWOMOCNE albo
                       bez oznaczenia prawomocności na stronie CBOSA)
+
+Anonimizacja: CBOSA zastępuje w treści numery i dni decyzji organów („decyzja z [...] marca 2025 r.
+nr [...]") — znak sprawy organu (np. DKN.5131.1.2025) NIE jest wyszukiwalny; wyrok w sprawie skargi
+na decyzję znajdziesz po rodzaju skarżonego organu (--organ), symbolu sprawy, sądzie i oknie dat.
 
 Prawomocność: strona /doc/{id} niesie w wierszu „Data orzeczenia" kursywę „orzeczenie prawomocne"
 / „orzeczenie nieprawomocne". Silnik ją parsuje (pole JSON `prawomocne`: true/false/null) — lista
@@ -68,6 +73,12 @@ _WSA = {
     "rzeszow": "w Rzeszowie", "szczecin": "w Szczecinie", "warszawa": "w Warszawie",
     "wroclaw": "we Wrocławiu",
 }
+# Rodzaj skarżonego organu (pole formularza „rodzaj_organu", słownik /cbo/servlet/slownik?sl=rodzaj_organu).
+# CBOSA dopasowuje wartość jako fragment nazwy — sprawdzone na żywo 2026-10-05: sprawy Prezesa UODO są
+# opisane przeważnie jako „Generalny Inspektor Ochrony Danych Osobowych" (nazwa sprzed 2018 r.),
+# a nieliczne jako „Prezes Urzędu Ochrony Danych Osobowych" — fragment wspólny łapie obie nazwy.
+_ORGANY = {"UODO": "Ochrony Danych Osobowych", "PUODO": "Ochrony Danych Osobowych",
+           "GIODO": "Ochrony Danych Osobowych", "PREZES UODO": "Ochrony Danych Osobowych"}
 _RODZAJE = {"WYROK": "Wyrok", "POSTANOWIENIE": "Postanowienie",
             "UCHWAŁA": "Uchwała", "UCHWALA": "Uchwała"}
 
@@ -103,6 +114,43 @@ def _rodzaj(s):
     if not r:
         sys.exit(f"Nieznany rodzaj orzeczenia: {s!r}. Użyj: wyrok, postanowienie, uchwala.")
     return r
+
+
+def _organ(s):
+    """Alias organu (UODO/GIODO) → fragment nazwy rodzaju organu w CBOSA; inne wartości bez zmian."""
+    if not s:
+        return ""
+    raw = re.sub(r"\s+", " ", s.strip())
+    return _ORGANY.get(raw.upper(), raw)
+
+
+# Znak sprawy organu administracji (DKN.5131.1.2025, ZSPR.421.2.2019, DS.523.1.2024): człony po
+# kropkach, zakończone rokiem, bez „/" (sygnatury sądowe mają postać „II SA/Wa 837/25").
+_ZNAK_ORGANU = re.compile(r"[A-ZĄĆĘŁŃÓŚŹŻ]{2,}[A-ZĄĆĘŁŃÓŚŹŻ0-9-]*(?:\.[A-Za-z0-9-]+)+\.(?:19|20)\d{2}")
+
+
+def _znak_organu(*teksty):
+    """Pierwszy znak sprawy organu znaleziony w podanych tekstach (fraza, sygnatura) albo None."""
+    for t in teksty:
+        m = _ZNAK_ORGANU.search(t or "")
+        if m:
+            return m.group(0)
+    return None
+
+
+def _uwaga_anonimizacja(znak, od=None):
+    """Zero trafień dla znaku sprawy organu NIE jest zweryfikowanym brakiem wyroku."""
+    rok = znak.rsplit(".", 1)[-1]
+    od = od or f"{rok}-01-01"
+    return (f"Brak wyników dla {znak!r} — ale to NIE dowodzi braku wyroku. {znak!r} wygląda na znak "
+            "sprawy ORGANU (numer decyzji), a CBOSA anonimizuje w treści numery i dni decyzji "
+            "(„decyzja z [...] marca 2025 r. nr [...]”), więc wyszukiwanie po tym numerze nie działa.\n"
+            "Szukaj wyroku po skarżonym organie, symbolu, sądzie i oknie dat od daty decyzji, np. dla "
+            "decyzji Prezesa UODO (skargi rozpoznaje WSA w Warszawie, symbol 647):\n"
+            f'  cbosa.py szukaj --organ UODO --symbol 647 --sad "WSA Warszawa" --rodzaj wyrok --od {od}\n'
+            f"  cbosa.py szukaj --organ UODO --sad NSA --od {od}   (skarga kasacyjna)\n"
+            "Zawęź frazą z decyzji (miesiąc i rok jej wydania w cudzysłowie, kwota, przedmiot). "
+            "Dla decyzji UODO gotowe zapytania poda: uodo.py decyzja <sygnatura>.")
 
 
 def _data(s, koniec=False):
@@ -508,6 +556,7 @@ def _formularz(a):
         "sad": _sad(getattr(a, "sad", None)),
         "rodzaj": _rodzaj(getattr(a, "rodzaj", None)),
         "symbole": getattr(a, "symbol", None) or "",
+        "rodzaj_organu": _organ(getattr(a, "organ", None)),
         "odDaty": od,
         "doDaty": do,
         "sedziowie": getattr(a, "sedzia", None) or "",
@@ -542,9 +591,11 @@ def _drukuj_liste(total, pozycje, strona):
 
 
 def cmd_szukaj(a):
-    kryteria = any([a.fraza, a.sygnatura, a.sad, a.rodzaj, a.symbol, a.sedzia, a.od, a.do])
+    kryteria = any([a.fraza, a.sygnatura, a.sad, a.rodzaj, a.symbol, getattr(a, "organ", None),
+                    a.sedzia, a.od, a.do])
     if not kryteria:
-        sys.exit("Podaj kryterium: frazę albo --sad / --sygnatura / --rodzaj / --symbol / --sedzia / zakres dat.")
+        sys.exit("Podaj kryterium: frazę albo --sad / --sygnatura / --rodzaj / --symbol / --organ / "
+                 "--sedzia / zakres dat.")
     strona = max(1, a.strona)
     total, pozycje, komunikat = _szukaj(_formularz(a), strona)
     _sprawdz_transport_strict(a)
@@ -553,6 +604,9 @@ def cmd_szukaj(a):
             sys.exit(f"CBOSA odrzuciło zapytanie: {komunikat}\nPopraw parametry i ponów "
                      "(daty w formacie RRRR-MM-DD).")
     if total == 0 or not pozycje:
+        znak = _znak_organu(a.fraza, a.sygnatura)
+        if znak:  # zero dla numeru decyzji organu to skutek anonimizacji, nie dowód braku wyroku
+            sys.exit(_z_uwaga_o_transporcie(_uwaga_anonimizacja(znak, _data(a.od) or None)))
         sys.exit(_z_uwaga_o_transporcie(
             "Brak wyników (zweryfikowane zero). Uwaga: wyszukiwarka CBOSA wymaga dokładnych "
             "wartości — spróbuj prostszej frazy, bez --sad, albo sprawdź sygnaturę/symbol."))
@@ -636,6 +690,8 @@ def cmd_sygnatura(a):
         if komunikat:
             sys.exit(f"CBOSA odrzuciło zapytanie: {komunikat}")
     glowne = [p for p in pozycje if not p["powiazane"]]
+    if not glowne and _znak_organu(sig):
+        sys.exit(_z_uwaga_o_transporcie(_uwaga_anonimizacja(_znak_organu(sig))))
     if not glowne:
         sys.exit(_z_uwaga_o_transporcie(
             f"Nie znaleziono orzeczenia o sygnaturze {sig!r} w CBOSA.\n"
@@ -672,6 +728,8 @@ def main():
     s.add_argument("--sygnatura", help='sygnatura sprawy, np. "II FSK 2870/18"')
     s.add_argument("--rodzaj", help="wyrok | postanowienie | uchwala")
     s.add_argument("--symbol", help="symbol sprawy, np. 6119 (podatki), 6320 (pomoc społeczna)")
+    s.add_argument("--organ", help='rodzaj skarżonego organu (fragment nazwy ze słownika CBOSA); '
+                                   'alias UODO = sprawy Prezesa UODO/GIODO')
     s.add_argument("--sedzia", help="nazwisko sędziego")
     s.add_argument("--od", help="data orzeczenia od (RRRR-MM-DD)")
     s.add_argument("--do", help="data orzeczenia do (RRRR-MM-DD)")

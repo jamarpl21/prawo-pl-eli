@@ -782,5 +782,65 @@ class TestZgodaNaObnizenieTls(unittest.TestCase):
         self.assertLess(wynik.index("transport TLS"), wynik.index("# II FSK"))
 
 
+class TestOrganIAnonimizacja(unittest.TestCase):
+    """Regresja 2.1.1 (łańcuch UODO → CBOSA): `szukaj "DKN.5131.1.2025"` dawało „Brak wyników
+    (zweryfikowane zero)”, choć WSA (II SA/Wa 837/25) uchylił pkt 2 tej decyzji — CBOSA anonimizuje
+    numer decyzji („z dnia [...] marca 2025 r. nr [...]”). Wyrok znajduje dopiero --organ."""
+
+    # strona CBOSA bez trafień — kształt z żywej odpowiedzi 2026-10-05
+    HTML_ZERO = TestWyniki.HTML_ZERO
+
+    def _uruchom(self, argv, html):
+        out = io.StringIO()
+        with mock.patch.object(cbosa, "_fetch", return_value=html) as f, \
+                mock.patch.object(sys, "argv", ["cbosa.py"] + argv), redirect_stdout(out):
+            with self.assertRaises(SystemExit) as caught:
+                cbosa.main()
+        return out.getvalue(), str(caught.exception.code), f
+
+    def test_znak_organu(self):
+        for znak in ("DKN.5131.1.2025", "ZSPR.421.2.2019", "DS.523.1.2024", "ZSOŚS.421.25.2019"):
+            self.assertEqual(cbosa._znak_organu(znak), znak)
+        self.assertEqual(cbosa._znak_organu(None, "decyzja DKN.5131.1.2025 kara"), "DKN.5131.1.2025")
+        for nie in ("II SA/Wa 837/25", "III OSK 377/23", "administracyjnej kary", "Dz.U. 2019", ""):
+            self.assertIsNone(cbosa._znak_organu(nie), nie)
+
+    def test_zero_dla_znaku_organu_to_nie_zweryfikowane_zero(self):
+        out, msg, _ = self._uruchom(["szukaj", "DKN.5131.1.2025"], self.HTML_ZERO)
+        self.assertEqual(out, "")
+        self.assertNotIn("zweryfikowane zero", msg)
+        self.assertIn("NIE dowodzi braku wyroku", msg)
+        self.assertIn("nr [...]", msg)
+        self.assertIn('--organ UODO --symbol 647 --sad "WSA Warszawa"', msg)
+        self.assertIn("--od 2025-01-01", msg)
+
+    def test_zero_dla_sygnatury_ze_znakiem_organu(self):
+        _, msg, _ = self._uruchom(["sygnatura", "ZSPR.421.2.2019"], self.HTML_ZERO)
+        self.assertIn("anonimizuje", msg)
+        self.assertNotIn("Sygnatury sądów administracyjnych mają formę", msg)
+
+    def test_zwykla_fraza_nadal_zweryfikowane_zero(self):
+        _, msg, _ = self._uruchom(["szukaj", "jakaś fraza"], self.HTML_ZERO)
+        self.assertIn("zweryfikowane zero", msg)
+
+    def test_organ_trafia_do_formularza(self):
+        _, _, f = self._uruchom(["szukaj", "--organ", "UODO", "--od", "2025-03-17"], self.HTML_ZERO)
+        form = f.call_args.kwargs["data"]
+        self.assertEqual(form["rodzaj_organu"], "Ochrony Danych Osobowych")
+        self.assertEqual(form["odDaty"], "2025-03-17")
+
+    def test_alias_i_pelna_nazwa(self):
+        self.assertEqual(cbosa._organ("uodo"), "Ochrony Danych Osobowych")
+        self.assertEqual(cbosa._organ("GIODO"), "Ochrony Danych Osobowych")
+        self.assertEqual(cbosa._organ(" Prezes  Urzędu Ochrony Konkurencji i Konsumentów "),
+                         "Prezes Urzędu Ochrony Konkurencji i Konsumentów")
+        self.assertEqual(cbosa._organ(None), "")
+        self.assertEqual(TestFormularz()._form(fraza="RODO")["rodzaj_organu"], "")
+
+    def test_samo_organ_jest_kryterium(self):
+        _, msg, _ = self._uruchom(["szukaj", "--organ", "UODO"], self.HTML_ZERO)
+        self.assertNotIn("Podaj kryterium", msg)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -224,5 +224,56 @@ class TransportAndCLI(unittest.TestCase):
         self.assertTrue(result['uwagi'])
 
 
+FINAL_ID = '154510000003006_VI_Ka_001622_2025_Uz_2026-06-08_001'
+# Metryka VI Ka 1622/25 z żywego portalu (2026-10-05), przycięta do kształtu details.html.
+DETAILS_FINAL = (
+    '<!DOCTYPE html><html><head><title>Szczegóły orzeczenia VI Ka 1622/25 - Portal Orzeczeń Sądów Powszechnych</title></head><body>'
+    '<h2>Wyszukiwanie</h2>'
+    '<div class="grid9 simple single" id="content"><h2>VI Ka 1622/25 - uzasadnienie Sąd Okręgowy Warszawa-Praga w Warszawie z 2026-06-08</h2>'
+    '<ul class="tabs"><li class="active"><a href="/details/$N/' + FINAL_ID + '">Metryka</a></li>'
+    '<li class=""><a href="/content/$N/' + FINAL_ID + '">Treść</a></li></ul>'
+    '<div class="single_wrapper"><div class="single_result"><dl><dt>Tytuł:</dt><dd>Sąd Okręgowy Warszawa-Praga w Warszawie z 2026-06-08</dd>'
+    '<dt>Data orzeczenia:</dt><dd>8 czerwca 2026</dd><dt>Data publikacji:</dt><dd>9 czerwca 2026</dd>'
+    '<dt>Data uprawomocnienia:</dt><dd>8 czerwca 2026</dd><dt>Sygnatura:</dt><dd>VI Ka 1622/25</dd>'
+    '<dt>Sąd:</dt><dd>Sąd Okręgowy Warszawa-Praga w Warszawie</dd><dt>Wydział:</dt><dd>VI Wydział Karny Odwoławczy</dd>'
+    '<dt>Hasła tematyczne:</dt><dd>\nWyrok łączny\n</dd><dt>Podstawa prawna:</dt><dd class="nine columns omega">art. 85 kk, art. 4 § 1 kk</dd></dl>'
+    '</div></div></div></body></html>')
+
+
+class FinalityDate(unittest.TestCase):
+    """Regresja 2.1.1: pole „Data uprawomocnienia” było pomijane — prawomocne: null i --strict blokował."""
+
+    def test_final_date_sets_finality(self):
+        r = ms.parse_meta(DETAILS_FINAL, FINAL_ID)
+        self.assertIs(r['prawomocne'], True)
+        self.assertEqual(r['data_uprawomocnienia'], '2026-06-08')
+        self.assertFalse(any('nie potwierdza' in u for u in r['uwagi']))
+        self.assertTrue(any('Data uprawomocnienia' in u for u in r['uwagi']))
+
+    def test_reasons_document_date_warning(self):
+        r = ms.parse_meta(DETAILS_FINAL, FINAL_ID)
+        self.assertTrue(any('sporządzenia uzasadnienia' in u for u in r['uwagi']))
+        # „wyrok z uzasadnieniem” to nie samo uzasadnienie — bez tej uwagi
+        self.assertFalse(any('sporządzenia uzasadnienia' in u for u in ms.parse_meta(fixture('details.html'), ID)['uwagi']))
+
+    def test_contradiction_keeps_nonfinal(self):
+        source = DETAILS_FINAL.replace('class="single_result"', 'class="single_result invalid"')
+        r = ms.parse_meta(source, FINAL_ID)
+        self.assertIs(r['prawomocne'], False)
+        self.assertTrue(any('Sprzeczność' in u for u in r['uwagi']))
+
+    def test_without_field_still_unknown(self):
+        source = DETAILS_FINAL.replace('<dt>Data uprawomocnienia:</dt><dd>8 czerwca 2026</dd>', '')
+        r = ms.parse_meta(source, FINAL_ID)
+        self.assertIsNone(r['prawomocne'])
+        self.assertIsNone(r['data_uprawomocnienia'])
+
+    def test_strict_passes_with_final_date(self):
+        client = unittest.mock.Mock()
+        client.get.return_value = DETAILS_FINAL
+        r = ms.run(ms.parser().parse_args(['metryka', FINAL_ID, '--strict']), client)
+        self.assertIs(r['prawomocne'], True)
+
+
 if __name__ == '__main__':
     unittest.main()

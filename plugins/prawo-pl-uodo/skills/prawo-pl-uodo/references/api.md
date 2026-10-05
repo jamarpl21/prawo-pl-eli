@@ -86,6 +86,13 @@ type status scope refid text}] parts resources{} entities[] terms`.
   uchylony pkt 2 = kara 943 470 zł) i `defended` 2023-09-19 (III OSK 2538/21 — oddalono skargę kasacyjną
   od wyroku WSA). Zakres uchylenia wynika wyłącznie z sentencji wyroku (CBOSA). Silnik: blok
   „Kontrola sądowa", nagłówek „DECYZJA UCHYLONA PRZEZ SĄD", `--strict` blokuje takie decyzje.
+- **`validation` może mieć zakres:** `{"use": "validation", "status": "final", "text": "w zakresie
+  punktu 1)", "scope": "n0a:p1"}` (DKN.5131.1.2025) = prawomocność częściowa; reszta decyzji
+  (tu: pkt 2, kara 27 124 816 zł) została zaskarżona i WSA ją uchylił (II SA/Wa 837/25), choć
+  `dates[]` nie miało jeszcze wpisu `repealed`. Silnik pokazuje zakres walidacji, a dla decyzji
+  `nonfinal` podaje gotowe zapytania CBOSA (`--organ UODO --symbol 647 --sad "WSA Warszawa" --od
+  <announcement>` + fraza `"<miesiąc> <rok>"`) — po numerze decyzji CBOSA nic nie znajdzie
+  (anonimizacja „nr [...]”).
 
 ## Mapowanie komend `uodo.py` → API
 

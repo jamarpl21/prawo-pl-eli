@@ -759,5 +759,98 @@ class TestNormaDataMiesiac(unittest.TestCase):
         self.assertEqual(saos._norma_data("2020-12"), "2020-12-01")
 
 
+def _sa(id_, data, miasto, court_id, typ="SENTENCE"):
+    """Trafienie /search/judgments w kształcie z żywego API (I ACa 100/13, 2026-10-05)."""
+    return {"id": id_, "courtType": "COMMON", "courtCases": [{"caseNumber": "I ACa 100/13"}],
+            "judgmentType": typ, "judgmentDate": data,
+            "division": {"id": 1000 + court_id, "name": "I Wydział Cywilny", "code": "0000503",
+                         "court": {"id": court_id, "code": "15000000", "name": f"Sąd Apelacyjny w {miasto}"}}}
+
+
+class TestSygnaturaKolizjaSadow(unittest.TestCase):
+    """Regresja 2.1.1: „I ACa 100/13” to 4 RÓŻNE sprawy w 4 sądach apelacyjnych — lista pokazywała
+    tylko „sąd powszechny” i wskazywała jedno „Pełna treść: orzeczenie 37989”."""
+
+    ODP = {"items": [_sa(37989, "2013-08-27", "Warszawie", 275), _sa(14115, "2013-05-28", "Łodzi", 154),
+                     _sa(12966, "2013-05-16", "Lublinie", 186), _sa(429683, "2013-03-06", "Poznaniu", 212)],
+           "info": {"totalResults": 4}}
+
+    def _uruchom(self, odp, sig="I ACa 100/13"):
+        out = io.StringIO()
+        with mock.patch.object(saos, "_get", return_value=odp), \
+                mock.patch.object(sys, "argv", ["saos.py", "sygnatura", *sig.split()]), \
+                contextlib.redirect_stdout(out):
+            saos.main()
+        return out.getvalue()
+
+    def test_kazde_trafienie_ma_nazwe_sadu_i_ostrzezenie_o_roznych_sprawach(self):
+        out = self._uruchom(self.ODP)
+        for miasto in ("Warszawie", "Łodzi", "Lublinie", "Poznaniu"):
+            self.assertIn(f"Sąd Apelacyjny w {miasto}, I Wydział Cywilny", out)
+        self.assertIn("4 RÓŻNYCH sądach", out)
+        self.assertIn("RÓŻNE sprawy", out)
+        self.assertNotIn("Pełna treść: orzeczenie 37989", out)
+        self.assertIn("→ orzeczenie 429683", out)
+
+    def test_jedno_trafienie_wskazuje_pelna_tresc(self):
+        out = self._uruchom({"items": [self.ODP["items"][0]], "info": {"totalResults": 1}})
+        self.assertIn("Pełna treść: orzeczenie 37989", out)
+        self.assertNotIn("RÓŻNE", out)
+        self.assertIn("Sąd Apelacyjny w Warszawie", out)
+
+    def test_ten_sam_sad_bez_ostrzezenia_o_kolizji_ale_bez_jednej_sugestii(self):
+        odp = {"items": [_sa(2, "2013-09-10", "Warszawie", 275, "REASONS"), _sa(1, "2013-08-27", "Warszawie", 275)],
+               "info": {"totalResults": 2}}
+        out = self._uruchom(odp)
+        self.assertNotIn("RÓŻNE", out)
+        self.assertNotIn("Pełna treść: orzeczenie 2\n", out)
+        self.assertIn("data uzasadnienia, nie wyroku", out)
+
+
+class TestUzasadnienieData(unittest.TestCase):
+    """Regresja 2.1.1: VI Ka 1622/25 (SAOS 547117) — „Data: 2026-06-08 typ: uzasadnienie”, a wyrok
+    zapadł 20.05.2026; bez ostrzeżenia data uzasadnienia udawała datę wyroku."""
+
+    DANE = {"id": 547117, "courtType": "COMMON", "judgmentType": "REASONS", "judgmentDate": "2026-06-08",
+            "courtCases": [{"caseNumber": "VI Ka 1622/25"}], "judges": [],
+            "source": {"code": "COMMON_COURT", "publicationDate": "2026-06-09",
+                       "judgmentUrl": "https://apiorzeczenia.wroclaw.sa.gov.pl/ncourt-api/judgement/details?id="
+                                      "154510000003006_VI_Ka_001622_2025_Uz_2026-06-08_001"},
+            "division": {"name": "VI Wydział Karny Odwoławczy",
+                         "court": {"id": 285, "name": "Sąd Okręgowy Warszawa-Praga w Warszawie"}},
+            "textContent": "<p>Warszawa, dnia 20 maja 2026 r.</p><p>Sygn. akt VI Ka 1622/25</p>"
+                           "<p>WYROK ŁĄCZNY</p><p>po rozpoznaniu dnia 20 maja 2026 r. sprawy V. G.</p>"}
+
+    def _uruchom(self, data):
+        out = io.StringIO()
+        with mock.patch.object(saos, "_get", return_value={"data": data}), \
+                mock.patch.object(sys, "argv", ["saos.py", "orzeczenie", str(data["id"])]), \
+                contextlib.redirect_stdout(out):
+            saos.main()
+        return out.getvalue()
+
+    def test_ostrzezenie_data_z_naglowka_i_publikacja(self):
+        out = self._uruchom(self.DANE)
+        self.assertIn("2026-06-08 to data sporządzenia UZASADNIENIA", out)
+        self.assertIn("NIE data wydania wyroku", out)
+        self.assertIn("W nagłówku treści: 20.05.2026", out)
+        self.assertIn("Publikacja: 2026-06-09", out)
+
+    def test_wyrok_bez_ostrzezenia(self):
+        out = self._uruchom({**self.DANE, "judgmentType": "SENTENCE"})
+        self.assertNotIn("UZASADNIENIA", out)
+
+    def test_data_z_naglowka(self):
+        self.assertEqual(saos._data_z_naglowka("Warszawa, dnia 20 maja 2026 r. Sygn. akt"), "2026-05-20")
+        self.assertEqual(saos._data_z_naglowka("Kraków, dnia 3 Października 2019 r."), "2019-10-03")
+        self.assertIsNone(saos._data_z_naglowka("Sygn. akt I C 1/20 " + "x" * 500 + " dnia 1 maja 2020"))
+        self.assertIsNone(saos._data_z_naglowka(""))
+
+    def test_bez_daty_w_naglowku_odsyla_do_tresci(self):
+        uw = saos._uwaga_uzasadnienie({"judgmentType": "REASONS", "judgmentDate": "2026-06-08"}, "brak daty")
+        self.assertIn("Datę wyroku ustal w treści", uw)
+        self.assertIsNone(saos._uwaga_uzasadnienie({"judgmentType": "SENTENCE"}, ""))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

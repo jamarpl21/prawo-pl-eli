@@ -87,7 +87,10 @@ Nie szukaj helpera przez `find` po katalogach użytkownika ani systemu i nie pob
   `python3 scripts/cbosa.py szukaj "odpowiedzialność członków zarządu" --sad NSA --od 2024-01-01`
   Opcje: `--sad NSA | "WSA Warszawa" | "WSA Kraków" …` (16 miast; można też podać pełną nazwę),
   `--sygnatura "II FSK 2870/18"`, `--rodzaj wyrok|postanowienie|uchwala`, `--symbol 6119`
-  (symbol sprawy, np. 611x podatki), `--sedzia "Nowak"`, `--od/--do RRRR-MM-DD` (można też sam rok
+  (symbol sprawy, np. 611x podatki, 647 ochrona danych osobowych), `--organ UODO | "<rodzaj
+  skarżonego organu>"` (fragment nazwy ze słownika CBOSA; alias `UODO` łapie sprawy Prezesa UODO,
+  w CBOSA opisane przeważnie jako „Generalny Inspektor Ochrony Danych Osobowych”),
+  `--sedzia "Nowak"`, `--od/--do RRRR-MM-DD` (można też sam rok
   `2024` albo `2024-01` — silnik uzupełni do początku/końca okresu),
   `--strona N` (od 1; stała wielkość strony: 10 wyników).
 - **orzeczenie** — pełne orzeczenie po `doc_id` (z listy `szukaj`):
@@ -143,6 +146,12 @@ sprawie).
 2. **Rozróżniaj trzy komunikaty — tylko jeden znaczy „awaria".**
    „Brak wyników (zweryfikowane zero)" = CBOSA wyszukało i nic nie ma → **zmień zapytanie**
    (krótsza fraza, bez `--sad`, szerszy zakres dat), nie ponawiaj tego samego.
+   **Wyjątek — znak sprawy organu** (numer decyzji, np. `DKN.5131.1.2025`, `ZSPR.421.2.2019`): CBOSA
+   anonimizuje numery i dni decyzji („decyzja z dnia [...] marca 2025 r. nr [...]”), więc takie
+   zapytanie nic nie znajdzie. Silnik NIE pisze wtedy „zweryfikowane zero”, tylko podaje zapytanie
+   po organie: `szukaj '"marca 2025" kary' --organ UODO --symbol 647 --sad "WSA Warszawa" --od 2025-03-17`
+   (skargi na Prezesa UODO rozpoznaje WSA w Warszawie; gotowe zapytania dla decyzji UODO podaje
+   `prawo-pl-uodo decyzja <sygnatura>`).
    „CBOSA odrzuciło zapytanie: …" = błąd parametrów (np. formatu daty) → popraw i ponów.
    „BŁĄD: … strona bez listy wyników" albo „BŁĄD sieci" = serwer → ponów za chwilę.
 3. **Baza ma charakter informacyjno-edukacyjny** (nie jest urzędowym publikatorem, orzeczenia są

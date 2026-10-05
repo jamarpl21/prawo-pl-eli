@@ -64,6 +64,11 @@ poprzez `.single_result.invalid`. Potwierdzono źródło tego oznaczenia:
 a obraz zawiera napis „ORZECZENIE NIEPRAWOMOCNE”. Parser odczytuje tę flagę jako
 `false`; brak klasy i brak jawnego komunikatu nadal oznacza `null`, nie `true`.
 
+Metryka bywa też wprost oznaczona polem `<dt>Data uprawomocnienia:</dt><dd>8 czerwca 2026</dd>`
+(`154510000003006_VI_Ka_001622_2025_Uz_2026-06-08_001`, sprawdzone 2026-10-05) — parser zwraca
+wtedy `prawomocne: true` i `data_uprawomocnienia`. Ten dokument to samo „uzasadnienie” (`<h2>… -
+uzasadnienie …`): „Data orzeczenia” 8 czerwca 2026 jest datą uzasadnienia, a wyrok zapadł 20.05.2026.
+
 ## RSS
 
 Lista kanałów: `/rss/courts` (według sądów) i `/rss/themephrases` (według haseł).

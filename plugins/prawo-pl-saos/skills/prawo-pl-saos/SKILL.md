@@ -98,8 +98,14 @@ Nie szukaj helpera przez `find` po katalogach użytkownika ani systemu i nie pob
   (KIO 1564/18 nie ma w niej ŻADNEGO przepisu Pzp, o które chodzi w sentencji) i bywa uszkodzona
   (`art. 4793647945`, `Nr 0`, `art. 2oraz` — silnik oznacza takie wpisy „wpis SAOS prawdopodobnie
   uszkodzony"); przepisy rozstrzygnięcia czytaj z sentencji.
+  **Typ „uzasadnienie”:** pole „Data” to data sporządzenia UZASADNIENIA, nie data wyroku (VI Ka 1622/25:
+  2026-06-08, a wyrok zapadł 20.05.2026; portal MS podaje tak samo) — silnik ostrzega, podaje datę
+  z nagłówka treści jako prawdopodobną datę wyroku (do potwierdzenia) i datę publikacji w źródle.
 - **sygnatura** — szybkie odszukanie po numerze sprawy:
   `python3 scripts/saos.py sygnatura III CSK 203/09`
+  Przy każdym trafieniu pokazuje **sąd i wydział**. Ta sama sygnatura bywa w wielu sądach
+  (`I ACa 100/13` — 4 RÓŻNE sprawy w SA Warszawa, Łódź, Lublin, Poznań): silnik ostrzega, że to
+  różne sprawy, i nie wskazuje jednego „pełnego tekstu” — wybierz trafienie właściwego sądu.
 - każda komenda przyjmuje `--json` oraz `--strict`; obie flagi działają przed komendą i po niej.
   Zero trafień / nierozpoznana odpowiedź API kończą się komunikatem i kodem wyjścia ≠ 0 — także z `--json`
   (nie dostaniesz pustego JSON-a, który wyglądałby jak „sprawdzone, nic nie ma”); przy `--sad SN|TK|KIO`
