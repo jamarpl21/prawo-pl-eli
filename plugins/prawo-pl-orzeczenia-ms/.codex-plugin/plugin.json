@@ -1,6 +1,6 @@
 {
   "name": "prawo-pl-orzeczenia-ms",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Orzeczenia sądów powszechnych (SA/SO/SR) bezpośrednio z Portalu Orzeczeń MS: wyszukiwanie, metryka, pełne uzasadnienia, powołane przepisy, PDF i RSS. Publiczny HTML/XML przez standardową bibliotekę Pythona, bez przeglądarki.",
   "author": {
     "name": "Krzysztof Gibek",

@@ -1,7 +1,7 @@
 ---
 name: prawo-pl-orzeczenia-ms
 metadata:
-  version: "2.1.0"
+  version: "2.2.0"
 description: >-
   Pobiera orzeczenia sądów powszechnych (SA/SO/SR) bezpośrednio z Portalu Orzeczeń
   Ministerstwa Sprawiedliwości (orzeczenia.ms.gov.pl). Używaj, gdy użytkownik wskazuje
@@ -34,7 +34,7 @@ MS="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-orzeczenia-ms/scripts/orzeczenia_ms.py
 #    sprawdzana w kodzie przed zapisem i przed każdym uruchomieniem; niezgodna = helper nie startuje.
 [ -f "$MS" ] || MS=$(python3 - <<'EOF'
 import hashlib, os, sys, urllib.request
-WERSJA, SHA256 = "2.1.0", "d1d64a6f945b6d434ad8cb8311fdc6885ec3ad54b94973e92cd6abde33f4efd5"
+WERSJA, SHA256 = "2.2.0", "01b70681e67f7f7a7ea1b81c16e6c6d43a06e1aaf20545f7d64a2f446025d160"
 URL = f"https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/v{WERSJA}/plugins/prawo-pl-orzeczenia-ms/skills/prawo-pl-orzeczenia-ms/scripts/orzeczenia_ms.py"
 p = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"prawo-pl-orzeczenia-ms-{WERSJA}", "orzeczenia_ms.py")
 try:

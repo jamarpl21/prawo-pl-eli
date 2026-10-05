@@ -26,7 +26,7 @@ import sys, os, json, re, time, argparse, shutil, subprocess, tempfile, textwrap
 import urllib.request, urllib.parse, urllib.error
 from html.parser import HTMLParser
 
-__version__ = "2.1.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "2.2.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 SPARQL = "https://publications.europa.eu/webapi/rdf/sparql"
 CELLAR = "http://publications.europa.eu/resource/celex/"
 CDM = "http://publications.europa.eu/ontology/cdm#"

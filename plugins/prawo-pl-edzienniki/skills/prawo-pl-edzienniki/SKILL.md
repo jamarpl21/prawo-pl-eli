@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-edzienniki
-version: 2.1.0
+version: 2.2.0
 description: >-
   Odpytuje API ELI 16 WOJEWÓDZKICH DZIENNIKÓW URZĘDOWYCH — PRAWO MIEJSCOWE: uchwały rad gmin,
   powiatów i sejmików województw, rozporządzenia i zarządzenia wojewody, akty prawa miejscowego.
@@ -54,7 +54,7 @@ EDZ="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-edzienniki/scripts/edzienniki.py"
 #    sprawdzana w kodzie przed zapisem i przed każdym uruchomieniem; niezgodna = helper nie startuje.
 [ -f "$EDZ" ] || EDZ=$(python3 - <<'EOF'
 import hashlib, os, sys, urllib.request
-WERSJA, SHA256 = "2.1.0", "1434334b65cabac618e24f1649a3523c4959174562cc136b04992e63fa726449"
+WERSJA, SHA256 = "2.2.0", "e5ec8848eee2fd75de3226d50b72d4d58edf025e459d0e3d5673775ea78ce334"
 URL = f"https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/v{WERSJA}/plugins/prawo-pl-edzienniki/skills/prawo-pl-edzienniki/scripts/edzienniki.py"
 p = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"prawo-pl-edzienniki-{WERSJA}", "edzienniki.py")
 try:

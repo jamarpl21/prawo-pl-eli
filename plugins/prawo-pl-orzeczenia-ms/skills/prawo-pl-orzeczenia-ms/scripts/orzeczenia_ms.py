@@ -14,7 +14,7 @@ import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 from pathlib import Path
 
-__version__ = "2.1.0"
+__version__ = "2.2.0"
 SKILL_VERSION = __version__
 BASE = "https://orzeczenia.ms.gov.pl"
 USER_AGENT = "curl/8.7.1"  # sprawdzone 2026-09-20; inne UA uruchamiają F5/TSPD

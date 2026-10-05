@@ -14,6 +14,11 @@ Zmiany w kolejnych wydaniach: [CHANGELOG.md](CHANGELOG.md).
 case-law (CBOSA), primary common-court judgments (MS), Polish DPA decisions (UODO) and the public contracts register of Polish public
 finance sector entities (Centralny Rejestr Umów).*
 
+**Modele.** Skille są optymalizowane i testowane pod modele **Claude Fable 5.1** i **Claude Opus 5.5** — przy wydaniu 2.2.0
+oba przeszły ten sam zestaw 10 zadań z pułapkami (brzmienie przyszłe, sprostowania, nieważność aktu, brak treści u źródła,
+kolizje sygnatur, blokada sieci) z wynikiem 10/10: [docs/test-modeli-2026-10.md](docs/test-modeli-2026-10.md). Działają też
+z innymi agentami (OpenAI Codex), ale tam nie są w ten sposób testowane.
+
 Repo zawiera osiem bliźniaczych pluginów/skilli (wspólny marketplace `gibek-skills`, wersjonowane razem):
 
 | Plugin / skill | Źródło | Zakres |
@@ -278,9 +283,9 @@ Każdy tag `v*` publikuje po jednym zipie na plugin w GitHub Releases
 dla każdego z ośmiu pluginów):
 
 ```bash
-claude --plugin-dir ./prawo-pl-saos-v2.1.0.zip
+claude --plugin-dir ./prawo-pl-saos-v2.2.0.zip
 # albo zdalnie, bez pobierania:
-claude --plugin-url https://github.com/jamarpl21/prawo-pl-eli/releases/download/v2.1.0/prawo-pl-saos-v2.1.0.zip
+claude --plugin-url https://github.com/jamarpl21/prawo-pl-eli/releases/download/v2.2.0/prawo-pl-saos-v2.2.0.zip
 ```
 
 ## Użycie jako samodzielne CLI (bez żadnego LLM-a)
@@ -507,7 +512,7 @@ docs/                                    # raport audytu merytorycznego, instruk
 
 ## Wersjonowanie
 
-Wszystkie pluginy są wersjonowane **razem (lockstep)** — jedna wersja (obecnie **2.1.0**) zadeklarowana
+Wszystkie pluginy są wersjonowane **razem (lockstep)** — jedna wersja (obecnie **2.2.0**) zadeklarowana
 we wszystkich miejscach, identyczna; `tools/validate.py` wymusza to w CI:
 
 - `plugins/<plugin>/.claude-plugin/plugin.json` i `.codex-plugin/plugin.json` (pole `version`) — wszystkie pluginy,

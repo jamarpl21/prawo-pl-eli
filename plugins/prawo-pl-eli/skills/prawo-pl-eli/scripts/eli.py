@@ -27,7 +27,7 @@ import urllib.request, urllib.parse, urllib.error
 from html.parser import HTMLParser
 from html import unescape as _unescape
 
-__version__ = "2.1.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "2.2.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://api.sejm.gov.pl/eli"
 CONTENT_HOSTS = ("api.sejm.gov.pl",)
 # Pamięć podręczna udanych GET-ów bez parametrów (metadane, odniesienia) w obrębie jednego

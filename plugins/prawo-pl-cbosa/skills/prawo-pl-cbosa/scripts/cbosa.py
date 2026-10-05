@@ -34,7 +34,7 @@ wyników wyszukiwarki tego oznaczenia NIE ma, więc flaga jest dostępna tylko p
 import sys, os, json, re, time, argparse, ssl, socket, calendar, html as html_mod
 import urllib.request, urllib.parse, urllib.error, http.client, http.cookiejar
 
-__version__ = "2.1.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "2.2.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://orzeczenia.nsa.gov.pl"
 CONTENT_HOSTS = ("orzeczenia.nsa.gov.pl",)
 
