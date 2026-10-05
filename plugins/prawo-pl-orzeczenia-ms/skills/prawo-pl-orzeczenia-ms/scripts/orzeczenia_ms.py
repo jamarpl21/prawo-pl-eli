@@ -2,6 +2,7 @@
 """Publiczny Portal Orzeczeń MS: read-only HTML/RSS, wyłącznie stdlib."""
 import argparse
 import datetime as dt
+import http.client
 import json
 import re
 import sys
@@ -27,6 +28,14 @@ class Unknown(RuntimeError):
 
 class Empty(RuntimeError):
     """Rozpoznana, poprawna odpowiedź bez wyników."""
+
+
+class PortalError(Unknown):
+    """Rozpoznana strona błędu portalu (HTTP 400 „Błąd danych”, 404 „nie istnieje”)."""
+
+    def __init__(self, code, reason, url):
+        self.code, self.reason, self.url = code, reason, url
+        super().__init__(f"Portal zwrócił stronę błędu HTTP {code} „{reason}” dla {url}.")
 
 
 def safe_url(url):
@@ -57,8 +66,17 @@ class Client:
         try:
             with self.opener.open(req, timeout=40) as response:
                 data = response.read(20_000_001)
-        except (urllib.error.URLError, TimeoutError, OSError) as e:
+        except urllib.error.HTTPError as e:
+            # Portal zwraca własne strony błędów (400 „Błąd danych”, 404 „Strona o podanym adresie
+            # nie istnieje”) — rozpoznajemy je, by komunikat mówił, co się stało, a nie „brak wyników”.
+            reason = error_page(e)
+            if reason:
+                raise PortalError(e.code, reason, url) from e
             raise Unknown(f"Błąd dostępu do portalu: {e}") from e
+        except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as e:
+            # HTTPException (np. IncompleteRead przy urwanym połączeniu) nie jest OSError — bez tego
+            # wyjątek uciekał i proces kończył się kodem 1, czyli „brak wyników”.
+            raise Unknown(f"Błąd dostępu do portalu (niekompletna lub przerwana odpowiedź): {e!r}") from e
         if len(data) > 20_000_000:
             raise Unknown("Odpowiedź przekracza limit 20 MB.")
         if pdf:
@@ -72,6 +90,21 @@ class Client:
         if re.search(r"/TSPD/|<title>\s*Połączenie odrzucone|<title>\s*Request Rejected", text, re.I):
             raise Unknown("Portal odrzucił dostęp (F5/TSPD). Ponów później lub otwórz portal w przeglądarce.")
         return text
+
+
+def error_page(err):
+    try:
+        body = err.read(200_000).decode("utf-8", "replace")
+    except Exception:
+        return None
+    finally:
+        err.close()
+    if "Portal Orzeczeń" not in body:
+        return None
+    for reason in ("Błąd danych", "Strona o podanym adresie nie istnieje"):
+        if reason in body:
+            return reason
+    return None
 
 
 class Node:
@@ -88,9 +121,12 @@ class Node:
     def text(self):
         if self.tag in ("script", "style"):
             return ""
-        text = "".join(c.text() if isinstance(c, Node) else c for c in self.children)
+        # Znaki nowej linii w źródle HTML to zwykłe białe znaki (przeglądarka i PDF pokazują
+        # „Sygn. akt XXI U 2364/25” w jednej linii); łamanie wynika tylko z elementów blokowych.
+        text = "".join(c.text() if isinstance(c, Node) else re.sub(r"[ \t\r\n\f]+", " ", c) for c in self.children)
         if self.tag == "sup":
-            text = text.translate(str.maketrans("0123456789+-=()", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾"))
+            # „477<sup>\n (\n 14)</sup>” → „477⁽¹⁴⁾”: spacje wewnątrz indeksu górnego to formatowanie źródła.
+            text = re.sub(r"\s+", "", text).translate(str.maketrans("0123456789+-=()", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾"))
         if self.tag in {"p", "div", "h1", "h2", "h3", "h4", "h5", "li", "dt", "dd", "tr", "blockquote", "br"}:
             return "\n" + text + "\n"
         if self.tag in {"td", "th"}:
@@ -136,7 +172,30 @@ def page(text):
     titles = list(root.all("title"))
     if not titles or "Portal Orzeczeń Sądów Powszechnych" not in titles[0].plain():
         raise Unknown("Nierozpoznana strona portalu; nie jest to potwierdzone zero wyników.")
+    # Każda strona portalu kończy się </html>; urwana odpowiedź mogłaby dać „kompletną” treść bez końca.
+    if "</html>" not in text[-2000:].lower():
+        raise Unknown("Niekompletna odpowiedź portalu (brak końca strony HTML).")
     return root
+
+
+def bound_to(container, ident, what):
+    # Wiążemy stronę z żądanym ID (zakładki zawierają link z ID) zamiast ufać statusowi HTTP 200.
+    if not any(n.attrs.get("href", "").endswith("/" + ident) for n in container.all("a")):
+        raise Unknown(f"{what} dotyczy innego orzeczenia.")
+
+
+def tabs(container):
+    return {n.plain() for ul in container.all("ul", cls="tabs") for n in ul.all("a")}
+
+
+REASONS_ONLY_NOTE = ("Dokument bez sentencji wyroku/postanowienia (typ: {typ}): „Data orzeczenia” w portalu "
+                     "bywa datą uzasadnienia lub zarządzenia, a nie datą wydania wyroku — datę wyroku sprawdź w treści.")
+
+
+def reasons_only(typ):
+    parts = [p.strip().lower() for p in (typ or "").split(",")]
+    decisions = ("wyrok", "postanowienie", "nakaz", "uchwała")
+    return "uzasadnienie" in parts and not any(p.startswith(decisions) for p in parts)
 
 
 def one(root, **kwargs):
@@ -222,6 +281,10 @@ def search_url(args):
         values[13] = "*"
     if args.od and args.do and args.od > args.do:
         raise ValueError("Data od nie może być późniejsza niż data do.")
+    if all(v in (None, "") for v in values):
+        # Portal bez kryterium zwraca sam formularz (bez listy) — to nie jest „zero wyników”.
+        raise ValueError("Podaj co najmniej jedno kryterium (frazę, sygnaturę, datę, sąd, wydział, hasło…); "
+                         "portal nie zwraca listy dla pustego zapytania.")
     return BASE + "/search/advanced/" + "/".join([slot(v) for v in values] + [args.sort, args.kierunek, str(args.strona)])
 
 
@@ -249,22 +312,37 @@ def parse_search(text, url, number=1):
         if len(paragraphs) < 2 or not date or not link.plain():
             raise Unknown("Niekompletny rekord wyszukiwania.")
         excerpts = list(result.all("blockquote"))
+        # Lista portalu pokazuje <p>Orzeczenie nieprawomocne</p>; brak napisu NIE potwierdza prawomocności.
+        nonfinal = any(re.fullmatch(r"orzeczenie\s+nieprawomocne", p, re.I) for p in paragraphs)
         items.append(dict(id=ident, sygnatura=link.plain(), sad=paragraphs[1], typ=paragraphs[0],
                           data_orzeczenia=polish_date(date[1]), data_publikacji=polish_date(publication[1]) if publication else None,
+                          oznaczenie_nieprawomocne=True if nonfinal else None,
                           url=doc_url("details", ident), fragment=excerpts[0].plain() if excerpts else ""))
     expected = max(0, min(10, total - (number - 1) * 10))
+    if total and not expected and not items:
+        # Trafienia są — to błędny numer strony, nie brak orzeczeń (kod 1 wprowadzałby w błąd).
+        raise ValueError(f"Strona {number} jest poza zakresem: portal ma {total} trafień, "
+                         f"ostatnia strona to {-(-total // 10)}.")
     if len(items) != expected:
         raise Unknown(f"Niekompletna lista: oczekiwano {expected}, odczytano {len(items)}.")
     if not items:
-        raise Empty(f"Brak wyników na stronie {number} (łącznie {total}). {NOTE}")
-    return dict(zrodlo=url, liczba_wynikow=total, strona=number, wyniki=items, uwagi=[NOTE])
+        raise Empty(f"Portal nie znalazł wyników na stronie {number}. {NOTE}")
+    notes = [NOTE]
+    flagged = sum(1 for i in items if i["oznaczenie_nieprawomocne"])
+    if flagged:
+        notes.append(f"{flagged} z {len(items)} pozycji na tej stronie portal oznacza jako „Orzeczenie nieprawomocne” "
+                     "(pole oznaczenie_nieprawomocne). Brak oznaczenia nie potwierdza prawomocności — sprawdź metrykę.")
+    reasons = sorted({i["sygnatura"] for i in items if reasons_only(i["typ"])})
+    if reasons:
+        notes.append("Pozycje bez sentencji (typ „uzasadnienie”/„zarządzenie, uzasadnienie”): " + ", ".join(reasons)
+                     + " — ich „data_orzeczenia” bywa datą uzasadnienia lub zarządzenia, nie wyroku.")
+    return dict(zrodlo=url, liczba_wynikow=total, strona=number, wyniki=items, uwagi=notes)
 
 
 def parse_meta(text, ident):
     root = page(text)
     container = one(root, ident="content")
-    if not any(n.attrs.get("href", "").endswith("/" + ident) for n in container.all("a")):
-        raise Unknown("Metryka dotyczy innego orzeczenia.")
+    bound_to(container, ident, "Metryka")
     dl = one(container, tag="dl")
     fields = {}
     label = None
@@ -274,9 +352,22 @@ def parse_meta(text, ident):
         if n.tag == "dt":
             label = n.plain().rstrip(":")
         elif n.tag == "dd" and label:
-            fields[label] = (fields[label] + "; " if label in fields else "") + n.plain()
+            value = re.sub(r" +,", ",", n.plain())  # „Energetyczne prawo , Koncesja” → „…, …”
+            fields[label] = (fields[label] + "; " if label in fields else "") + value
     if any(not fields.get(k) for k in ("Sygnatura", "Sąd", "Data orzeczenia")):
         raise Unknown("Niekompletna metryka orzeczenia.")
+    if "Istotność" in fields and not fields["Istotność"]:
+        # Gwiazdki istotności portal rysuje skryptem: Tapestry.init({"relevanceInit":[{…,"relevance":N}]}).
+        stars = re.findall(r'"relevanceInit":\[\{"isDisabled":true,"relevance":(\d)\}\]', text)
+        if len(stars) == 1:
+            fields["Istotność"] = stars[0]
+        else:
+            del fields["Istotność"]
+    heading = next((h.plain() for h in container.all("h2")), "")
+    prefix = fields["Sygnatura"] + " - "
+    typ = None
+    if heading.startswith(prefix) and fields["Sąd"] in heading:
+        typ = heading[len(prefix):heading.rfind(fields["Sąd"])].strip() or None
     # Wyklucz treść cytowanych wyroków; status czytamy wyłącznie na stronie metryki.
     status = finality(container)
     # Pole metryki „Data uprawomocnienia” (zweryfikowane 2026-10-05, VI Ka 1622/25) to wprost
@@ -294,11 +385,13 @@ def parse_meta(text, ident):
         notes.append("Portal oznacza orzeczenie jako nieprawomocne.")
     elif status is None:
         notes.append("Portal nie potwierdza prawomocności tego orzeczenia.")
-    headings = [h.plain() for h in container.all("h2")]
-    if any(re.search(r"\s-\s+uzasadnienie\b", h) for h in headings):
-        notes.append("Dokument typu „uzasadnienie”: „Data orzeczenia” w metryce portalu bywa datą "
-                     "sporządzenia uzasadnienia, a nie datą wydania wyroku — datę wyroku sprawdź w treści.")
-    return dict(id=ident, sygnatura=fields["Sygnatura"], sad=fields["Sąd"],
+    if reasons_only(typ):
+        notes.append(REASONS_ONLY_NOTE.format(typ=typ))
+    if not {"Powołane przepisy", "Orzeczenia podobne"} & tabs(container):
+        # Obserwacja 2026-10-05 (14/14 dokumentów): bez tych zakładek portal zwraca „Błąd danych” dla treści.
+        notes.append("Portal nie pokazuje zakładek „Powołane przepisy”/„Orzeczenia podobne” — "
+                     "zaobserwowano, że treść takich (zwykle świeżo opublikowanych) dokumentów bywa jeszcze niedostępna.")
+    return dict(id=ident, sygnatura=fields["Sygnatura"], sad=fields["Sąd"], typ=typ,
                 data_orzeczenia=polish_date(fields["Data orzeczenia"]),
                 data_publikacji=polish_date(fields["Data publikacji"]) if fields.get("Data publikacji") else None,
                 data_uprawomocnienia=final_date,
@@ -313,14 +406,13 @@ def parse_content(text, ident):
     if len(content) < 80:
         raise Unknown("Brak pełnej treści orzeczenia.")
     links = [safe_url(n.attrs["href"]) for n in container.all("a") if n.attrs.get("href", "").startswith("/content.pdffile/")]
-    # Wiążemy stronę treści z żądanym ID zamiast ufać statusowi HTTP 200.
-    if not any(n.attrs.get("href", "").endswith("/" + ident) for n in container.all("a")):
-        raise Unknown("Strona treści dotyczy innego orzeczenia.")
+    bound_to(container, ident, "Strona treści")
     return dict(tresc=content, url_tresci=doc_url("content", ident), pdf_url=links[0] if links else None)
 
 
-def parse_regulations(text):
+def parse_regulations(text, ident):
     root = page(text)
+    bound_to(one(root, ident="content"), ident, "Lista powołanych przepisów")
     regs = one(root, ident="regulations")
     return [dict(tytul=n.plain(), linki=[a.attrs.get("href") for a in n.all("a")]) for n in regs.all("li")]
 
@@ -340,13 +432,37 @@ def parse_rss(text, url, limit):
         title, link = entry.findtext("title"), entry.findtext("link")
         if not title or not link or not entry.findtext("pubDate"):
             raise Unknown("Niekompletny wpis RSS.")
-        link = safe_url(link)
-        ident = doc_id(link)
-        items.append(dict(id=ident, tytul=title, url=doc_url("details", ident), data_publikacji=entry.findtext("pubDate")))
+        ident = rss_id(link)
+        item = dict(id=ident, tytul=title, sad=entry.findtext("author"), url=doc_url("details", ident),
+                    data_publikacji=entry.findtext("pubDate"))
+        if urllib.parse.urlsplit(link).hostname != "orzeczenia.ms.gov.pl":
+            item["link_zrodlowy"] = link
+        items.append(item)
     if not items:
         raise Empty(f"Kanał RSS nie zawiera pozycji. {NOTE}")
-    return dict(zrodlo=url, wyniki=items[:limit], liczba_w_kanale=len(items),
-                uwagi=[NOTE, "RSS jest ograniczonym oknem publikacji, nie pełnym archiwum. Data RSS nie jest datą wyroku."])
+    notes = [NOTE, f"RSS jest ograniczonym oknem publikacji (ten kanał: {len(items)} ostatnich pozycji), "
+                   "nie pełnym archiwum. Data RSS jest datą publikacji, nie datą wyroku."]
+    if any("link_zrodlowy" in i for i in items):
+        notes.append("Kanał sądu linkuje do podportalu sądu; `url` wskazuje ten sam identyfikator w portalu "
+                     "centralnym (metryka sprawdza zgodność ID), podportal nie jest pobierany.")
+    return dict(zrodlo=url, wyniki=items[:limit], liczba_w_kanale=len(items), uwagi=notes)
+
+
+SUBPORTAL = re.compile(r"orzeczenia\.[a-z0-9-]+(\.[a-z0-9-]+)*\.(sa|so|sr)\.gov\.pl")
+
+
+def rss_id(link):
+    # Kanały /rsscontent/<kod-sądu> linkują do podportali (np. orzeczenia.bialystok.sa.gov.pl);
+    # te same ID serwuje portal centralny (sprawdzone 2026-10-05: SA, SO, SR). Bierzemy tylko ID —
+    # nigdy nie pobieramy obcego hosta.
+    p = urllib.parse.urlsplit(link)
+    host = (p.hostname or "").lower()
+    if host == "orzeczenia.ms.gov.pl":
+        return doc_id(safe_url(link))
+    if p.scheme in ("http", "https") and SUBPORTAL.fullmatch(host) and not (p.username or p.password) \
+            and re.match(r"^/details/", p.path):
+        return doc_id(p.path.rsplit("/", 1)[-1])
+    raise Unknown("Wpis RSS prowadzi poza portal centralny i podportale sądów powszechnych.")
 
 
 def positive(value):
@@ -374,7 +490,8 @@ def parser():
     for command in ("szukaj", "sygnatura"):
         sub = subs.add_parser(command, parents=[flags])
         if command == "szukaj":
-            sub.add_argument("fraza", nargs="?", default="")
+            sub.add_argument("fraza", nargs="?", default="",
+                             help='Wszystkie słowa z odmianą; dokładna fraza w cudzysłowie, np. \'"dobra osobiste"\'')
             sub.add_argument("--sygnatura")
         else:
             sub.add_argument("sygnatura", nargs="+")
@@ -405,26 +522,59 @@ def parser():
 
 
 def run(args, client):
+    strict = getattr(args, "strict", False)
     if args.command in ("szukaj", "sygnatura"):
         if args.command == "sygnatura":
             args.sygnatura = " ".join(args.sygnatura)
         url = search_url(args)
-        return parse_search(client.get(url), url, args.strona)
+        result = parse_search(client.get(url), url, args.strona)
+        courts = sorted({i["sad"] for i in result["wyniki"]})
+        if args.sygnatura and len(courts) > 1:
+            result["uwagi"].append(f"Sygnatura „{args.sygnatura}” występuje w {len(courts)} sądach ({'; '.join(courts)}) — "
+                                   "to różne sprawy; wybierz pozycję po sądzie (filtr --sad) i podawaj ID.")
+        if strict:
+            result["uwagi"].append("--strict nie filtruje listy wyników: prawomocność każdej pozycji sprawdź komendą metryka.")
+        return result
     if args.command == "rss":
         channel = args.sad or "Orzecznictwo sądów powszechnych"
         if args.sad and not re.fullmatch(r"\d{8}", args.sad):
             raise ValueError("Kod kanału sądu musi mieć 8 cyfr; lista: " + BASE + "/rss/courts")
         url = BASE + "/rsscontent/" + slot(channel)
-        return parse_rss(client.get(url), url, args.limit)
+        try:
+            result = parse_rss(client.get(url), url, args.limit)
+        except PortalError as e:
+            raise Unknown(f"Portal nie ma kanału RSS „{channel}” ({e.reason}, HTTP {e.code}); "
+                          f"kody kanałów: {BASE}/rss/courts") from e
+        if strict:
+            result["uwagi"].append("--strict nie filtruje RSS: prawomocność każdej pozycji sprawdź komendą metryka.")
+        return result
     ident = args.id
-    result = parse_meta(client.get(doc_url("details", ident)), ident)
-    if getattr(args, "strict", False) and result["prawomocne"] is not True:
-        raise Unknown("--strict: portal nie potwierdza prawomocności (albo oznacza orzeczenie jako nieprawomocne).")
-    if args.command == "przepisy":
-        result["powolane_przepisy"] = parse_regulations(client.get(doc_url("regulations", ident)))
-        result["uwagi"].append("Lista powołanych przepisów portalu może być niepełna; brzmienie sprawdź w ELI.")
-    if args.command in ("orzeczenie", "pdf"):
-        result.update(parse_content(client.get(doc_url("content", ident)), ident))
+    try:
+        result = parse_meta(client.get(doc_url("details", ident)), ident)
+    except PortalError as e:
+        if e.code == 404:
+            raise Unknown(f"Portal nie zna dokumentu o ID {ident} („{e.reason}”, HTTP 404). "
+                          "Sprawdź ID w wyszukiwarce; nie konstruuj go z sygnatury.") from e
+        raise
+    if strict and result["prawomocne"] is not True:
+        state = "oznacza orzeczenie jako nieprawomocne" if result["prawomocne"] is False else "nie potwierdza prawomocności"
+        raise Unknown(f"--strict: portal {state} ({result['sygnatura']}, {result['sad']}).")
+    try:
+        if args.command == "przepisy":
+            result["powolane_przepisy"] = parse_regulations(client.get(doc_url("regulations", ident)), ident)
+            result["uwagi"].append("Lista powołanych przepisów portalu może być niepełna; brzmienie sprawdź w ELI.")
+            if not result["powolane_przepisy"]:
+                basis = result["metryka"].get("Podstawa prawna")
+                result["uwagi"].append("Portal nie podał listy powołanych przepisów (pusta zakładka) — to NIE znaczy, "
+                                       "że orzeczenie nie powołuje przepisów"
+                                       + (f"; pole metryki „Podstawa prawna”: {basis.rstrip('.')}." if basis else "; sprawdź treść."))
+        if args.command in ("orzeczenie", "pdf"):
+            result.update(parse_content(client.get(doc_url("content", ident)), ident))
+    except PortalError as e:
+        what = "listy powołanych przepisów" if args.command == "przepisy" else "treści"
+        raise Unknown(f"Portal nie udostępnia {what} tego orzeczenia: zwraca stronę „{e.reason}” (HTTP {e.code}), "
+                      "również w przeglądarce. Metryka jest dostępna (komenda metryka). Zaobserwowano to przy świeżo "
+                      "opublikowanych dokumentach — ponów później; nie cytuj treści z fragmentu wyszukiwarki.") from e
     if args.command == "pdf":
         if not result["pdf_url"]:
             raise Unknown("Portal nie udostępnił linku do PDF.")
@@ -455,6 +605,9 @@ def main(argv=None):
         return 1
     except (Unknown, ValueError, OSError) as e:
         print("BŁĄD (UNKNOWN): " + str(e), file=sys.stderr)
+        return 2
+    except Exception as e:  # nieprzewidziany błąd nigdy nie może dać kodu 1 („brak wyników”)
+        print(f"BŁĄD (UNKNOWN): nieoczekiwany błąd helpera: {e!r}", file=sys.stderr)
         return 2
 
 

@@ -71,18 +71,34 @@ python3 "$MS" rss --sad 15050000 --limit 5
   `--sad` (8 cyfr), `--wydzial` (2 cyfry), `--apelacja` (4), `--okreg` (6),
   `--haslo` (dokładne hasło tematyczne), `--przepis` (pole Podstawa prawna),
   `--tezowane`, `--istotnosc 0..5`. Kody są wewnętrznymi identyfikatorami portalu,
-  nie nazwami sądów; nie zgaduj ich. Przykłady i mapowanie: [references/api.md](references/api.md).
+  nie nazwami sądów; nie zgaduj ich. Kod sądu = kod kanału z https://orzeczenia.ms.gov.pl/rss/courts
+  (lista nazwa→kod; te same kody przyjmuje wyszukiwarka). Mapowanie: [references/api.md](references/api.md).
+- Fraza bez cudzysłowu to **wszystkie słowa, z odmianą** (np. `dobra osobiste`: 59 138 trafień 5.10.2026,
+  także „dobrem … osobistą”); dokładną frazę podaj w cudzysłowie: `'"dobra osobiste"'` (9 576).
+  Puste zapytanie (bez żadnego kryterium) jest odrzucane — portal nie zwraca dla niego listy.
 - Strona od **1**, po 10 rekordów. `--sort score|data|datapublikacji|istotnosc`,
   `--kierunek ascending|descending`. Dla konkretnego dnia ustaw `--od` i `--do` na tę samą datę.
+  Strona poza zakresem to błąd (kod 2, z numerem ostatniej strony), nie „brak wyników”.
+- Pozycja listy ma `oznaczenie_nieprawomocne: true`, gdy portal pisze na liście „Orzeczenie
+  nieprawomocne”; `null` niczego nie potwierdza. Ta sama sygnatura bywa w wielu sądach
+  (np. II K 1/20 w trzech) — silnik dodaje wtedy uwagę; rozróżniaj po `sad` i `id`.
 - `orzeczenie` pobiera metrykę i pełny tekst; nie zastępuj uzasadnienia fragmentem z wyszukiwarki.
-  `przepisy` pokazuje osobną listę portalu (może być niepełna). `pdf` pobiera eksport urzędowy
-  i nie nadpisuje istniejącego pliku. Link do podobnych orzeczeń jest w `podobne_url`;
-  jego dostępność nie jest gwarantowana (w teście 2026-09-20 endpoint zwrócił HTTP 400).
-- `rss`: ograniczone okno nowych publikacji, nie pełne archiwum; `--sad` to kod kanału
-  z https://orzeczenia.ms.gov.pl/rss/courts. Data RSS jest datą publikacji, nie wyroku.
+  Dla części świeżo opublikowanych dokumentów portal (także w przeglądarce) odpowiada na
+  zakładkę „Treść” stroną „Błąd danych” (HTTP 400) — silnik zwraca wtedy kod 2 z tym opisem;
+  metryka działa. Takie dokumenty nie mają w metryce zakładek „Powołane przepisy”/„Orzeczenia
+  podobne” (obserwacja z 5.10.2026, uwaga w `uwagi`). `przepisy` pokazuje osobną listę portalu
+  (może być niepełna); pusta lista dostaje uwagę i odsyła do pola „Podstawa prawna”.
+  `pdf` pobiera eksport urzędowy i nie nadpisuje istniejącego pliku. Link do podobnych orzeczeń
+  jest w `podobne_url`; jego dostępność nie jest gwarantowana (5.10.2026 endpoint zwracał HTTP 400).
+- `rss`: ograniczone okno nowych publikacji, nie pełne archiwum (kanał ogólny: 100 pozycji,
+  w teście 5.10.2026 ok. 1–2 dni publikacji; kanał sądu: 20 pozycji). `--sad` to kod kanału z /rss/courts. Kanały
+  sądów linkują do podportali (np. orzeczenia.bialystok.sa.gov.pl); silnik zwraca `url` z tym
+  samym ID w portalu centralnym i `link_zrodlowy`. Data RSS jest datą publikacji, nie wyroku.
 - Wszystkie komendy przyjmują `--json` i `--strict`, przed lub po komendzie.
   JSON ma pola `uwagi`; nie pomijaj ich w odpowiedzi. Kod 0 = wynik, 1 = rozpoznany brak
-  wyników, 2 = błąd/UNKNOWN. Przy błędzie stdout pozostaje pusty także z `--json`.
+  wyników (portal wprost: „Nie znaleziono żadnego wyniku”), 2 = błąd/UNKNOWN — także urwana
+  odpowiedź, strona błędu portalu (np. 404 dla nieznanego ID) i każdy nieprzewidziany wyjątek.
+  Przy błędzie stdout pozostaje pusty także z `--json`.
 
 ## Weryfikacja i cytowanie
 
@@ -95,13 +111,15 @@ zwracana jest też dla `.single_result.invalid`: oficjalny arkusz CSS wyświetla
 obraz „ORZECZENIE NIEPRAWOMOCNE” (`nieprawomocny.png`, zweryfikowano 20.09.2026).
 Pole metryki „Data uprawomocnienia” (np. VI Ka 1622/25: 8 czerwca 2026) daje `prawomocne: true`
 i `data_uprawomocnienia` (ISO); przy sprzeczności z oznaczeniem „nieprawomocne” zostaje `false`
-z uwagą o sprzeczności. Dla dokumentu typu „uzasadnienie” „Data orzeczenia” bywa datą
-sporządzenia uzasadnienia, nie wyroku — silnik dodaje uwagę.
+z uwagą o sprzeczności. Metryka ma pole `typ` (z nagłówka portalu, np. „wyrok z uzasadnieniem”).
+Dla dokumentu bez sentencji („uzasadnienie”, „zarządzenie, uzasadnienie”) „Data orzeczenia” bywa
+datą uzasadnienia lub zarządzenia, nie wyroku (XIII Ga 696/25: 25.09 zamiast 11.09.2026) —
+silnik dodaje uwagę także w wynikach wyszukiwania.
 Brak komunikatu, oznaczenia i pola daty uprawomocnienia to `null`, nie domniemanie prawomocności.
 `--strict` dla `metryka`, `orzeczenie`, `przepisy` i `pdf` blokuje wynik, jeśli portal
 nie potwierdza prawomocności. Zwykły tryb udostępnia treść z ostrzeżeniem.
 Dla wyszukiwania i RSS kontrolowana jest struktura odpowiedzi, ale nie prawomocność
-poszczególnych pozycji — trzeba pobrać ich metryki. To nie jest ocena trafności orzeczenia
+poszczególnych pozycji — `--strict` nie filtruje listy (dodaje o tym uwagę); pobierz metryki. To nie jest ocena trafności orzeczenia
 ani dowód, że lista portalu zawiera całość orzecznictwa.
 
 Treść i aktualność przepisów sprawdzaj w `prawo-pl-eli`; NSA/WSA w `prawo-pl-cbosa`.
