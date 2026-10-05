@@ -112,6 +112,17 @@ wersje skonsolidowane `02016R0679-20160504`, sprostowania `32016R0679R(01)`, tra
   `python3 scripts/eurlex.py tekst 02016R0679-20160504 --fragment "art. 28"`
   `python3 scripts/eurlex.py tekst 32024R1689 --fragment "profilowanie"` (pełnotekstowo)
   `--jezyk eng` — inna wersja językowa; `--pdf ŚCIEŻKA` zapisuje urzędowy PDF.
+  Starsze akty (np. `31995L0046`, e-Privacy `32002L0058`) mają w CELLAR tylko HTML (bez XHTML)
+  i PDF pod innym plikiem niż `DOC_1` — `tekst` i `--pdf` pobierają je normalnie. 404 na akcie
+  bazowym narzędzie wyjaśnia: „sprawdź numer CELEX" tylko gdy aktu nie ma w metadanych; gdy akt
+  istnieje, mówi, czego brakuje (języka → `--jezyk`, HTML → `--pdf`).
+  **Sprostowania.** Tekst aktu bazowego (i jego PDF) to brzmienie z Dz.U. SPRZED sprostowań. Gdy
+  w danym języku istnieje sprostowanie (`…R(nn)`), `tekst` wypisuje je (CELEX, data, poprawione
+  artykuły) i wskazuje wersję skonsolidowaną, która je zawiera; przy `--fragment "art. N"`
+  dotkniętym sprostowaniem — osobne „art. N SPROSTOWANO … brzmienie NIESPROSTOWANE". Przykład:
+  RODO po polsku, art. 4 pkt 1 w akcie bazowym „informacje", po sprostowaniu `32016R0679R(02)`
+  „wszelkie informacje" (też art. 10; art. 82 ust. 2 — `R(03)`) → cytuj z `02016R0679-20160504`
+  albo z aktu bazowego RAZEM ze sprostowaniem.
   Fragment kończy się na granicy jednostki redakcyjnej (następny artykuł/rozdział/załącznik) oraz
   na końcu części normatywnej: formuła „Sporządzono w…", podpisy i blok przypisów końcowych
   (rozpoznawany po strukturze XHTML CELLAR) NIE wchodzą do fragmentu ostatniego artykułu; formuła
@@ -127,19 +138,22 @@ wersje skonsolidowane `02016R0679-20160504`, sprostowania `32016R0679R(01)`, tra
   Zero trafień / nierozpoznana odpowiedź API kończą się komunikatem i kodem wyjścia ≠ 0 — także z `--json`
   (nie dostaniesz pustego JSON-a, który wyglądałby jak „sprawdzone, nic nie ma”; dotyczy też `szukaj`).
   `--json` dla `meta` zwraca obiekt: `meta` (surowe wiersze tej pracy), `akt_bazowy` (na wersji
-  skonsolidowanej), `zmieniajace`, `wersje_skonsolidowane`, `ostrzezenia`.
+  skonsolidowanej), `zmieniajace`, `sprostowania` (w języku `--jezyk`), `wersje_skonsolidowane`,
+  `ostrzezenia`.
 - **Co sprawdza `--strict`, a czego nie.** Każda kontrola wykonuje się PRZED emisją wyniku; awaria
-  kontroli (SPARQL niedostępny) blokuje wynik zamiast udawać „brak". Blokuje: `tekst` aktu bazowego,
-  gdy istnieją wersje skonsolidowane, i starszą wersję skonsolidowaną, gdy jest nowsza (także w
+  kontroli (SPARQL niedostępny) blokuje wynik zamiast udawać „brak". Blokuje: `tekst` (i `--pdf`)
+  aktu bazowego, gdy istnieją wersje skonsolidowane albo SPROSTOWANIE w danym języku (tekst
+  niesprostowany), i starszą wersję skonsolidowaną, gdy jest nowsza (także w
   `meta`); `meta` AKTU BAZOWEGO, gdy akt był zmieniany (daty stosowania mogą być nieaktualne —
   użyj `meta`/`tekst` najnowszej konsolidacji). Nie blokuje: `meta` aktu bazowego bez nowelizacji
-  (konsolidacja z samych sprostowań → tylko ostrzeżenie), `meta` najnowszej wersji skonsolidowanej
+  (konsolidacja z samych sprostowań i same sprostowania → tylko ostrzeżenie), `meta` najnowszej
+  wersji skonsolidowanej
   (daty aktu bazowego idą z ostrzeżeniem). `--strict` NIE weryfikuje treści dat z przepisami
   końcowymi ani nie wykrywa zmian, których CELLAR jeszcze nie zaindeksował.
 
-Narzędzie samo ostrzega: na akcie bazowym podpowiada najnowszą wersję skonsolidowaną; na wersji
-skonsolidowanej przypomina o jej dokumentacyjnym charakterze i o nowszych wersjach. Nie ignoruj
-tych ostrzeżeń.
+Narzędzie samo ostrzega: na akcie bazowym podpowiada najnowszą wersję skonsolidowaną i wymienia
+sprostowania w danym języku; na wersji skonsolidowanej przypomina o jej dokumentacyjnym charakterze,
+o nowszych wersjach i o sprostowaniach, których ta wersja nie obejmuje. Nie ignoruj tych ostrzeżeń.
 
 ### Akty bazowe najczęstszych aktów (pomiń `szukaj`)
 
@@ -177,8 +191,10 @@ wersji skonsolidowanych czytaj akt bazowy):
    wersji skonsolidowanej, a daty z `meta` traktuj jako pierwotne. Data w CELEX-ie wersji
    skonsolidowanej to „stan na" konsolidacji, nie data aktu.
 3. **Wersja skonsolidowana ma charakter dokumentacyjny** (nie jest tekstem autentycznym) — świetna
-   do analizy, ale w piśmie urzędowym/sądowym wskaż akt bazowy + akty zmieniające (`odniesienia`).
-   Do DOSŁOWNEGO cytatu pobierz urzędowy PDF (`tekst … --pdf`).
+   do analizy, ale w piśmie urzędowym/sądowym wskaż akt bazowy RAZEM ZE SPROSTOWANIAMI i aktami
+   zmieniającymi (`odniesienia`). Sam „akt bazowy + zmiany" to tekst niesprostowany. Do
+   DOSŁOWNEGO cytatu pobierz urzędowy PDF (`tekst … --pdf`) — a przy sprostowaniu także PDF
+   sprostowania (`tekst <CELEX>R(nn) --pdf …`).
 4. **Wszystkie wersje językowe są równorzędnie autentyczne.** Przy wątpliwości interpretacyjnej
    porównaj polską z angielską: `tekst <CELEX> --jezyk eng --fragment "art. N"`.
 5. **Zawsze podawaj CELEX i ELI** przy cytacie (np. „art. 28 ust. 3 RODO, CELEX 32016R0679",

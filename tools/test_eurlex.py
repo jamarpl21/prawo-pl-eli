@@ -8,7 +8,9 @@ import contextlib
 import io
 import sys
 import importlib.util
+import os
 import pathlib
+import tempfile
 import unittest
 from unittest import mock
 
@@ -17,6 +19,22 @@ _spec = importlib.util.spec_from_file_location(
     "eurlex", ROOT / "plugins/prawo-eu-eurlex/skills/prawo-eu-eurlex/scripts/eurlex.py")
 eurlex = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(eurlex)
+
+
+class _SiecZablokowana(BaseException):
+    """Test dotknął sieci. BaseException, bo _http łapie Exception i ponawia z time.sleep."""
+
+
+_straz_sieci = mock.patch.object(eurlex._opener, "open",
+                                 side_effect=_SiecZablokowana("test próbował połączyć się z siecią"))
+
+
+def setUpModule():
+    _straz_sieci.start()
+
+
+def tearDownModule():
+    _straz_sieci.stop()
 
 
 class TestEmptyConsolidations(unittest.TestCase):
@@ -211,6 +229,7 @@ class TestGraniceOstatniegoArtykulu(unittest.TestCase):
                                           strict=False, pdf=None, fragment=fragment)
                 with mock.patch.object(eurlex, "_http", return_value=(self.XHTML.encode(), "text/html")), \
                         mock.patch.object(eurlex, "_konsolidacje", return_value=[]), \
+                        mock.patch.object(eurlex, "_sprostowania", return_value=[]), \
                         contextlib.redirect_stdout(out):
                     eurlex.cmd_tekst(args)
                 self.assertNotIn(eurlex.GRANICA, out.getvalue())
@@ -332,6 +351,7 @@ class EurlexVerificationContractTests(unittest.TestCase):
         with mock.patch.object(eurlex, "_http", return_value=(b"<p>Artykul 1. Tresc.</p>", "text/html")), \
                 mock.patch.object(eurlex, "_konsolidacje",
                                   side_effect=eurlex.VerificationUnknown("timeout")), \
+                mock.patch.object(eurlex, "_sprostowania", return_value=[]), \
                 contextlib.redirect_stdout(out):
             with self.assertRaisesRegex(eurlex.VerificationUnknown, "timeout"):
                 eurlex.cmd_tekst(args)
@@ -343,6 +363,7 @@ class EurlexVerificationContractTests(unittest.TestCase):
                                return_value=(b"<p>Artykul 1. Starsza tresc.</p>", "text/html")), \
                 mock.patch.object(eurlex, "_konsolidacje",
                                   return_value=["02016R0679-20250504", "02016R0679-20160504"]), \
+                mock.patch.object(eurlex, "_sprostowania", return_value=[]), \
                 mock.patch.object(sys, "argv", ["eurlex.py", "tekst", "02016R0679-20160504", "--strict"]), \
                 contextlib.redirect_stdout(out):
             with self.assertRaises(SystemExit) as caught:
@@ -407,6 +428,7 @@ class TestT12StrictMetaAktuBazowego(unittest.TestCase):
         out = io.StringIO()
         with mock.patch.object(eurlex, "_http", return_value=(b"<p>Artykul 1.</p>", "text/html")), \
                 mock.patch.object(eurlex, "_konsolidacje", return_value=["02016R0679-20160504"]), \
+                mock.patch.object(eurlex, "_sprostowania", return_value=[]), \
                 mock.patch.object(sys, "argv", ["eurlex.py", "tekst", "32016R0679", "--strict"]), \
                 contextlib.redirect_stdout(out):
             with self.assertRaisesRegex(SystemExit, "tekst 02016R0679-20160504"):
@@ -428,10 +450,12 @@ TYP = "http://publications.europa.eu/resource/authority/resource-type/"
 class _FakeCellar:
     """Podmiana _sparql rozpoznająca zapytania po CELEX-ie w literale i po właściwości.
 
-    meta: {celex: [wiersze]}; zmiany: {celex: [celexy aktów zmieniających]} — brak klucza = []."""
+    meta: {celex: [wiersze]}; zmiany: {celex: [celexy aktów zmieniających]};
+    sprost: {celex: [wiersze sprostowań]} — brak klucza = []."""
 
-    def __init__(self, meta, zmiany=None, awaria_zmian=False):
+    def __init__(self, meta, zmiany=None, awaria_zmian=False, sprost=None):
         self.meta, self.zmiany, self.awaria_zmian = meta, zmiany or {}, awaria_zmian
+        self.sprost = sprost or {}
         self.zapytania = []
 
     def __call__(self, q, soft=False):
@@ -442,6 +466,8 @@ class _FakeCellar:
             if self.awaria_zmian:
                 raise eurlex.VerificationUnknown("timeout")
             return [_wiersz(c2=c) for c in self.zmiany.get(celex, [])]
+        if "resource_legal_corrects_resource_legal ?w" in q and "BIND" not in q:
+            return self.sprost.get(celex, [])
         return self.meta.get(celex, [])
 
 
@@ -696,10 +722,12 @@ class TestTekst404Konsolidacji(unittest.TestCase):
         msg = self._tekst("02024R1689-20240712", dict(side_effect=eurlex.VerificationUnknown("timeout")))
         self.assertIn("nie udało się zweryfikować", msg)
 
-    def test_akt_bazowy_404_zostaje_generyczny(self):
+    def test_akt_bazowy_404_nieznany_celex_kaze_sprawdzic_numer(self):
+        # 404 i brak pracy w metadanych CELLAR (SPARQL: zero wierszy) — dopiero wtedy „sprawdź numer CELEX"
         args = argparse.Namespace(celex=["39999R9999"], jezyk="pol", json=False, strict=False, pdf=None, fragment=None)
-        with mock.patch.object(eurlex, "_http", side_effect=SystemExit("BŁĄD: nie znaleziono zasobu (404): x")):
-            with self.assertRaisesRegex(SystemExit, "nie znaleziono zasobu"):
+        with mock.patch.object(eurlex, "_http", side_effect=SystemExit("BŁĄD: nie znaleziono zasobu (404): x")), \
+                mock.patch.object(eurlex, "_sparql", return_value=[]):
+            with self.assertRaisesRegex(SystemExit, "nie znaleziono aktu 39999R9999.*Sprawdź numer CELEX"):
                 eurlex.cmd_tekst(args)
 
 
@@ -783,6 +811,364 @@ class TestT07WymusHttps(unittest.TestCase):
         # Zmiana ich postaci zerwalaby dopasowanie w zapytaniach SPARQL.
         for stala in (eurlex.CDM, eurlex.LANG_AUTH, eurlex.TYPE_AUTH, eurlex.XSD_STR):
             self.assertTrue(stala.startswith("http://"), stala)
+
+
+# --- Sprostowania (żywy test 2026-10-05: tekst 32016R0679 --fragment "art. 4" drukował „informacje"
+# zamiast „wszelkie informacje" bez słowa o sprostowaniu 32016R0679R(02)) ------------------------------
+
+RODO, RODO_KONS = "32016R0679", "02016R0679-20160504"
+# wiersze SPARQL odtworzone z odpowiedzi CELLAR (corrects_resource_legal + język POL + skład konsolidacji);
+# R(01) nie ma wersji polskiej, więc w zapytaniu z językiem POL go nie ma
+SPROST_RODO_WIERSZE = [_wiersz(c2="32016R0679R(02)", date="2018-05-23", kc=RODO_KONS),
+                       _wiersz(c2="32016R0679R(03)", date="2021-03-04", kc=RODO_KONS)]
+# fragmenty tekstów sprostowań z CELLAR (XHTML; nagłówki miejsc jak w Dz.U.)
+SPROST_R02 = ("<p>Sprostowanie do rozporządzenia Parlamentu Europejskiego i Rady (UE) 2016/679</p>"
+              "<p>Strona 14, motyw 71, zdania piąte i szóste:</p><p>zamiast: …</p>"
+              "<p>Strona 33, art. 4 ust. 1:</p><p>zamiast:</p>"
+              "<p>„dane osobowe” oznaczają informacje o zidentyfikowanej …</p><p>powinno być:</p>"
+              "<p>„dane osobowe” oznaczają wszelkie informacje o zidentyfikowanej …</p>"
+              "<p>Strona 37, art. 6 ust. 4 lit. c):</p><p>zamiast: …</p>"
+              "<p>Strona 39, art. 10:</p><p>zamiast:</p><p>„Artykuł 10</p>"
+              "<p>Przetwarzanie danych osobowych dotyczących wyroków skazujących i naruszeń prawa</p>"
+              "<p>Strona 62, art. 47, tytuł:</p><p>zamiast: …</p>"
+              "<p>Strona 74, art. 64 ust. 6, 7 i 8:</p><p>zamiast: …</p>").encode()
+SPROST_R03 = ("<p>Sprostowanie do rozporządzenia (UE) 2016/679</p><p>Strona 81, art. 82 ust. 2:</p>"
+              "<p>zamiast:</p><p>… zgodnymi z prawem instrukcjami administratora …</p>"
+              "<p>powinno być:</p><p>… zgodnymi z prawem poleceniami administratora …</p>").encode()
+RODO_XHTML = ("<p class=\"oj-ti-art\">Artykuł 4</p><p>Definicje</p>"
+              "<p>1) „dane osobowe” oznaczają informacje o zidentyfikowanej osobie;</p>"
+              "<p class=\"oj-ti-art\">Artykuł 5</p><p>Zasady</p>"
+              "<p class=\"oj-ti-art\">Artykuł 82</p><p>2. … zgodnymi z prawem instrukcjami administratora …</p>").encode()
+
+
+def _http_cellar(teksty):
+    """Podmiana _http: URL kończący się (po zakodowaniu) danym CELEX-em → bajty; reszta → 404."""
+    wywolania = []
+
+    def fake(url, data=None, headers=None, timeout=60):
+        wywolania.append((url, headers))
+        for celex, tresc in teksty.items():
+            if eurlex.urllib.parse.unquote(url).endswith("/" + celex):
+                return tresc, "application/xhtml+xml"
+        raise SystemExit(f"BŁĄD: nie znaleziono zasobu (404): {url}\nSprawdź numer CELEX")
+    fake.wywolania = wywolania
+    return fake
+
+
+class TestSprostowania(unittest.TestCase):
+    TEKSTY = {RODO: RODO_XHTML, "32016R0679R(02)": SPROST_R02, "32016R0679R(03)": SPROST_R03}
+
+    def _tekst(self, celex, fragment=None, strict=False, sprost=SPROST_RODO_WIERSZE, kons=(RODO_KONS,),
+               pdf=None):
+        out = io.StringIO()
+        fake_sparql = mock.Mock(return_value=sprost)
+        argv = ["eurlex.py", "tekst", celex] + (["--fragment", fragment] if fragment else []) \
+            + (["--strict"] if strict else []) + (["--pdf", pdf] if pdf else [])
+        with mock.patch.object(eurlex, "_http", _http_cellar(self.TEKSTY)), \
+                mock.patch.object(eurlex, "_sparql", fake_sparql), \
+                mock.patch.object(eurlex, "_konsolidacje", return_value=list(kons)), \
+                mock.patch.object(sys, "argv", argv), contextlib.redirect_stdout(out):
+            eurlex.main()
+        return out.getvalue(), fake_sparql
+
+    def test_zakres_z_naglowkow_sprostowania(self):
+        z = eurlex._zakres_z_tekstu(eurlex.html_to_text(SPROST_R02.decode()))
+        self.assertEqual(z["art"], ["4", "6", "10", "47", "64"])
+        self.assertEqual(z["inne"], ["motywy"])
+        self.assertEqual(eurlex._zakres_z_tekstu("Page 33, Article 4(1):\nfor: …\n")["art"], ["4"])
+        self.assertEqual(eurlex._zakres_z_tekstu("Artykuł 10\nTreść bez nagłówka miejsca.\n"),
+                         {"art": [], "inne": []})
+
+    def test_sprostowania_z_sparql(self):
+        fake = mock.Mock(return_value=SPROST_RODO_WIERSZE + [_wiersz(date="2016-04-27")])
+        with mock.patch.object(eurlex, "_sparql", fake):
+            wynik = eurlex._sprostowania(RODO_KONS, "POL")  # z wersji skonsolidowanej → akt bazowy
+        q = fake.call_args.args[0]
+        self.assertIn('"32016R0679"^^', q)
+        self.assertIn("resource_legal_corrects_resource_legal ?w", q)
+        self.assertIn("language/POL>", q)
+        self.assertEqual([s["celex"] for s in wynik], ["32016R0679R(02)", "32016R0679R(03)"])
+        self.assertEqual(wynik[0], {"celex": "32016R0679R(02)", "data": "2018-05-23",
+                                    "konsolidacje": [RODO_KONS]})
+
+    def test_sprostowanie_samo_nie_ma_sprostowan(self):
+        with mock.patch.object(eurlex, "_sparql", side_effect=AssertionError("bez zapytania")):
+            self.assertEqual(eurlex._sprostowania("32016R0679R(02)", "POL"), [])
+
+    def test_tekst_bazowy_art_4_ostrzega_i_wskazuje_wersje_sprostowana(self):
+        out, _ = self._tekst(RODO, fragment="art. 4")
+        self.assertIn("UWAGA: art. 4 SPROSTOWANO (32016R0679R(02))", out)
+        self.assertIn("NIESPROSTOWANE", out)
+        self.assertIn(f'tekst {RODO_KONS} --jezyk pol --fragment "art. 4"', out)
+        self.assertIn("32016R0679R(02) (2018-05-23): art. 4, 6, 10, 47, 64; motywy", out)
+        self.assertIn("32016R0679R(03) (2021-03-04): art. 82", out)
+        self.assertIn("oznaczają informacje", out)  # treść główna nadal jest drukowana
+        self.assertLess(out.index("SPROSTOWANO"), out.index("Artykuł 4"))
+
+    def test_tekst_bazowy_art_82_wskazuje_R03(self):
+        out, _ = self._tekst(RODO, fragment="art. 82")
+        self.assertIn("UWAGA: art. 82 SPROSTOWANO (32016R0679R(03))", out)
+
+    def test_artykul_bez_sprostowania_tylko_ogolne_ostrzezenie(self):
+        out, _ = self._tekst(RODO, fragment="art. 5")
+        self.assertNotIn("art. 5 SPROSTOWANO", out)
+        self.assertIn("akt ma SPROSTOWANIA w języku pol", out)
+
+    def test_brak_tekstu_sprostowania_nie_blokuje_listy(self):
+        self.TEKSTY = {RODO: RODO_XHTML}
+        out, _ = self._tekst(RODO, fragment="art. 4")
+        self.assertIn("32016R0679R(02) (2018-05-23): zakres nieustalony", out)
+
+    def test_strict_blokuje_niesprostowany_tekst_bazowy(self):
+        with self.assertRaises(SystemExit) as caught:
+            self._tekst(RODO, fragment="art. 4", strict=True)
+        msg = str(caught.exception.code)
+        self.assertIn("ma sprostowania w języku pol (32016R0679R(02) z 2018-05-23", msg)
+        self.assertIn(f"tekst {RODO_KONS}", msg)
+        self.assertNotIn("akt bazowy + zmiany", msg)
+
+    def test_strict_bez_stdout(self):
+        out = io.StringIO()
+        with mock.patch.object(eurlex, "_http", _http_cellar(self.TEKSTY)), \
+                mock.patch.object(eurlex, "_sparql", return_value=SPROST_RODO_WIERSZE), \
+                mock.patch.object(eurlex, "_konsolidacje", return_value=[]), \
+                mock.patch.object(sys, "argv", ["eurlex.py", "--strict", "tekst", RODO]), \
+                contextlib.redirect_stdout(out):
+            with self.assertRaises(SystemExit):
+                eurlex.main()
+        self.assertEqual(out.getvalue(), "")
+
+    def test_strict_awaria_kontroli_sprostowan_blokuje(self):
+        with mock.patch.object(eurlex, "_sparql", side_effect=eurlex.VerificationUnknown("timeout")):
+            with self.assertRaises(eurlex.VerificationUnknown):
+                eurlex._kontrole_tresci(RODO, "POL", strict=True)
+
+    def test_bez_strict_awaria_kontroli_sprostowan_ostrzega(self):
+        with mock.patch.object(eurlex, "_sparql", side_effect=eurlex.VerificationUnknown("timeout")), \
+                mock.patch.object(eurlex, "_konsolidacje", return_value=[]):
+            out = eurlex._kontrole_tresci(RODO, "POL")
+        self.assertTrue(any("nie udało się zweryfikować, czy akt 32016R0679 ma sprostowania" in w for w in out))
+
+    def test_wersja_skonsolidowana_ze_sprostowaniem_bez_ostrzezenia_i_przechodzi_strict(self):
+        teksty = dict(self.TEKSTY)
+        teksty[RODO_KONS] = RODO_XHTML.replace("informacje".encode(), "wszelkie informacje".encode())
+        self.TEKSTY = teksty
+        out, _ = self._tekst(RODO_KONS, fragment="art. 4", strict=True)
+        self.assertIn("wszelkie informacje", out)
+        self.assertNotIn("akt ma SPROSTOWANIA", out)
+        self.assertNotIn("nie figuruje", out)
+        self.assertIn("SPROSTOWANIAMI i aktami zmieniającymi", out)  # nowa formuła urzędowego cytatu
+
+    def test_wersja_skonsolidowana_bez_sprostowania_ostrzega(self):
+        teksty = dict(self.TEKSTY)
+        teksty[RODO_KONS] = RODO_XHTML
+        self.TEKSTY = teksty
+        wiersze = [_wiersz(c2="32016R0679R(04)", date="2027-01-01")]
+        out, _ = self._tekst(RODO_KONS, sprost=wiersze)
+        self.assertIn("sprostowanie 32016R0679R(04) (2027-01-01) w języku pol nie figuruje w składzie", out)
+
+    def test_pdf_aktu_bazowego_tez_ostrzega(self):
+        teksty = dict(self.TEKSTY)
+        teksty["DOC_1"] = b"%PDF-1.4 rodo"
+        self.TEKSTY = teksty
+        wiersze = SPROST_RODO_WIERSZE + [_wiersz(l="POL", mtype="pdfa1a",
+                                                  man="http://publications.europa.eu/resource/cellar/3e48.0018.01",
+                                                  item="http://publications.europa.eu/resource/cellar/3e48.0018.01/DOC_1")]
+        with tempfile.TemporaryDirectory() as d:
+            sciezka = os.path.join(d, "rodo.pdf")
+            out, _ = self._tekst(RODO, sprost=wiersze, pdf=sciezka)
+            self.assertEqual(pathlib.Path(sciezka).read_bytes(), b"%PDF-1.4 rodo")
+        self.assertIn("akt ma SPROSTOWANIA w języku pol", out)
+
+    def test_meta_wymienia_sprostowania_i_nie_blokuje_w_strict(self):
+        meta = {RODO: TestMetaWersjaSkonsolidowana.META[RODO]}
+        fake = _FakeCellar(meta, sprost={RODO: SPROST_RODO_WIERSZE})
+        for argv in (["meta", RODO], ["--strict", "meta", RODO]):
+            with self.subTest(argv=argv):
+                out = io.StringIO()
+                with mock.patch.object(eurlex, "_sparql", fake), \
+                        mock.patch.object(eurlex, "_konsolidacje", return_value=[RODO_KONS]), \
+                        mock.patch.object(sys, "argv", ["eurlex.py", *argv]), contextlib.redirect_stdout(out):
+                    eurlex.main()
+                self.assertIn("akt ma SPROSTOWANIA w języku pol: 32016R0679R(02) (2018-05-23), "
+                              "32016R0679R(03) (2021-03-04)", out.getvalue())
+                self.assertIn(f"brzmienie poprawione: tekst {RODO_KONS}", out.getvalue())
+        out = io.StringIO()
+        with mock.patch.object(eurlex, "_sparql", fake), \
+                mock.patch.object(eurlex, "_konsolidacje", return_value=[RODO_KONS]), \
+                mock.patch.object(sys, "argv", ["eurlex.py", "meta", RODO, "--json"]), \
+                contextlib.redirect_stdout(out):
+            eurlex.main()
+        self.assertEqual([s["celex"] for s in json.loads(out.getvalue())["sprostowania"]],
+                         ["32016R0679R(02)", "32016R0679R(03)"])
+
+    def test_wskazuje_najnowsza_konsolidacje_a_nie_zastapiona_wymieniajaca_sprostowanie(self):
+        # AI Act (deu): R(01) wymienia tylko 02024R1689-20240712 (zastąpiona, 404 w CELLAR);
+        # 02024R1689-20260727 jest kumulatywna, ale sprostowań w metadanych nie powtarza
+        wiersze = [_wiersz(c2="32024R1689R(01)", date="2025-10-09", kc="02024R1689-20240712")]
+        kons = ["02024R1689-20260727", "02024R1689-20240712"]
+        self.TEKSTY = {AI_BAZA: RODO_XHTML, "32024R1689R(01)": b"<p>Seite 52, Artikel 3 Nummer 1:</p>"}
+        out, _ = self._tekst(AI_BAZA, fragment="art. 4", sprost=wiersze, kons=kons)
+        self.assertIn("Brzmienie po sprostowaniu: tekst 02024R1689-20260727", out)
+        self.assertIn("32024R1689R(01) (2025-10-09): art. 3", out)
+        with self.assertRaises(SystemExit) as caught:
+            self._tekst(AI_BAZA, sprost=wiersze, kons=kons, strict=True)
+        self.assertIn("do analizy: tekst 02024R1689-20260727", str(caught.exception.code))
+        self.assertNotIn("tekst 02024R1689-20240712", str(caught.exception.code))
+
+    def test_komunikaty_nie_kaza_cytowac_samego_aktu_bazowego_i_zmian(self):
+        out = io.StringIO()
+        with mock.patch.object(eurlex, "_konsolidacje", return_value=[RODO_KONS]), \
+                contextlib.redirect_stdout(out):
+            eurlex.cmd_skonsolidowany(argparse.Namespace(celex=[RODO], json=False))
+        self.assertNotIn("akt bazowy + zmiany", out.getvalue())
+        self.assertIn("SPROSTOWANIAMI", out.getvalue())
+        self.assertNotIn("akt bazowy + zmiany", "\n".join(eurlex._ostrzezenia_konsolidacja(RODO_KONS, kons=[RODO_KONS])))
+
+
+# --- Starsze akty: tylko manifestacja „html" i PDF pod DOC_2 (żywy test 2026-10-05: tekst i --pdf
+# 31995L0046 / 32002L0058 kończyły się 404 „Sprawdź numer CELEX", choć akty istnieją) -------------------
+
+CELLAR_ITEM = "http://publications.europa.eu/resource/cellar/"
+# 32002L0058 — wiersze _manifestacje (wszystkie języki) odtworzone z SPARQL CELLAR
+EPRIV_MANIF = [
+    _wiersz(l="POL", mtype="html", man=CELLAR_ITEM + "cb5af945.0018.01", item=CELLAR_ITEM + "cb5af945.0018.01/DOC_1"),
+    _wiersz(l="POL", mtype="pdf", man=CELLAR_ITEM + "cb5af945.0018.02", item=CELLAR_ITEM + "cb5af945.0018.02/DOC_2"),
+    _wiersz(l="POL", mtype="print", man=CELLAR_ITEM + "cb5af945.0018.03"),
+    _wiersz(l="ENG", mtype="html", man=CELLAR_ITEM + "cb5af945.0004.01", item=CELLAR_ITEM + "cb5af945.0004.01/DOC_1"),
+    _wiersz(l="ENG", mtype="pdf", man=CELLAR_ITEM + "cb5af945.0004.02", item=CELLAR_ITEM + "cb5af945.0004.02/DOC_1"),
+]
+EPRIV_HTML = ("<html><head><title>EUR-Lex - 32002L0058 - PL</title></head><body>"
+              "<p>Artykuł 5</p><p>Poufność komunikacji</p><p>1. Państwa Członkowskie zapewniają …</p>"
+              "<p>Artykuł 6</p><p>Dane o ruchu</p></body></html>").encode()
+
+
+class TestStareAkty(unittest.TestCase):
+
+    def test_negocjacja_dopuszcza_html(self):
+        fake = mock.Mock(return_value=(EPRIV_HTML, "text/html;charset=UTF-8"))
+        with mock.patch.object(eurlex, "_http", fake):
+            self.assertEqual(eurlex._pobierz_tekst("32002L0058", "pol"), EPRIV_HTML)
+        akcept = fake.call_args.kwargs["headers"]["Accept"]
+        self.assertIn("application/xhtml+xml", akcept)
+        self.assertIn("text/html", akcept)
+
+    def test_404_negocjacji_tekst_z_elementu_manifestacji_html(self):
+        teksty = {"cb5af945.0018.01/DOC_1": EPRIV_HTML}
+
+        def fake_http(url, data=None, headers=None, timeout=60):
+            for k, v in teksty.items():
+                if url.endswith(k):
+                    return v, "text/html"
+            raise SystemExit(f"BŁĄD: nie znaleziono zasobu (404): {url}")
+        out = io.StringIO()
+        with mock.patch.object(eurlex, "_http", side_effect=fake_http), \
+                mock.patch.object(eurlex, "_sparql", return_value=EPRIV_MANIF), \
+                mock.patch.object(eurlex, "_kontrole_tresci", return_value=[]), \
+                mock.patch.object(sys, "argv", ["eurlex.py", "tekst", "32002L0058", "--fragment", "art. 5"]), \
+                contextlib.redirect_stdout(out):
+            eurlex.main()
+        self.assertIn("Poufność komunikacji", out.getvalue())
+        self.assertNotIn("EUR-Lex - 32002L0058", out.getvalue())  # <title> nie trafia do tekstu
+        self.assertNotIn("Dane o ruchu", out.getvalue())
+
+    def _404(self, celex, rows, jezyk="pol"):
+        args = argparse.Namespace(celex=[celex], jezyk=jezyk, json=False, strict=False, pdf=None, fragment=None)
+        with mock.patch.object(eurlex, "_http", side_effect=SystemExit("BŁĄD: nie znaleziono zasobu (404): x")), \
+                mock.patch.object(eurlex, "_sparql", return_value=rows), \
+                contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(SystemExit) as caught:
+                eurlex.cmd_tekst(args)
+        return str(caught.exception.code)
+
+    def test_404_akt_istnieje_tylko_pdf_w_jezyku(self):
+        rows = [r for r in EPRIV_MANIF if not (r["l"]["value"] == "POL" and r["mtype"]["value"] == "html")]
+        msg = self._404("32002L0058", rows)
+        self.assertIn("akt 32002L0058 istnieje w CELLAR", msg)
+        self.assertIn("--pdf", msg)
+        self.assertIn("tekst HTML jest w: eng", msg)
+        self.assertNotIn("Sprawdź numer CELEX", msg)
+
+    def test_404_akt_istnieje_brak_jezyka(self):
+        msg = self._404("32002L0058", [r for r in EPRIV_MANIF if r["l"]["value"] == "ENG"])
+        self.assertIn("nie ma tekstu w języku pol", msg)
+        self.assertIn("eng", msg)
+        self.assertNotIn("Sprawdź numer CELEX", msg)
+
+    def test_404_awaria_metadanych_nie_twierdzi_ze_celex_zly(self):
+        args = argparse.Namespace(celex=["32002L0058"], jezyk="pol", json=False, strict=False, pdf=None, fragment=None)
+        with mock.patch.object(eurlex, "_http", side_effect=SystemExit("BŁĄD: nie znaleziono zasobu (404): x")), \
+                mock.patch.object(eurlex, "_sparql", side_effect=eurlex.VerificationUnknown("timeout")):
+            with self.assertRaises(SystemExit) as caught:
+                eurlex.cmd_tekst(args)
+        self.assertIn("meta 32002L0058", str(caught.exception.code))
+        self.assertNotIn("Sprawdź numer CELEX", str(caught.exception.code))
+
+    def test_pdf_url_z_elementu_manifestacji_nie_doc_1(self):
+        przypadki = [
+            ("32002L0058", "POL", EPRIV_MANIF, CELLAR_ITEM + "cb5af945.0018.02/DOC_2"),
+            # wersja skonsolidowana e-Privacy: pdfa1a pod DOC_2 (stary kod: …/DOC_1 → 404)
+            ("02002L0058-20091219", "POL",
+             [_wiersz(l="POL", mtype="pdfa1a", man=CELLAR_ITEM + "6def8269.0017.04",
+                      item=CELLAR_ITEM + "6def8269.0017.04/DOC_2"),
+              _wiersz(l="POL", mtype="xhtml", man=CELLAR_ITEM + "6def8269.0017.03",
+                      item=CELLAR_ITEM + "6def8269.0017.03/DOC_3")],
+             CELLAR_ITEM + "6def8269.0017.04/DOC_2"),
+            # RODO: pdfa1a pod DOC_1 (bez zmian)
+            ("32016R0679", "POL",
+             [_wiersz(l="POL", mtype="pdfa1a", man=CELLAR_ITEM + "3e485e15.0018.01",
+                      item=CELLAR_ITEM + "3e485e15.0018.01/DOC_1"),
+              _wiersz(l="POL", mtype="fmx4", man=CELLAR_ITEM + "3e485e15.0018.02",
+                      item=CELLAR_ITEM + "3e485e15.0018.02/DOC_2")],
+             CELLAR_ITEM + "3e485e15.0018.01/DOC_1"),
+        ]
+        for celex, lang, rows, want in przypadki:
+            with self.subTest(celex=celex):
+                fake = mock.Mock(return_value=[r for r in rows if r["l"]["value"] == lang])
+                with mock.patch.object(eurlex, "_sparql", fake):
+                    self.assertEqual(eurlex._pdf_url(celex, lang), (want, []))
+                self.assertIn("item_belongs_to_manifestation", fake.call_args.args[0])
+
+    def test_pdf_preferuje_pdfa_i_zglasza_pozostale_pliki(self):
+        rows = [_wiersz(l="POL", mtype="pdf", man=CELLAR_ITEM + "a.01", item=CELLAR_ITEM + "a.01/DOC_1"),
+                _wiersz(l="POL", mtype="pdfa2a", man=CELLAR_ITEM + "a.04", item=CELLAR_ITEM + "a.04/DOC_10"),
+                _wiersz(l="POL", mtype="pdfa2a", man=CELLAR_ITEM + "a.04", item=CELLAR_ITEM + "a.04/DOC_9")]
+        with mock.patch.object(eurlex, "_sparql", return_value=rows):
+            self.assertEqual(eurlex._pdf_url("X", "POL"),
+                             (CELLAR_ITEM + "a.04/DOC_9", [CELLAR_ITEM + "a.04/DOC_10"]))
+
+    def test_pdf_brak_manifestacji(self):
+        with mock.patch.object(eurlex, "_sparql", return_value=[r for r in EPRIV_MANIF if r["mtype"]["value"] == "html"]):
+            self.assertEqual(eurlex._pdf_url("32002L0058", "POL"), (None, []))
+
+    def test_cmd_pdf_zapisuje_doc_2_po_https(self):
+        fake_http = mock.Mock(return_value=(b"%PDF-1.4 e-privacy", "application/pdf"))
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as d:
+            sciezka = os.path.join(d, "ep.pdf")
+            with mock.patch.object(eurlex, "_http", fake_http), \
+                    mock.patch.object(eurlex, "_sparql",
+                                      return_value=[r for r in EPRIV_MANIF if r["l"]["value"] == "POL"]), \
+                    mock.patch.object(eurlex, "_kontrole_tresci", return_value=[]), \
+                    mock.patch.object(sys, "argv", ["eurlex.py", "tekst", "32002L0058", "--pdf", sciezka]), \
+                    contextlib.redirect_stdout(out):
+                eurlex.main()
+            self.assertEqual(pathlib.Path(sciezka).read_bytes(), b"%PDF-1.4 e-privacy")
+        self.assertEqual(fake_http.call_args.args[0], CELLAR_ITEM + "cb5af945.0018.02/DOC_2")
+        self.assertIn("źródło: https://publications.europa.eu/resource/cellar/cb5af945.0018.02/DOC_2", out.getvalue())
+
+    def test_cmd_pdf_odrzuca_odpowiedz_bez_sygnatury_pdf(self):
+        with tempfile.TemporaryDirectory() as d:
+            sciezka = os.path.join(d, "ep.pdf")
+            with mock.patch.object(eurlex, "_http", return_value=(b"<html>blad</html>", "text/html")), \
+                    mock.patch.object(eurlex, "_sparql",
+                                      return_value=[r for r in EPRIV_MANIF if r["l"]["value"] == "POL"]), \
+                    mock.patch.object(eurlex, "_kontrole_tresci", return_value=[]), \
+                    mock.patch.object(sys, "argv", ["eurlex.py", "tekst", "32002L0058", "--pdf", sciezka]), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(SystemExit, "nie zwrócił pliku PDF"):
+                    eurlex.main()
+            self.assertFalse(os.path.exists(sciezka))
 
 
 if __name__ == "__main__":

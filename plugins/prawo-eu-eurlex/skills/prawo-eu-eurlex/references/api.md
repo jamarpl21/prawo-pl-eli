@@ -12,10 +12,15 @@ Wszystko publiczne, bez klucza. Read-only.
   tuż przed pobraniem, także dla URL manifestacji zwróconych przez SPARQL **oraz w celach
   przekierowań** — CELLAR odpowiada 303 z `Location: http://…` nawet na żądanie https, więc
   samo podniesienie URL wejściowego nie wystarcza (treść przyszłaby czystym HTTP). Używa nagłówków
-  `Accept: application/xhtml+xml` i `Accept-Language: pol|eng|…` (kod 3-literowy, małymi).
-  PDF NIE działa przez negocjację — pobierz URL manifestacji przez SPARQL
-  (`cdm:manifestation_manifests_expression`, `cdm:manifestation_type` zaczynający się od `pdf`)
-  i doklej `/DOC_1`.
+  `Accept: application/xhtml+xml, text/html;q=0.9` i `Accept-Language: pol|eng|…` (kod
+  3-literowy, małymi). Starsze akty (31995L0046, 32002L0058) mają tylko manifestację `html` —
+  samo `Accept: application/xhtml+xml` daje dla nich 404, choć tekst istnieje.
+  **Plik manifestacji nie zawsze jest `DOC_1`** (PDF 32002L0058 pol = `…0018.02/DOC_2`, wersji
+  skonsolidowanej 02002L0058-20091219 pol = `…0017.04/DOC_2`; RODO pol = `DOC_1`). Adres pliku
+  bierz z SPARQL: `?man cdm:manifestation_manifests_expression ?exp . ?man cdm:manifestation_type
+  ?mtype . ?item cdm:item_belongs_to_manifestation ?man` (typy: `xhtml`, `html`, `pdfa2a`, `pdfa1a`,
+  `pdfa1b`, `pdf`, `fmx4`; `print` nie ma plików). Negocjacja `Accept: application/pdf` działa
+  niekonsekwentnie (32002L0058 → 303 na DOC_2, 32016R0679 → 404), więc jest tylko zapasem.
 - **Struktura XHTML** (do cięcia fragmentów): artykuł = `div.eli-subdivision#art_N`; akt bazowy —
   formuła końcowa i podpisy w `div.oj-final` (`p` „Sporządzono w…", `div.oj-signatory`), przypisy
   po `hr.oj-note` jako `p.oj-note`; wersja skonsolidowana — formuła w `div#fnp_1`, przypisy jako
@@ -72,7 +77,14 @@ Najużyteczniejsze właściwości (zweryfikowane):
   CELLAR/EUR-Lex listują wszystkie wersje, ale treści wersji ZASTĄPIONYCH bywają wycofane
   (REST 404, np. `02024R1689-20240712`, `02019L1937-20191126` — zwykle pierwsza, tożsama z aktem
   bazowym); nowsze wersje pośrednie zwykle są serwowane.
-- sprostowanie: sufiks `R(nn)`, np. `32016R0679R(02)`.
+- sprostowanie: sufiks `R(nn)`, np. `32016R0679R(02)`. Sprostowanie dotyczy KONKRETNYCH wersji
+  językowych — sprawdzaj wyrażenie w danym języku: RODO `R(01)` (de, et, hu, it), `R(02)` (24
+  języki, m.in. pol), `R(03)` (m.in. pol). Zapytanie: `?x cdm:resource_legal_corrects_resource_legal
+  ?w . FILTER EXISTS { ?e cdm:expression_belongs_to_work ?x . ?e cdm:expression_uses_language
+  <…/POL> }`; która konsolidacja je zawiera: `?k cdm:act_consolidated_consolidates_resource_legal ?x`
+  (nowsze wersje nie powtarzają w metadanych sprostowań już ujętych — 02024R1689-20260727 nie
+  wymienia R(01)–R(04), które ma 02024R1689-20240712). Treść sprostowania ma nagłówki miejsc
+  „Strona 33, art. 4 ust. 1:" — `eurlex.py` wyciąga z nich poprawione artykuły.
 
 ## Języki (authority codes)
 

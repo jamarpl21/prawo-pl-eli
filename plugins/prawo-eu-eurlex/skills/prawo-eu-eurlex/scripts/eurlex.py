@@ -11,8 +11,9 @@ Komendy:
                                  termin transpozycji dyrektywy, czy obowiązuje, ELI); na wersji
                                  skonsolidowanej: data „stan na" + daty AKTU BAZOWEGO
   tekst <CELEX> [--jezyk pol] [--fragment "art. 6"] [--pdf ŚCIEŻKA]
-                                 tekst aktu z CELLAR (XHTML → czysty tekst); --fragment wycina
-                                 tylko jednostki z frazą; --pdf zapisuje urzędowy PDF
+                                 tekst aktu z CELLAR (XHTML/HTML → czysty tekst); --fragment wycina
+                                 tylko jednostki z frazą; --pdf zapisuje urzędowy PDF; na akcie
+                                 bazowym ostrzega o sprostowaniach w danym języku
   skonsolidowany <CELEX>         wersje skonsolidowane aktu (odpowiednik tekstu jednolitego)
   odniesienia <CELEX>            nowelizacje, sprostowania, uchylenia (w obie strony), podstawa prawna
 Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
@@ -31,6 +32,12 @@ LANG_AUTH = "http://publications.europa.eu/resource/authority/language/"
 TYPE_AUTH = "http://publications.europa.eu/resource/authority/resource-type/"
 XSD_STR = "http://www.w3.org/2001/XMLSchema#string"
 CONTENT_HOSTS = ("publications.europa.eu", "data.europa.eu")
+
+# Urzędowy cytat = akt bazowy w brzmieniu z Dz.U. UE ŁĄCZNIE ze sprostowaniami i aktami zmieniającymi.
+# Sam „akt bazowy + zmiany" to tekst NIESPROSTOWANY (RODO art. 4 pkt 1 w PL: „informacje" zamiast
+# „wszelkie informacje" — sprostowanie 32016R0679R(02)).
+CYTAT_URZEDOWY = ("akt bazowy (Dz.U. UE) razem ze SPROSTOWANIAMI i aktami zmieniającymi "
+                  "(lista: odniesienia <CELEX>)")
 
 JEZYKI = {"pl": "POL", "pol": "POL", "en": "ENG", "eng": "ENG", "de": "DEU", "deu": "DEU",
           "fr": "FRA", "fra": "FRA", "es": "SPA", "spa": "SPA", "it": "ITA", "ita": "ITA",
@@ -161,7 +168,7 @@ class _Stripper(HTMLParser):
         self.out, self.skip = [], 0
 
     def handle_starttag(self, tag, attrs):
-        if tag in ("script", "style"):
+        if tag in ("script", "style", "title"):  # <title> starych HTML: „EUR-Lex - 31995L0046 - PL"
             self.skip += 1
         if tag in ("p", "div", "hr"):
             klasy = (dict(attrs).get("class") or "").split()
@@ -171,7 +178,7 @@ class _Stripper(HTMLParser):
             self.out.append("\n")
 
     def handle_endtag(self, tag):
-        if tag in ("script", "style") and self.skip:
+        if tag in ("script", "style", "title") and self.skip:
             self.skip -= 1
 
     def handle_data(self, data):
@@ -298,7 +305,7 @@ def _ostrzezenia_konsolidacja(celex, strict=False, tresc=True, kons=None):
     blokuj = strict and tresc
     if celex.startswith("0"):
         out.append("UWAGA: wersja skonsolidowana ma charakter DOKUMENTACYJNY (nie jest autentyczna) — "
-                   "do urzędowego cytatu wskaż akt bazowy + zmiany.")
+                   f"do urzędowego cytatu wskaż {CYTAT_URZEDOWY}.")
         if kons and kons[0] > celex:
             if blokuj:
                 sys.exit(f"BŁĄD: istnieje nowsza wersja skonsolidowana: {kons[0]}. "
@@ -308,8 +315,8 @@ def _ostrzezenia_konsolidacja(celex, strict=False, tresc=True, kons=None):
         if blokuj:
             sys.exit(f"BŁĄD: akt ma wersje skonsolidowane — aktualny stan prawny to {kons[0]}. "
                      f"Tryb strict blokuje treść aktu bazowego; do analizy: tekst {kons[0]} "
-                     "(wersja skonsolidowana jest dokumentacyjna — do urzędowego cytatu wskaż akt "
-                     "bazowy + zmiany; bez --strict tekst aktu bazowego jest dostępny).")
+                     f"(wersja skonsolidowana jest dokumentacyjna — do urzędowego cytatu wskaż {CYTAT_URZEDOWY}; "
+                     "bez --strict tekst aktu bazowego jest dostępny).")
         out.append(f"UWAGA: akt ma wersje skonsolidowane — do analizy aktualnego stanu użyj najnowszej: "
                    f"{kons[0]} (pełna lista: skonsolidowany {celex}).")
     return out
@@ -472,6 +479,13 @@ def cmd_meta(a):
             raise
         zmiany, zmiany_uwaga = [], (f"UWAGA: nie udało się zweryfikować, czy akt {akt} był zmieniany "
                                     f"({e}) — sprawdź: odniesienia {akt}, zanim powołasz się na daty.")
+    try:
+        sprost, sprost_uwaga = _sprostowania(akt, lang), None
+    except VerificationUnknown as e:
+        if strict:
+            raise
+        sprost, sprost_uwaga = [], (f"UWAGA: nie udało się zweryfikować, czy akt {akt} ma sprostowania "
+                                    f"w języku {lang.lower()} ({e}) — sprawdź: odniesienia {akt}.")
     najnowsza = kons[0] if kons else None
     if strict and zmiany and not kons_wersja:
         # Daty aktu bazowego po nowelizacji mogą być nieaktualne (AI Act art. 113 po 32026R1744),
@@ -491,12 +505,27 @@ def cmd_meta(a):
         ostrz.append(_ostrzezenie_zmiany(akt, zmiany, najnowsza))
     if zmiany_uwaga:
         ostrz.append(zmiany_uwaga)
+    if sprost_uwaga:
+        ostrz.append(sprost_uwaga)
+    if sprost and kons_wersja:
+        ostrz.extend(_ostrzezenia_sprostowan(celex, lang, sprost, kons=kons))
+    elif sprost:
+        # metadane aktu bazowego nie są przez sprostowanie nieaktualne (strict nie blokuje), ale
+        # TREŚĆ z Dz.U. jest niesprostowana — informujemy, gdzie czytać brzmienie poprawione
+        cel = _gdzie_sprostowane(sprost, kons)
+        ostrz.append(f"UWAGA: akt ma SPROSTOWANIA w języku {lang.lower()}: "
+                     + ", ".join(x["celex"] + (f" ({x['data']})" if x["data"] else "") for x in sprost)
+                     + " — tekst aktu bazowego ich nie uwzględnia; "
+                     + (f"brzmienie poprawione: tekst {cel} (wersja skonsolidowana)" if cel
+                        else f"treść: tekst {sprost[0]['celex']}")
+                     + "; zakres poprawek: tekst " + celex + " --fragment \"art. N\".")
     if a.json:
         # "meta" = surowe wiersze SPARQL tej pracy (na wersji skonsolidowanej: eiv/date = „stan na");
         # "akt_bazowy" = zebrane metadane aktu bazowego; "zmieniajace" = CELEX-y nowelizacji;
         # "ostrzezenia" = te same linie, które widzi człowiek
         out = {"celex": celex, "wersja_skonsolidowana": kons_wersja, "meta": rows,
-               "zmieniajace": zmiany, "wersje_skonsolidowane": kons, "ostrzezenia": ostrz}
+               "zmieniajace": zmiany, "sprostowania": sprost, "wersje_skonsolidowane": kons,
+               "ostrzezenia": ostrz}
         if kons_wersja:
             out["akt_bazowy"] = {"celex": baza, "meta": zb_baza}
         print(json.dumps(out, ensure_ascii=False, indent=2)); return
@@ -544,57 +573,350 @@ def cmd_skonsolidowany(a):
     for i, c in enumerate(kons):
         print(f"  - {c}{'  ← AKTUALNA' if i == 0 else ''}")
     print("\nUWAGA: wersja skonsolidowana ma charakter dokumentacyjny — do urzędowego cytatu "
-          "wskaż akt bazowy + zmiany.")
+          f"wskaż {CYTAT_URZEDOWY}.")
     print(f"Dalej: python3 {sys.argv[0]} tekst {kons[0]} --jezyk pol --fragment \"art. N\"")
 
 
-def _pdf_url(celex, lang):
-    """URL manifestacji PDF danej wersji językowej (negocjacja Accept: application/pdf nie działa w CELLAR)."""
-    rows = _sparql(f"""PREFIX cdm: <{CDM}>
-SELECT ?man ?mtype WHERE {{
+# Tekst: XHTML (akty od ok. 2014 r., wersje skonsolidowane) ALBO HTML (starsze akty, np. 95/46/WE,
+# e-Privacy 2002/58/WE — w CELLAR mają wyłącznie manifestację „html"). Samo Accept: application/xhtml+xml
+# dawało dla nich 404, choć tekst istnieje; z q-wagą CELLAR wybiera XHTML, a gdy go nie ma — HTML.
+AKCEPT_TEKST = "application/xhtml+xml, text/html;q=0.9"
+_TYPY_TEKSTU = ("xhtml", "html")
+# kolejność wyboru PDF: archiwalne PDF/A przed zwykłym PDF (wszystkie to ten sam urzędowy dokument)
+_PDF_PREF = ("pdfa2a", "pdfa1a", "pdfa1b", "pdfa", "pdf")
+
+
+def _manifestacje(celex, lang=None):
+    """Manifestacje (format) i ich elementy (pliki DOC_n) pracy o danym CELEX — wiersze SPARQL
+    z polami l (język), mtype, man, item.
+
+    Numer pliku NIE jest stały: PDF e-Privacy 32002L0058 (pol) to …0018.02/DOC_2, PDF wersji
+    skonsolidowanej 02002L0058-20091219 (pol) — …0017.04/DOC_2, a RODO (pol) — DOC_1. Adres pliku
+    bierzemy więc z cdm:item_belongs_to_manifestation, a nie doklejamy „/DOC_1".
+    [] = pracy nie ma w CELLAR (VERIFIED_ABSENT); praca bez manifestacji w języku = wiersz bez mtype.
+    Awaria → VerificationUnknown."""
+    jez = (f"?exp cdm:expression_uses_language <{LANG_AUTH}{lang}> . BIND(\"{lang}\" AS ?l)" if lang else
+           f"?exp cdm:expression_uses_language ?lang . BIND(STRAFTER(STR(?lang), \"language/\") AS ?l)")
+    return _sparql(f"""PREFIX cdm: <{CDM}>
+SELECT DISTINCT ?l ?mtype ?man ?item WHERE {{
   ?w cdm:resource_legal_id_celex "{celex}"^^<{XSD_STR}> .
-  ?exp cdm:expression_belongs_to_work ?w .
-  ?exp cdm:expression_uses_language <{LANG_AUTH}{lang}> .
-  ?man cdm:manifestation_manifests_expression ?exp .
-  ?man cdm:manifestation_type ?mtype .
-  FILTER(STRSTARTS(STR(?mtype), "pdf"))
-}} LIMIT 5""", soft=True)
-    pdfy = sorted(rows, key=lambda b: _v(b, "mtype"))  # pdfa1a/pdfa2a przed zwykłym pdf
-    return (_v(pdfy[0], "man") + "/DOC_1") if pdfy else None
+  OPTIONAL {{ ?exp cdm:expression_belongs_to_work ?w . {jez}
+              ?man cdm:manifestation_manifests_expression ?exp .
+              ?man cdm:manifestation_type ?mtype .
+              OPTIONAL {{ ?item cdm:item_belongs_to_manifestation ?man }} }}
+}} LIMIT 3000""", soft=True)
+
+
+def _nr_doc(item):
+    m = re.search(r"/DOC_(\d+)$", item)
+    return int(m.group(1)) if m else 10 ** 6
+
+
+def _elementy(rows, typy, lang=None):
+    """Adresy plików (posortowane DOC_n) PIERWSZEJ manifestacji z `typy` (w kolejności preferencji)."""
+    rows = [b for b in rows if (lang is None or _v(b, "l") == lang) and _v(b, "mtype") in typy]
+    for t in typy:
+        manif = sorted({_v(b, "man") for b in rows if _v(b, "mtype") == t})
+        for man in manif:
+            items = sorted({_v(b, "item") for b in rows if _v(b, "man") == man and _v(b, "item")},
+                           key=_nr_doc)
+            if items:
+                return t, man, items
+        if manif:
+            return t, manif[0], []
+    return None, None, []
+
+
+def _pdf_url(celex, lang):
+    """(URL pliku PDF, [pozostałe pliki tej manifestacji]) albo (None, []) gdy PDF w tym języku brak.
+
+    Adres pliku pochodzi z SPARQL (element manifestacji), nie z doklejonego „/DOC_1" — ten dawał 404
+    m.in. dla 31995L0046 i 32002L0058 (PDF = DOC_2). Gdy CELLAR nie poda elementu, zostaje
+    negocjacja treści (Accept: application/pdf), a dopiero potem konwencja „/DOC_1"."""
+    rows = _manifestacje(celex, lang)
+    pdfy = sorted({_v(b, "mtype") for b in rows if _v(b, "mtype").startswith("pdf")},
+                  key=lambda t: (_PDF_PREF.index(t) if t in _PDF_PREF else len(_PDF_PREF), t))
+    if not pdfy:
+        return None, []
+    _, man, items = _elementy(rows, tuple(pdfy))
+    if items:
+        return items[0], items[1:]
+    return None, [man + "/DOC_1"]
+
+
+def _pobierz_pdf(celex, lang, lang3):
+    """Pobiera urzędowy PDF; zwraca (bajty, źródło, pozostałe pliki manifestacji)."""
+    try:
+        pdf_url, reszta = _pdf_url(celex, lang)
+    except VerificationUnknown as e:
+        _nie_zweryfikowano(f"manifestacji PDF dla {celex} w języku {lang3}", e)
+    if pdf_url:
+        kandydaci, inne = [(pdf_url, None)], reszta
+    elif reszta:  # manifestacja PDF bez elementów w SPARQL: negocjacja, potem konwencja /DOC_1
+        kandydaci = [(CELLAR + urllib.parse.quote(celex, safe="/"),
+                      {"Accept": "application/pdf", "Accept-Language": lang3}), (reszta[0], None)]
+        inne = []
+    else:
+        sys.exit(f"Brak manifestacji PDF dla {celex} w języku {lang3} (CELLAR jej nie ma) — "
+                 "spróbuj inny --jezyk albo tekst bez --pdf.")
+    blad = None
+    for url, naglowki in kandydaci:
+        try:
+            data, _ = _http(url, headers=naglowki)
+        except SystemExit as e:
+            blad = e
+            continue
+        if not data.startswith(b"%PDF"):
+            blad = SystemExit(f"BŁĄD: {url} nie zwrócił pliku PDF (brak sygnatury %PDF).")
+            continue
+        return data, _wymus_https(url), inne
+    raise blad
+
+
+def _pobierz_tekst(celex, lang3):
+    """Bajty XHTML/HTML aktu w danym języku.
+
+    Najpierw negocjacja treści (XHTML, a gdy go brak — HTML). Gdy CELLAR odpowie 404/300 na akt
+    spoza wersji skonsolidowanych, adresy plików bierzemy z SPARQL (manifestacja xhtml/html →
+    elementy DOC_n) i sklejamy je; jeśli takiej manifestacji nie ma, komunikat mówi, CO jest
+    dostępne (inne języki, sam PDF), a „sprawdź numer CELEX" tylko wtedy, gdy aktu nie ma w metadanych."""
+    url = CELLAR + urllib.parse.quote(celex, safe="/")
+    try:
+        raw, _ = _http(url, headers={"Accept": AKCEPT_TEKST, "Accept-Language": lang3})
+        return raw
+    except SystemExit as e:
+        kod = "404" if "(404)" in str(e) else ("300" if "zwrócił 300" in str(e) else None)
+        if not kod or re.match(r"^0.*-\d{8}$", celex):
+            raise
+    lang = lang3.upper()
+    try:
+        rows = _manifestacje(celex)
+    except VerificationUnknown as e:
+        sys.exit(f"BŁĄD: CELLAR nie zwrócił tekstu {celex} w języku {lang3} ({kod}), a nie udało się "
+                 f"sprawdzić w metadanych, czy akt istnieje ({e}) — sprawdź: meta {celex}.")
+    if not rows:
+        sys.exit(f"BŁĄD: nie znaleziono aktu {celex} w CELLAR ({kod}; brak także w metadanych). "
+                 "Sprawdź numer CELEX (szukaj \"<fraza>\").")
+    _, _, items = _elementy(rows, _TYPY_TEKSTU, lang)
+    if items:
+        return b"\n".join(_http(i)[0] for i in items)
+    w_jezyku = sorted({_v(b, "mtype") for b in rows if _v(b, "l") == lang and _v(b, "mtype")})
+    z_tekstem = sorted({_v(b, "l").lower() for b in rows if _v(b, "mtype") in _TYPY_TEKSTU})
+    if any(t.startswith("pdf") for t in w_jezyku):
+        sys.exit(f"BŁĄD: akt {celex} istnieje w CELLAR, ale w języku {lang3} nie ma wersji HTML/XHTML "
+                 f"(formaty: {', '.join(w_jezyku)}) — pobierz urzędowy PDF: tekst {celex} --jezyk {lang3} "
+                 "--pdf plik.pdf" + (f"; tekst HTML jest w: {', '.join(z_tekstem)}" if z_tekstem else "") + ".")
+    if z_tekstem:
+        sys.exit(f"BŁĄD: akt {celex} istnieje w CELLAR, ale nie ma tekstu w języku {lang3} — "
+                 f"tekst HTML/XHTML jest w: {', '.join(z_tekstem)} (użyj --jezyk).")
+    sys.exit(f"BŁĄD: akt {celex} istnieje w CELLAR, ale nie udostępnia tekstu HTML/XHTML w żadnym języku "
+             f"— spróbuj --pdf albo sprawdź: meta {celex}.")
+
+
+# --- sprostowania ---------------------------------------------------------------------------------
+# Sprostowanie (CELEX z sufiksem R(nn), relacja cdm:resource_legal_corrects_resource_legal) dotyczy
+# KONKRETNYCH wersji językowych: RODO ma R(01) (de, et, hu, it), R(02) i R(03) (m.in. pl). Tekst aktu
+# bazowego z CELLAR to brzmienie z Dz.U. sprzed sprostowań — w PL art. 4 pkt 1 „informacje" zamiast
+# „wszelkie informacje", art. 10, art. 82 ust. 2. Wersja skonsolidowana sprostowanie zawiera
+# (cdm:act_consolidated_consolidates_resource_legal wymienia R(nn)).
+_MIEJSCE_SPROSTOWANIA = re.compile(
+    r"(?im)^(?:on\s+)?(?:strona|strony|str\.|page|pages|seite|seiten)\s+[^,\n]{1,40},\s*([^\n]{1,200}?)\s*:\s*$")
+_ART_SPROSTOWANIA = re.compile(r"(?i)\b(?:art\.|artykuł|article|artikel)\s*(\d+[a-z]?)\b")
+_MAKS_ZAKRESOW = 8  # ile tekstów sprostowań pobieramy, by ustalić ich zakres
+
+
+def _celex_bazowy(celex):
+    return ("3" + celex[1:].split("-")[0]) if re.match(r"^0.*-\d{8}$", celex) else celex
+
+
+def _sprostowania(celex, lang):
+    """Sprostowania aktu (bazowego) opublikowane w danym języku:
+    [{"celex", "data", "konsolidacje": [wersje skonsolidowane, które je wymieniają]}].
+
+    [] = VERIFIED_ABSENT; awaria → VerificationUnknown (nigdy pusta lista). Sprostowania samego
+    sprostowania (CELEX z R(nn)) nie szukamy."""
+    if "R(" in celex:
+        return []
+    baza = _celex_bazowy(celex)
+    rows = _sparql(f"""PREFIX cdm: <{CDM}>
+SELECT DISTINCT ?c2 ?date ?kc WHERE {{
+  ?w cdm:resource_legal_id_celex "{baza}"^^<{XSD_STR}> .
+  ?x cdm:resource_legal_corrects_resource_legal ?w . ?x cdm:resource_legal_id_celex ?c2 .
+  FILTER EXISTS {{ ?e cdm:expression_belongs_to_work ?x .
+                   ?e cdm:expression_uses_language <{LANG_AUTH}{lang}> }}
+  OPTIONAL {{ ?x cdm:work_date_document ?date }}
+  OPTIONAL {{ ?k cdm:act_consolidated_consolidates_resource_legal ?x . ?k cdm:resource_legal_id_celex ?kc }}
+}} ORDER BY ?c2 LIMIT 500""", soft=True)
+    out = {}
+    for b in rows:
+        c2 = _v(b, "c2")
+        if not c2:
+            continue
+        s = out.setdefault(c2, {"celex": c2, "data": _v(b, "date"), "konsolidacje": []})
+        kc = _v(b, "kc")
+        if re.search(r"-\d{8}$", kc) and kc not in s["konsolidacje"]:
+            s["konsolidacje"].append(kc)
+    for s in out.values():
+        s["konsolidacje"].sort(reverse=True)
+    return [out[c] for c in sorted(out)]
+
+
+def _zakres_z_tekstu(txt):
+    """Miejsca sprostowania z nagłówków „Strona 33, art. 4 ust. 1:" / „Page 33, Article 4(1):".
+    Zwraca {"art": [numery artykułów], "inne": [motywy/załączniki/inne miejsca]}."""
+    arts, inne = [], set()
+    for m in _MIEJSCE_SPROSTOWANIA.finditer(txt):
+        miejsce = m.group(1)
+        nr = _ART_SPROSTOWANIA.findall(miejsce)
+        for n in nr:
+            if n not in arts:
+                arts.append(n)
+        if nr:
+            continue
+        if re.search(r"(?i)motyw|recital|erwägungsgrund|considérant", miejsce):
+            inne.add("motywy")
+        elif re.search(r"(?i)załącznik|annex|anhang", miejsce):
+            inne.add("załączniki")
+        else:
+            inne.add("inne miejsca")
+    arts.sort(key=lambda n: (int(re.match(r"\d+", n).group()), n))
+    return {"art": arts, "inne": sorted(inne)}
+
+
+def _zakres_sprostowania(celex_r, lang3):
+    """Zakres sprostowania z jego tekstu albo None (tekstu nie udało się pobrać — informacja poboczna,
+    o istnieniu sprostowania przesądza już SPARQL)."""
+    try:
+        raw = _pobierz_tekst(celex_r, lang3)
+    except (SystemExit, VerificationUnknown):
+        return None
+    return _zakres_z_tekstu(_bez_granic(html_to_text(raw.decode("utf-8", "replace"))))
+
+
+def _nr_artykulu(fraza):
+    m = re.match(r"(?i)^art(?:\.|ykuł|icle|ikel)?\s*(\d+[a-z]*)\.?$", (fraza or "").strip())
+    return m.group(1) if m else None
+
+
+def _gdzie_sprostowane(sprost, kons=None):
+    """Wersja skonsolidowana z brzmieniem po sprostowaniu albo None.
+
+    Nowsze wersje skonsolidowane są kumulatywne, ale w metadanych NIE powtarzają sprostowań już
+    ujętych: R(01)–R(04) AI Act wymienia tylko 02024R1689-20240712 (wersja zastąpiona, CELLAR jej nie
+    serwuje), a nie 02024R1689-20260727. Wskazujemy więc najnowszą wersję (kons[0]), jeśli jest nie
+    starsza od wersji wymieniającej sprostowanie."""
+    wymienia = sorted({k for s in sprost for k in s["konsolidacje"]}, reverse=True)
+    if not wymienia:
+        return None
+    return kons[0] if kons and kons[0] > wymienia[0] else wymienia[0]
+
+
+def _ostrzezenia_sprostowan(celex, lang, sprost, fragment=None, kons=None):
+    """Linie ostrzeżeń o sprostowaniach przy TREŚCI aktu (tekst / --pdf)."""
+    lang3 = lang.lower()
+    if not sprost:
+        return []
+    if re.match(r"^0.*-\d{8}$", celex):
+        # wersja skonsolidowana: ostrzegamy tylko o sprostowaniach, których nie wymienia ani ta, ani
+        # żadna wcześniejsza wersja (nowsze wersje nie powtarzają w metadanych sprostowań już ujętych)
+        brak = [s for s in sprost if not any(k <= celex for k in s["konsolidacje"])]
+        return [f"UWAGA: sprostowanie {s['celex']}" + (f" ({s['data']})" if s["data"] else "")
+                + f" w języku {lang3} nie figuruje w składzie tej ani wcześniejszej wersji skonsolidowanej — "
+                f"sprawdź jego treść: tekst {s['celex']} --jezyk {lang3}." for s in brak]
+    cel = _gdzie_sprostowane(sprost, kons)
+    out, trafione = [], []
+    nr = _nr_artykulu(fragment)
+    linie = []
+    for i, s in enumerate(sprost):
+        zakres = _zakres_sprostowania(s["celex"], lang3) if i < _MAKS_ZAKRESOW else None
+        if zakres is None:
+            opis = "zakres nieustalony — sprawdź treść sprostowania"
+        else:
+            czesci = ([("art. " + ", ".join(zakres["art"]))] if zakres["art"] else []) + zakres["inne"]
+            opis = "; ".join(czesci) or "zakres nieustalony — sprawdź treść sprostowania"
+            if nr and nr in zakres["art"]:
+                trafione.append(s["celex"])
+        gdzie = (f" — w składzie wersji skonsolidowanej {', '.join(s['konsolidacje'])}" if s["konsolidacje"]
+                 else " — NIE figuruje w żadnej wersji skonsolidowanej")
+        linie.append(f"  - {s['celex']}" + (f" ({s['data']})" if s["data"] else "") + f": {opis}{gdzie}")
+    if trafione:
+        out.append(f"UWAGA: art. {nr} SPROSTOWANO ({', '.join(trafione)}) — poniższe brzmienie aktu bazowego "
+                   "jest NIESPROSTOWANE. Poprawne brzmienie: "
+                   + (f"tekst {cel} --jezyk {lang3} --fragment \"art. {nr}\" albo " if cel else "")
+                   + f"treść sprostowania: tekst {trafione[0]} --jezyk {lang3}.")
+    out.append(f"UWAGA: akt ma SPROSTOWANIA w języku {lang3} — tekst aktu bazowego (brzmienie z Dz.U.) "
+               "ich NIE uwzględnia:")
+    out.extend(linie)
+    out.append("  Brzmienie po sprostowaniu: "
+               + (f"tekst {cel} --jezyk {lang3} --fragment \"art. N\" (wersja skonsolidowana); " if cel else "")
+               + f"treść sprostowania: tekst {sprost[0]['celex']} --jezyk {lang3}.")
+    return out
+
+
+def _kontrole_tresci(celex, lang, strict=False, fragment=None):
+    """Ostrzeżenia przy TREŚCI aktu (tekst / --pdf): wersje skonsolidowane + sprostowania.
+
+    Liczone PRZED wydrukiem — w strict blokada nie może nastąpić po wypisaniu treści. Strict blokuje
+    tekst aktu bazowego, gdy istnieje sprostowanie w tym języku (tekst jest niesprostowany) — tak samo
+    jak blokuje go, gdy istnieje wersja skonsolidowana."""
+    lang3 = lang.lower()
+    baza = _celex_bazowy(celex)
+    try:
+        kons = _konsolidacje(celex)
+    except VerificationUnknown:
+        if strict:
+            raise
+        kons = None  # _ostrzezenia_konsolidacja ponowi próbę i wypisze ostrzeżenie o awarii
+    try:
+        sprost = _sprostowania(celex, lang)
+        uwaga = None
+    except VerificationUnknown as e:
+        if strict:
+            raise
+        sprost, uwaga = [], (f"UWAGA: nie udało się zweryfikować, czy akt {baza} ma sprostowania w języku "
+                             f"{lang3} ({e}) — sprawdź: odniesienia {baza}, zanim zacytujesz.")
+    if strict and sprost and not re.match(r"^0.*-\d{8}$", celex):
+        cel = _gdzie_sprostowane(sprost, kons)
+        lista = ", ".join(s["celex"] + (f" z {s['data']}" if s["data"] else "") for s in sprost)
+        sys.exit(f"BŁĄD: akt {celex} ma sprostowania w języku {lang3} ({lista}) — tekst aktu bazowego ich NIE "
+                 "uwzględnia. Tryb strict blokuje niesprostowany tekst; do analizy: "
+                 + (f"tekst {cel} --jezyk {lang3} --fragment \"art. N\" (wersja skonsolidowana ze "
+                    "sprostowaniem) albo " if cel else "")
+                 + f"tekst {sprost[0]['celex']} --jezyk {lang3} (treść sprostowania). Do urzędowego cytatu "
+                 f"wskaż {CYTAT_URZEDOWY}. Bez --strict tekst aktu bazowego jest dostępny z ostrzeżeniem.")
+    out = _ostrzezenia_konsolidacja(celex, strict, kons=kons)
+    if uwaga:
+        out.append(uwaga)
+    return out + _ostrzezenia_sprostowan(celex, lang, sprost, fragment, kons)
 
 
 def cmd_tekst(a):
     celex = celex_norm(a.celex)
     lang = _lang(a.jezyk)
     lang3 = lang.lower()
-    url = CELLAR + urllib.parse.quote(celex, safe="/")
+    strict = getattr(a, "strict", False)
     if a.pdf:
-        strict = getattr(a, "strict", False)
-        ostrz = _ostrzezenia_konsolidacja(celex, True) if strict else None
-        try:
-            pdf_url = _pdf_url(celex, lang)
-        except VerificationUnknown as e:
-            _nie_zweryfikowano(f"manifestacji PDF dla {celex} w języku {lang3}", e)
-        if not pdf_url:
-            sys.exit(f"Brak manifestacji PDF dla {celex} w języku {lang3} — spróbuj inny --jezyk.")
-        data, _ = _http(pdf_url)
+        ostrz = _kontrole_tresci(celex, lang, strict) if strict else None
+        data, zrodlo, inne = _pobierz_pdf(celex, lang, lang3)
         with open(a.pdf, "wb") as f:
             f.write(data)
-        print(f"Zapisano PDF ({len(data)} B): {a.pdf}\n(źródło: {pdf_url}, język {lang3})")
-        for w in (ostrz if ostrz is not None else _ostrzezenia_konsolidacja(celex)):
+        print(f"Zapisano PDF ({len(data)} B): {a.pdf}\n(źródło: {zrodlo}, język {lang3})")
+        if inne:
+            print(f"UWAGA: PDF tego aktu ma kilka plików — zapisano pierwszy; pozostałe: {', '.join(inne)}")
+        for w in (ostrz if ostrz is not None else _kontrole_tresci(celex, lang)):
             print(w)
         return
     try:
-        raw, _ = _http(url, headers={"Accept": "application/xhtml+xml", "Accept-Language": lang3})
+        raw = _pobierz_tekst(celex, lang3)
     except SystemExit as e:
         if "(404)" in str(e) and re.match(r"^0.*-\d{8}$", celex):
             _wyjasnij_404_konsolidacji(celex, lang3)
         raise
     txt = html_to_text(raw.decode("utf-8", "replace"))
     if not _bez_granic(txt).strip():
-        sys.exit(f"Pusty tekst XHTML dla {celex} (język {lang3}) — spróbuj --pdf albo inny --jezyk.")
-    ostrz = _ostrzezenia_konsolidacja(celex, getattr(a, "strict", False))
-    print(f"# CELEX {celex} ({lang3}) — tekst z CELLAR (XHTML→tekst; do dosłownego cytatu zweryfikuj z PDF)\n")
+        sys.exit(f"Pusty tekst XHTML/HTML dla {celex} (język {lang3}) — spróbuj --pdf albo inny --jezyk.")
+    ostrz = _kontrole_tresci(celex, lang, strict, a.fragment)
+    print(f"# CELEX {celex} ({lang3}) — tekst z CELLAR (XHTML/HTML→tekst; do dosłownego cytatu zweryfikuj z PDF)\n")
     for w in ostrz:
         print(w)
     if ostrz:
