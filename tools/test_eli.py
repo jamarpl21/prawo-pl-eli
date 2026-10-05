@@ -389,7 +389,7 @@ class EliVerificationContractTests(unittest.TestCase):
                     args = argparse.Namespace(sygnatura=["DU", "2024", "18"],
                                               strict=strict, pdf=None, fragment=None)
                     out = io.StringIO()
-                    with mock.patch.object(eli, "_get", side_effect=[refs, "<p>Treść testowa</p>"]), \
+                    with mock.patch.object(eli, "_get", side_effect=[refs, "<p>Treść testowa</p>", {}]), \
                             contextlib.redirect_stdout(out):
                         if strict:
                             with self.assertRaises(eli.VerificationUnknown):
@@ -1253,8 +1253,14 @@ class TestPdfZeszytDzU2000_2011(unittest.TestCase):
                                       "\n                    .go\n                                         z dnia")
         t = eli.pdf_layout_do_tekstu(eli.pdf_zeszyt_do_aktu(raw, 2010, 991))
         self.assertNotIn(".go", t)
-        self.assertIn("ROZPORZÑDZENIE", t)         # 2010–2011: litery są poprawne, tabela ich nie rusza
+        # fonty Mac CE poznaje się po treści, nie po roku (DU 2010 poz. 1 ma je mimo roku)
+        self.assertIn("ROZPORZĄDZENIE", t)
         self.assertNotIn("MINISTRA ZDROWIA", t)
+
+    def test_tabela_liter_nie_rusza_strony_z_polskimi_literami(self):
+        # strona z poprawnymi polskimi literami i francuskim „à" (tekst umowy) — bez zmian
+        strona = "Umowa sporządzona w Paryżu, à Paris, le 2 juin 2003 — „Załącznik”\n" * 3
+        self.assertEqual(eli.pdf_zeszyt_do_aktu(strona, 2003, None).strip(), strona.strip())
 
     def test_bez_numeru_pozycji_tekst_caly(self):
         t = eli.pdf_layout_do_tekstu(eli.pdf_zeszyt_do_aktu(PDF_ZESZYT_2003, 2003, 995))
@@ -1281,6 +1287,268 @@ class TestPdfZeszytDzU2000_2011(unittest.TestCase):
                      dict(o, texts=[{"fileName": "D20030991Lj.pdf", "type": "U"}])):
             with self.subTest(meta=inny):
                 self.assertIn("MINISTRA ZDROWIA", tekst(inny))   # bez zmian: cały tekst jak dotąd
+
+
+def _bbox(strony):
+    """[(szer, wys, [(x0, y0, słowo)])] → HTML jak z `pdftotext -bbox` (x1 = x0 + 6 pt na znak)."""
+    out = ['<doc>']
+    for w, h, slowa in strony:
+        out.append(f'<page width="{w}" height="{h}">')
+        for x0, y0, t in slowa:
+            out.append(f'<word xMin="{x0}" yMin="{y0}" xMax="{x0 + 6 * len(t)}" yMax="{y0 + 11}">{t}</word>')
+        out.append("</page>")
+    return "\n".join(out + ["</doc>"])
+
+
+def _wiersz(y, tekst, x0=71.0, x1=480.0):
+    """Wiersz treści justowany do prawej krawędzi `x1` (ostatnie słowo kończy się dokładnie na x1)."""
+    slowa = tekst.split()
+    out, x = [], x0
+    for i, t in enumerate(slowa):
+        if i == len(slowa) - 1:
+            x = x1 - 6 * len(t)
+        out.append((x, y, t))
+        x += 6 * len(t) + 4
+    return out
+
+
+# Strona tekstu ujednoliconego k.p.c. (skrót): art. 461 § 1¹ — brzmienie obecne w [ ], przyszłe w < >,
+# notka na prawym marginesie (x ≥ 497) obok brzmienia przyszłego. Indeks górny „[1]" — osobne słowo tuż za „1".
+STRONA_U = (595.32, 841.92, [
+    (70.9, 28.6, "©Kancelaria"), (118.9, 28.6, "Sejmu"), (453.4, 28.6, "s."), (461.5, 28.6, "41/571")]
+    + _wiersz(100, "Art. 461. § 1. Powództwo w sprawie z zakresu prawa pracy można wytoczyć bądź przed")
+    + _wiersz(112, "sąd ogólnie właściwy dla pozwanego.")
+    + _wiersz(124, "[§ 1[1]. Do właściwości sądów rejonowych należą sprawy z zakresu prawa pracy.]")
+    + _wiersz(136, "<§ 1[1]. Do właściwości sądów rejonowych, bez względu na charakter sprawy,")
+    + _wiersz(148, "należą sprawy z zakresu prawa pracy oraz mobbingu.>")
+    + _wiersz(160, "§ 2. W sprawach z zakresu ubezpieczeń społecznych właściwy jest sąd.")
+    + [(497.5, 138, "Nowe"), (527.5, 138, "brzmienie"), (497.5, 150, "§"), (505.0, 150, "1"), (511.0, 148, "[1]"),
+       (531.0, 150, "w"), (541.0, 150, "art."), (565.0, 150, "461"), (497.5, 162, "wejdzie"), (541.0, 162, "w"),
+       (551.0, 162, "życie"), (497.5, 174, "z"), (507.0, 174, "dn."), (527.0, 174, "5.11.2026"), (581.0, 174, "r."),
+       (497.5, 186, "(Dz."), (527.0, 186, "U."), (543.0, 186, "z"), (553.0, 186, "2026"), (581.0, 186, "r."),
+       (497.5, 198, "poz."), (527.0, 198, "1046).")]
+    + [(440.0, 820.0, "2026-08-18")])
+# Ta sama strona z `pdftotext -layout`, przycięta do szerokości treści (bez notki)
+STRONA_U_LAYOUT = (
+    "©Kancelaria Sejmu                                                             s. 41/571\n\n\n"
+    "      Art. 461. § 1. Powództwo w sprawie z zakresu prawa pracy można wytoczyć bądź przed\n"
+    "sąd ogólnie właściwy dla pozwanego.\n"
+    "      [§ 1[1]. Do właściwości sądów rejonowych należą sprawy z zakresu prawa pracy.]\n"
+    "      <§ 1[1]. Do właściwości sądów rejonowych, bez względu na charakter sprawy,\n"
+    "należą sprawy z zakresu prawa pracy oraz mobbingu.>\n"
+    "      § 2. W sprawach z zakresu ubezpieczeń społecznych właściwy jest sąd.\n")
+
+
+class TestTekstUjednolicony(unittest.TestCase):
+    """Audyt 2026-10: PDF typu U (tekst ujednolicony Kancelarii Sejmu) zawiera późniejsze zmiany, także
+    te, które jeszcze nie weszły w życie ([obecne] <przyszłe> + notka na marginesie); helper sklejał
+    notkę z treścią przepisu, gubił „Opracowano na podstawie…" i podpisywał tekst datą stanu prawnego t.j."""
+
+    def test_notki_z_bbox_i_przypiecie_do_wiersza(self):
+        strona1 = (595.32, 841.92, [(497.5, 77.6, "Opracowano"), (562.1, 77.6, "na"), (497.5, 89.2, "podstawie:"),
+                                    (560.9, 89.2, "t.j."), (497.5, 100.7, "Dz."), (516.7, 100.7, "U."),
+                                    (530.0, 100.7, "z"), (540.0, 100.7, "2026"), (566.0, 100.7, "r."),
+                                    (497.5, 112.2, "poz."), (520.0, 112.2, "468,"), (545.0, 112.2, "1046.")]
+                   + _wiersz(150, "Kodeks postępowania cywilnego normuje postępowanie sądowe"))
+        prog, notki, info = eli._pdf_notki_z_bbox(eli._pdf_slowa(_bbox([strona1, STRONA_U])))
+        self.assertTrue(480 < prog < 497)
+        self.assertEqual(info["podstawa"], "Opracowano na podstawie: t.j. Dz. U. z 2026 r. poz. 468, 1046.")
+        self.assertEqual(info["data_wydruku"], "2026-08-18")
+        [(k, [notka])] = notki[1].items()
+        self.assertEqual(notka, "Nowe brzmienie § 1[1] w art. 461 wejdzie w życie z dn. 5.11.2026 r. "
+                                "(Dz. U. z 2026 r. poz. 1046).")
+        self.assertEqual(k, 5)          # wiersz „<§ 1[1]. …" (5. niepusty wiersz strony, licząc nagłówek)
+
+    def test_strona_z_tabela_za_progiem_nie_jest_przycinana(self):
+        tabela = (595.32, 841.92, _wiersz(100, "Tabela stawek opłat obowiązujących w danym roku")
+                  + [(500.0, 112, "1,5"), (530.0, 112, "3,0")])
+        _, notki, _ = eli._pdf_notki_z_bbox(eli._pdf_slowa(_bbox([tabela])))
+        self.assertEqual(notki, {})
+
+    def _tekst(self):
+        info = {"podstawa": "Opracowano na podstawie: t.j. Dz. U. z 2026 r. poz. 468, 1046."}
+        return eli.pdf_layout_do_tekstu(STRONA_U_LAYOUT, info, {0: {5: [
+            "Nowe brzmienie § 1[1] w art. 461 wejdzie w życie z dn. 5.11.2026 r. (Dz. U. z 2026 r. poz. 1046)."]}})
+
+    def test_brzmienia_jako_osobne_akapity_a_notka_pod_brzmieniem_przyszlym(self):
+        t = self._tekst()
+        self.assertIn("\n[§ 1 1. Do właściwości sądów rejonowych należą sprawy z zakresu prawa pracy.]\n", t)
+        self.assertIn("\n<§ 1 1. Do właściwości sądów rejonowych, bez względu na charakter sprawy, należą sprawy "
+                      "z zakresu prawa pracy oraz mobbingu.>\n[margines: Nowe brzmienie § 1 1 w art. 461 wejdzie w życie "
+                      "z dn. 5.11.2026 r. (Dz. U. z 2026 r. poz. 1046).]\n§ 2.", t)
+        self.assertNotIn("wejdzie w życie z dn. 5.11.2026 r. (Dz. U. z 2026 r. poz. 1046). należą", t)
+
+    def test_notka_bez_bbox_rozpoznana_po_odstepie_i_frazie(self):
+        raw = ("      <§ 2. Adwokat lub radca prawny wnosi pisma w sposób wskazany\n"
+               "                                                                                          § 2 w art. 125[1]\n"
+               "Rzeczypospolitej Polskiej lub prokurator wnosi w sposób wskazany w § 1:                   wejdzie w życie z\n"
+               "                                                                                          dn. 1.03.2027 r.\n"
+               "1)    zgłoszenie się do udziału w sprawie;\n")
+        t = eli.pdf_layout_do_tekstu(raw)
+        self.assertIn("[margines: § 2 w art. 125 1 wejdzie w życie z dn. 1.03.2027 r.]", t)
+        self.assertIn("prokurator wnosi w sposób wskazany w § 1:", t)
+        self.assertNotIn("§ 1: § 2 w art.", t)
+
+    def test_naglowek_artykulu_w_nawiasie(self):
+        t = "Art. 477 6. Treść.\n\n<Art. 477 6a. Nowy artykuł.>\n[margines: Dodany art. 477 6a wejdzie w życie z dn. 5.11.2026 r.]\n\n[Art. 32. Stare.]"
+        self.assertEqual(len(eli._hity_naglowka(t, "art. 477(6a)")), 1)
+        self.assertEqual(len(eli._hity_naglowka(t, "art. 32")), 1)
+        [(s, e)] = eli._fragmenty(t, "art. 477(6a)")
+        self.assertIn("[margines: Dodany art. 477 6a", t[s:e])
+
+    def test_daty_wejscia_w_zycie(self):
+        self.assertEqual(eli._data_wejscia("Nowe brzmienie wejdzie w życie z dn. 5.11.2026 r. (Dz. U. poz. 1046)."), "2026-11-05")
+        self.assertEqual(eli._data_wejscia("[przypis 13)] Dodany przez art. 2 ustawy (Dz. U. poz. 507), która wejdzie w życie "
+                                           "z dniem 14 października 2026 r.; wejdzie w życie z dniem 1 listopada 2028 r."),
+                         "2028-11-01")
+        self.assertEqual(eli._data_wejscia("[przypis 3)] W brzmieniu ustalonym przez art. 1, która weszła w życie z dniem 1 lipca 2024 r."), "")
+
+    def test_ostrzezenie_przyszle_zalezy_od_dnia(self):
+        t = self._tekst()
+        przed = "\n".join(eli._ostrzezenie_przyszle(t, True, dzis="2026-10-05"))
+        self.assertIn("JESZCZE NIE OBOWIĄZUJĄ (dziś 2026-10-05): 1", przed)
+        self.assertIn("od 2026-11-05: Nowe brzmienie § 1 1 w art. 461", przed)
+        self.assertIn("obowiązuje brzmienie w nawiasie kwadratowym", przed)
+        po = "\n".join(eli._ostrzezenie_przyszle(t, True, dzis="2026-11-05"))
+        self.assertNotIn("JESZCZE NIE", po)
+        self.assertIn("weszły już w życie zmiany (1)", po)
+        self.assertIn("brzmienie w [ … ] jest NIEAKTUALNE", po)
+        kc = "§ 3. Zawarcie umowy spółki w systemie.\n[przypis 13)] Dodany przez art. 2 ustawy, która wejdzie w życie z dniem 1 listopada 2028 r."
+        self.assertIn("przepis z przypisem 13) wejdzie w życie z dniem 1 listopada 2028 r.",
+                      "\n".join(eli._ostrzezenie_przyszle(kc, False, dzis="2026-10-05")))
+        self.assertEqual(eli._ostrzezenie_przyszle(kc, False, dzis="2028-11-01"), [])
+
+    def test_otwarte_bloki_dzial_i_zgubiony_nawias(self):
+        t = ("<DZIAŁ IVFA\n[margines: Dodany dział IVFA wejdzie w życie z dn. 28.10.2026 r.]\nPostępowanie w sprawach SI\n\n"
+             "Art. 479 88a. Sąd okręgowy.\n\nArt. 479 88b. Odwołanie.")
+        [(otw, notki)] = eli._otwarte_bloki(t, t.index("Art. 479 88b"))
+        self.assertEqual(otw, "<DZIAŁ IVFA")
+        self.assertEqual(notki, ["[margines: Dodany dział IVFA wejdzie w życie z dn. 28.10.2026 r.]"])
+        # „<§ 2 1." bez „>" (zgubiony w źródle) zamyka następny paragraf; blok „[…]" zamknięty nawiasem
+        t2 = "Art. 9. § 1. A.\n[§ 2 1. Stare.]\n<§ 2 1. Nowe bez nawiasu.\n§ 3. Dalej.\nArt. 10. Kolejny."
+        self.assertEqual(eli._otwarte_bloki(t2, t2.index("§ 3.")), [])
+        self.assertEqual(eli._otwarte_bloki(t2, t2.index("Art. 10.")), [])
+
+    def test_podstawa_i_oznaczenie_list_nowelizacji(self):
+        self.assertEqual(eli._podstawa_ujednolicenia("Opracowano na podstawie: t.j. Dz. U. z 2025 r. poz. 383, 1818, 1872 "
+                                                     "oraz z 2026 r. poz. 902, 988."),
+                         {(2025, 383), (2025, 1818), (2025, 1872), (2026, 902), (2026, 988)})
+        self.assertEqual(eli._podstawa_ujednolicenia("Opracowano na podstawie: Dz. U. z 1997 r. Nr 78, poz. 483, "
+                                                     "z 2001 r. Nr 28, poz. 319."), {(1997, 483), (2001, 319)})
+        linie = ["UWAGA: po tym tekście jednolitym (stan prawny na 2026-03-25) odnotowano zmiany (2) — sprawdź:",
+                 "  - Dz.U. 2026 poz. 1046  Ustawa o zmianie k.p.  (wejście w życie zmiany 2026-11-05)",
+                 "  - Dz.U. 2026 poz. 26  Ustawa o s.u.s.  (wejście w życie zmiany 2026-04-13)"]
+        out = eli._oznacz_uwzglednione(linie, {(2026, 468), (2026, 1046)})
+        self.assertIn("[UWZGLĘDNIONA w tym tekście ujednoliconym — NIE nakładaj ponownie]", out[1])
+        self.assertIn("poza listą „Opracowano na podstawie”", out[2])
+        self.assertEqual(eli._oznacz_uwzglednione(linie, set()), linie)
+
+    def test_tekst_u_od_poczatku_do_konca(self):
+        meta = {"ELI": "DU/2026/468", "legalStatusDate": "2026-03-25", "textHTML": False, "displayAddress": "Dz.U. 2026 poz. 468",
+                "entryIntoForce": None, "texts": [{"fileName": "D20260468L.pdf", "type": "T"},
+                                                  {"fileName": "D20260468Lj.pdf", "type": "U"}]}
+
+        def fake_get(path, params=None, soft=False):
+            if path.endswith("/references"):
+                return {}
+            if path.endswith("/text.html"):
+                return ""
+            return meta
+        info = {"podstawa": "Opracowano na podstawie: t.j. Dz. U. z 2026 r. poz. 468, 1046.", "data_wydruku": "2026-08-18"}
+        notki = {0: {5: ["Nowe brzmienie § 1[1] w art. 461 wejdzie w życie z dn. 5.11.2026 r. (Dz. U. z 2026 r. poz. 1046)."]}}
+        out = io.StringIO()
+        with mock.patch.object(eli, "_get", side_effect=fake_get), \
+                mock.patch.object(eli, "_get_bytes", return_value=b"%PDF"), \
+                mock.patch.object(eli, "pdftotext_dostepny", return_value=True), \
+                mock.patch.object(eli, "pdf_do_tekstu_z_notkami", return_value=(STRONA_U_LAYOUT, notki, info)), \
+                mock.patch.object(eli, "_dzis", return_value="2026-10-05"), \
+                mock.patch.object(sys, "argv", ["eli.py", "tekst", "DU", "2026", "468", "--fragment", "art. 461", "--strict"]), \
+                contextlib.redirect_stdout(out):
+            eli.main()
+        out = out.getvalue()
+        self.assertIn("/text/U/D20260468Lj.pdf", out)
+        self.assertIn("TEKST UJEDNOLICONY Kancelarii Sejmu — nieurzędowy, wydruk z 2026-08-18", out)
+        self.assertIn("To t.j. ze stanem prawnym na 2026-03-25 PLUS późniejsze zmiany z tej listy", out)
+        self.assertNotIn("(stan prawny na 2026-03-25). Sklejanie", out)
+        self.assertIn("od 2026-11-05: Nowe brzmienie § 1 1 w art. 461", out)
+        self.assertLess(out.index("JESZCZE NIE OBOWIĄZUJĄ"), out.index("Art. 461."))
+
+
+class TestMetaVacatioCytatUchylenie(unittest.TestCase):
+    """Audyt 2026-10: akt w vacatio legis miał tylko „Status: obowiązujący"; brak urzędowej formy cytatu
+    („Dz. U. z 2001 r. Nr 112, poz. 1198"); akt uchylony bez wskazania aktu uchylającego."""
+
+    META = {"title": "Ustawa z dnia 19 czerwca 2026 r. o zmianie ustawy - Kodeks pracy", "displayAddress": "Dz.U. 2026 poz. 1046",
+            "type": "Ustawa", "status": "obowiązujący", "inForce": "IN_FORCE", "announcementDate": "2026-06-19",
+            "promulgation": "2026-08-04", "entryIntoForce": "2026-11-05", "ELI": "DU/2026/1046", "texts": [], "textHTML": True}
+
+    def _meta(self, meta, refs=None, dzis="2026-10-05"):
+        out = io.StringIO()
+        with mock.patch.object(eli, "_get", side_effect=lambda p, *a, **k: refs if p.endswith("/references") else meta), \
+                mock.patch.object(eli, "_dzis", return_value=dzis), contextlib.redirect_stdout(out):
+            eli.cmd_meta(argparse.Namespace(sygnatura=["DU", "2026", "1046"], json=False))
+        return out.getvalue()
+
+    def test_vacatio_legis(self):
+        self.assertIn("akt jeszcze NIE WSZEDŁ W ŻYCIE — wejście w życie 2026-11-05 (dziś 2026-10-05)", self._meta(self.META))
+        self.assertNotIn("NIE WSZEDŁ", self._meta(self.META, dzis="2026-11-05"))
+
+    def test_jednostki_wchodzace_pozniej_z_uwag(self):
+        m = dict(self.META, entryIntoForce="2026-08-11",
+                 comments="1) art. 125 ust. 4 wchodzi w życie z dniem 28 lipca 2026 r.; 2) art. 8-18 wchodzą w życie 28 października 2026 r.")
+        out = self._meta(m)
+        self.assertIn("część przepisów wchodzi w życie PÓŹNIEJ (2026-10-28)", out)
+        self.assertNotIn("2026-07-28)", out)
+
+    def test_cytat_urzedowy(self):
+        self.assertEqual(eli._cytat({"displayAddress": "Dz.U. 2001 nr 112 poz. 1198"}), "Dz. U. z 2001 r. Nr 112, poz. 1198")
+        self.assertEqual(eli._cytat({"displayAddress": "Dz.U. 2024 poz. 18"}), "Dz. U. z 2024 r. poz. 18")
+        self.assertEqual(eli._cytat({"displayAddress": "M.P. 2004 nr 5 poz. 100"}), "M.P. z 2004 r. Nr 5, poz. 100")
+        self.assertIn("Cytat:   Dz. U. z 2026 r. poz. 1046", self._meta(self.META))
+
+    def test_uchylony_przez(self):
+        m = dict(self.META, status="uchylony", inForce="NOT_IN_FORCE", entryIntoForce="1998-04-30",
+                 displayAddress="Dz.U. 1997 nr 133 poz. 883")
+        refs = {"Akty uchylające": [{"act": {"ELI": "DU/2018/1000", "displayAddress": "Dz.U. 2018 poz. 1000",
+                                             "title": "Ustawa z dnia 10 maja 2018 r. o ochronie danych osobowych"},
+                                     "date": "2018-05-25"}]}
+        out = self._meta(m, refs)
+        self.assertIn("Uchylony przez: Dz.U. 2018 poz. 1000  Ustawa z dnia 10 maja 2018 r. o ochronie danych osobowych", out)
+        self.assertIn("API nie wskazuje aktu uchylającego", self._meta(m, {}))
+
+
+class TestZeszytStopkaIZnakWodny(unittest.TestCase):
+    """Audyt 2026-10 (PR #14 — ciąg dalszy): stopka wydawnicza zeszytu w tekście ostatniego aktu, resztki
+    znaku wodnego www.rcl.gov.pl („ov.pl", „w. ww" przed nagłówkiem), sam numer strony „— 3052 —"."""
+
+    def test_stopka_zeszytu_pod_lamami_usunieta(self):
+        raw = (_dwa_lamy([("§ 1. Ustala się stawki.", "§ 2. Wchodzi w życie z dniem ogłoszenia."),
+                          ("", "Minister: R. Sikorski")] + [("", "")] * 6)
+               + "Egzemplarze bieżące oraz archiwalne można nabywać:\n"
+               "         — w Centrum Usług Wspólnych\n"
+               "                       Wydawca: Kancelaria Prezesa Rady Ministrów\n"
+               "Zam. 1423/W/C/2011                    ISSN 0867-3411                     Cena 4,30 zł\n")
+        t = eli.pdf_layout_do_tekstu(eli.pdf_zeszyt_do_aktu(raw, 2011, None))
+        self.assertIn("Minister: R. Sikorski", t)
+        for smiec in ("Egzemplarze", "Wydawca", "ISSN", "Cena 4,30"):
+            self.assertNotIn(smiec, t)
+
+    def test_znak_wodny_i_numer_strony(self):
+        raw = ("w. ww Dziennik Ustaw Nr 1          — 3 —          Poz. 1\n\n"
+               "      § 1. Treść przepisu.\n"
+               "                        ov.pl\n"
+               "                                   — 3052 —\n"
+               "      § 2. Dalsza treść.\n")
+        t = eli.pdf_layout_do_tekstu(eli.pdf_zeszyt_do_aktu(raw, 2010, None))
+        self.assertEqual(t, "§ 1. Treść przepisu.\n§ 2. Dalsza treść.")
+
+    def test_tabela_nie_jest_rozrywana_na_lamy(self):
+        wiersze = [("    4   Radio z magnetofonem i odtwarzaczem płyt CD      1,5", ""),
+                   ("    5   Radio z magnetofonem                              1,5", "")]
+        strona = "\n".join(("Lp.   Typ urządzenia lub nośnika                     Wysokość opłaty w %",) + tuple(
+            l for l, _ in wiersze) * 5)
+        t = eli.pdf_layout_do_tekstu(eli.pdf_zeszyt_do_aktu(strona, 2003, None))
+        self.assertIn("4 Radio z magnetofonem i odtwarzaczem płyt CD 1,5", t)
 
 
 class TestAudyt2026Cache(unittest.TestCase):

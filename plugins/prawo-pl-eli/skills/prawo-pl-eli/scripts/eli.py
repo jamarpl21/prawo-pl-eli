@@ -20,9 +20,10 @@ Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
                       kompletności: nowszy t.j., awaria kontroli, tekst ze STARSZEGO t.j. zamiast własnego
                       PDF, niepełna lista nowelizacji; NIE wykrywa zmian przepisu po stanie prawnym t.j.)
 """
-import sys, json, re, time, argparse, shutil, subprocess, tempfile, os
+import sys, json, re, time, argparse, shutil, subprocess, tempfile, os, datetime
 import urllib.request, urllib.parse, urllib.error
 from html.parser import HTMLParser
+from html import unescape as _unescape
 
 __version__ = "2.1.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://api.sejm.gov.pl/eli"
@@ -259,12 +260,14 @@ _PDF_FRAZY_PRZYPISU = ("przez art.", "weszła w życie", "wszedł w życie", "wc
                        "W brzmieniu", "Uchylony", "Ze zmianą", "Zmiany tekstu", "odnośniku", "Obecnie",
                        "kieruje działem", "wdraża dyrektyw")
 # początek NOWEGO akapitu (jednostki redakcyjnej) — tylko to nie jest doklejane do poprzedniej linii
+# „[" / „<" przed jednostką: tekst ujednolicony Kancelarii Sejmu (PDF typu U) otacza brzmienie zastępowane
+# nawiasem kwadratowym, a brzmienie, które dopiero wejdzie w życie — ostrym („[§ 1[1]. …]", „<§ 1[1]. …>")
 _PDF_NOWY_AKAPIT = re.compile(
-    r"^[„\"]?(Art\.\s*\d|§\s*\d|Rozdział\s|ROZDZIAŁ\s|Dział\s|DZIAŁ\s|Tytuł\s|TYTUŁ\s|Księga\s|KSIĘGA\s|"
+    r"^[„\"\[<]?(Art\.\s*\d|§\s*\d|Rozdział\s|ROZDZIAŁ\s|Dział\s|DZIAŁ\s|Tytuł\s|TYTUŁ\s|Księga\s|KSIĘGA\s|"
     r"Oddział\s|ODDZIAŁ\s|Załącznik|Część\s|CZĘŚĆ\s|Preambuła|PREAMBUŁA|\d+[a-z]?\)\s|[a-z]\)\s|–\s|\d+[a-z]?\.\s)")
 # jednostka na LEWYM marginesie (pkt/lit./tiret mają wysunięty numer; „Art."/„§" bywają niewcięte)
 _PDF_JEDNOSTKA = re.compile(
-    r"^(Art\.\s*\d|§\s*\d|\d+[a-z]?\)\s|[a-z]\)\s|–\s|Rozdział\s|ROZDZIAŁ\s|Dział\s|DZIAŁ\s|Tytuł\s|TYTUŁ\s|"
+    r"^[\[<]?(Art\.\s*\d|§\s*\d|\d+[a-z]?\)\s|[a-z]\)\s|–\s|Rozdział\s|ROZDZIAŁ\s|Dział\s|DZIAŁ\s|Tytuł\s|TYTUŁ\s|"
     r"Księga\s|KSIĘGA\s|Oddział\s|Załącznik)")
 _PDF_WCIECIE_NAGLOWKA = 16   # krótki wiersz wcięty co najmniej tyle = wyśrodkowany nagłówek (DZIAŁ IV)
 _PDF_MAKS_NAGLOWEK = 70
@@ -274,15 +277,14 @@ def pdftotext_dostepny():
     return shutil.which("pdftotext") is not None
 
 
-def pdf_do_tekstu_layout(pdf_bytes):
-    """`pdftotext -layout` na bajtach PDF → surowy tekst (pusty napis przy awarii)."""
+def _pdftotext(args, pdf_bytes):
+    """`pdftotext <args> plik -` na bajtach PDF → tekst (pusty napis przy awarii)."""
     tmp = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
             f.write(pdf_bytes)
             tmp = f.name
-        r = subprocess.run(["pdftotext", "-layout", "-enc", "UTF-8", tmp, "-"],
-                           capture_output=True, timeout=180)
+        r = subprocess.run(["pdftotext", *args, tmp, "-"], capture_output=True, timeout=180)
         if r.returncode != 0:
             return ""
         return r.stdout.decode("utf-8", "replace")
@@ -296,16 +298,195 @@ def pdf_do_tekstu_layout(pdf_bytes):
                 pass
 
 
-def _pdf_strona(page, pierwsza):
-    """Jedna strona z `pdftotext -layout` → (linie treści [(wcięcie, tekst)], przypisy {nr: treść}).
+def pdf_do_tekstu_layout(pdf_bytes):
+    """`pdftotext -layout` na bajtach PDF → surowy tekst (pusty napis przy awarii)."""
+    return _pdftotext(["-layout", "-enc", "UTF-8"], pdf_bytes)
+
+
+_PDF_SLOWO = re.compile(r'<word xMin="([\d.]+)" yMin="([\d.]+)" xMax="([\d.]+)" yMax="([\d.]+)">([^<]*)</word>')
+
+
+def _pdf_slowa(bbox_html):
+    """Wynik `pdftotext -bbox` → [(szerokość, wysokość, [(x0, y0, x1, y1, słowo)])] dla każdej strony."""
+    strony = []
+    for kawalek in bbox_html.split("<page ")[1:]:
+        w = re.search(r'width="([\d.]+)" height="([\d.]+)"', kawalek)
+        if not w:
+            return []
+        slowa = [(float(a), float(b), float(c), float(d), _unescape(t))
+                 for a, b, c, d, t in _PDF_SLOWO.findall(kawalek)]
+        strony.append((float(w.group(1)), float(w.group(2)), slowa))
+    return strony
+
+
+def _pdf_notki_z_bbox(strony):
+    """Notki z prawego marginesu tekstu ujednoliconego (PDF typu U) wg WSPÓŁRZĘDNYCH słów.
+
+    Zwraca (próg x, {nr strony: {k: [notka]}}, info): notka trafia do k-tego niepustego wiersza
+    strony (licząc od 1), obok którego stoi; strona jest w słowniku tylko wtedy, gdy WSZYSTKO za
+    progiem to notki (wtedy jej treść można bezpiecznie przyciąć do progu — inaczej, np. przy szerokiej
+    tabeli, przycięcie zgubiłoby treść). `info`: „podstawa" (Opracowano na podstawie…), „data_wydruku".
+    """
+    info = {}
+    if not strony:
+        return None, {}, info
+    # prawa krawędź justowanego tekstu = najczęstszy koniec słowa w prawej części strony
+    konce = {}
+    for w, h, slowa in strony:
+        for x0, y0, x1, y1, t in slowa:
+            if x1 > 0.6 * w:
+                konce[round(x1)] = konce.get(round(x1), 0) + 1
+    if not konce:
+        return None, {}, info
+    prog = max(konce, key=konce.get) + 6
+    notki = {}
+    for nr, (w, h, slowa) in enumerate(strony):
+        for x0, y0, x1, y1, t in slowa:
+            if y0 > 0.93 * h and re.match(r"^\d{4}-\d{2}-\d{2}$", t):
+                info.setdefault("data_wydruku", t)
+        brzeg = sorted((s for s in slowa if s[0] >= prog and 0.05 * h < s[1] < 0.93 * h), key=lambda s: (s[1], s[0]))
+        if not brzeg:
+            continue
+        # wiersze notki (indeks górny „[1]" ma nieco wyższe y — ten sam wiersz), potem notki (przerwa > 16 pt)
+        linie = []
+        for s in brzeg:
+            if linie and s[1] - linie[-1][0] <= 4:
+                linie[-1][1].append(s)
+            else:
+                linie.append([s[1], [s]])
+        grupy, cur, ost = [], [], None
+        for y, ws in linie:
+            if ost is not None and y - ost > 16:
+                grupy.append(cur)
+                cur = []
+            tekst, prev = "", None
+            for s in sorted(ws, key=lambda s: s[0]):
+                # „125" + „[1]" tuż za nim = indeks górny → sklejony, jak w -layout („125[1]")
+                klej = prev is not None and s[4].startswith("[") and s[0] - prev[2] < 1.5
+                tekst += ("" if klej or not tekst else " ") + s[4]
+                prev = s
+            cur.append((y, tekst))
+            ost = y
+        grupy.append(cur)
+        teksty = [(g[0][0], " ".join(t for _, t in g)) for g in grupy]
+        if not all(_PDF_NOTKA.search(t) for _, t in teksty):
+            continue
+        wiersze_y = []
+        for y in sorted(s[1] for s in slowa if s[0] < prog):
+            if not wiersze_y or y - wiersze_y[-1] > 3:
+                wiersze_y.append(y)
+        strona = {}
+        for y, t in teksty:
+            if t.startswith("Opracowano na"):
+                info.setdefault("podstawa", t)
+                strona.setdefault(0, [])
+                continue
+            k = max(1, sum(1 for wy in wiersze_y if wy <= y + 2))
+            strona.setdefault(k, []).append(t)
+        notki[nr] = strona
+    return prog, notki, info
+
+
+def pdf_do_tekstu_z_notkami(pdf_bytes):
+    """Jak `pdf_do_tekstu_layout`, ale strony z notkami na prawym marginesie (tekst ujednolicony
+    Kancelarii Sejmu) są czytane PRZYCIĘTE do szerokości treści, a notki wracają osobno.
+
+    Zwraca (surowy tekst, {nr strony: {k: [notka]}}, info) — patrz `_pdf_notki_z_bbox`."""
+    raw = pdf_do_tekstu_layout(pdf_bytes)
+    if not raw:
+        return raw, {}, {}
+    strony = _pdf_slowa(_pdftotext(["-bbox", "-enc", "UTF-8"], pdf_bytes))
+    prog, notki, info = _pdf_notki_z_bbox(strony)
+    if not notki:
+        return raw, {}, info
+    wys = max(h for _, h, _ in strony)
+    przyciete = _pdftotext(["-layout", "-enc", "UTF-8", "-x", "0", "-y", "0", "-W", str(int(prog) - 2),
+                            "-H", str(int(wys) + 1)], pdf_bytes)
+    caly, ciete = raw.split("\f"), przyciete.split("\f")
+    if len(caly) != len(ciete):
+        return raw, {}, info
+    for nr in notki:
+        caly[nr] = ciete[nr]
+    return "\f".join(caly), notki, info
+
+
+# Notka na PRAWYM marginesie tekstu ujednoliconego Kancelarii Sejmu (PDF typu U): „Opracowano na
+# podstawie: t.j. Dz. U. z 2026 r. poz. 468, 473, 830…" (strona 1) i przy każdej zmianie, która jeszcze
+# nie weszła w życie w dniu wydruku: „Nowe brzmienie § 1[1] w art. 461 wejdzie w życie z dn. 5.11.2026 r.
+# (Dz. U. z 2026 r. poz. 1046).". `-layout` dokleja ją do wierszy treści — rozpoznajemy ją po treści,
+# bo justowany tekst też miewa szerokie odstępy („…   być"), których ruszać nie wolno.
+_PDF_NOTKA = re.compile(r"wejdzie w życie|wchodzi w życie|utraci moc|traci moc|Opracowano na")
+_PDF_NOTKA_KOLUMNA = 0.68   # notka zaczyna się dalej niż tyle szerokości strony
+_PDF_NOTKA_ODSTEP = 6       # …i jest oddzielona od treści co najmniej tyloma spacjami
+
+
+def _pdf_notki_marginesu(lines):
+    """Wiersze strony → (wiersze bez notek marginesowych, {indeks wiersza: [treść notki]}).
+
+    Notka = ciąg kolejnych wierszy z tekstem za kolumną `_PDF_NOTKA_KOLUMNA` (puste wiersze nie
+    przerywają ciągu, wiersz treści bez takiego tekstu — tak) z frazą `_PDF_NOTKA`. Notka trafia do
+    pierwszego wiersza treści, który z nią sąsiaduje, żeby wyszła pod właściwym akapitem."""
+    niepuste = [l for l in lines if l.strip()]
+    if not niepuste:
+        return lines, {}
+    prog = int(max(len(l.rstrip()) for l in niepuste) * _PDF_NOTKA_KOLUMNA)
+
+    def margines(l):
+        if not l.strip():
+            return None
+        if len(l) - len(l.lstrip(" ")) >= prog:
+            return 0
+        for m in re.finditer(r"\S( {%d,})(?=\S)" % _PDF_NOTKA_ODSTEP, l):
+            if m.end() >= prog:
+                return m.start() + 1
+        return None
+    cut = [margines(l) for l in lines]
+    out, notki = list(lines), {}
+    i = 0
+    while i < len(lines):
+        if cut[i] is None:
+            i += 1
+            continue
+        j, grupa = i, []
+        while j < len(lines) and (cut[j] is not None or not lines[j].strip()):
+            if cut[j] is not None:
+                grupa.append(j)
+            j += 1
+        tekst = " ".join(" ".join(lines[k][cut[k]:].split()) for k in grupa)
+        if _PDF_NOTKA.search(tekst):
+            for k in grupa:
+                out[k] = lines[k][:cut[k]].rstrip()
+            cel = next((k for k in grupa if out[k].strip()), None)
+            if cel is None:
+                cel = next((k for k in range(i - 1, -1, -1) if out[k].strip()), None)
+            if cel is None:
+                cel = next((k for k in range(j, len(lines)) if out[k].strip()), i)
+            notki.setdefault(cel, []).append(tekst)
+        i = j
+    return out, notki
+
+
+def _pdf_strona(page, pierwsza, info=None, notki_bbox=None):
+    """Jedna strona z `pdftotext -layout` → (linie treści [(wcięcie, tekst, notki)], przypisy {nr: treść}).
 
     Usuwa nagłówek („©Kancelaria Sejmu  s. 1/119", „Dziennik Ustaw – 22 – Poz. 795"), stopkę
     (znacznik daty „2026-06-22", numer strony), normalizuje margines strony i wydziela blok
     przypisów z dołu strony (po pustej linii; „3)   W brzmieniu ustalonym…" + wcięte kontynuacje).
+    Notki z prawego marginesu (tekst ujednolicony) wychodzą osobno przy wierszu, obok którego stoją;
+    „Opracowano na podstawie…" i data wydruku trafiają do `info` („podstawa", „data_wydruku").
+    `notki_bbox` ({k: [notka]} z `_pdf_notki_z_bbox`; strona już przycięta do szerokości treści)
+    zastępuje rozpoznawanie notek po odstępach w wierszu.
     """
     lines = page.split("\n")
     while lines and not lines[-1].strip():
         lines.pop()
+    przypiete = {}
+    if notki_bbox is not None:
+        niepuste_idx = [k for k, l in enumerate(lines) if l.strip()]
+        for k, teksty in notki_bbox.items():
+            if teksty and niepuste_idx:
+                cel = niepuste_idx[min(max(k, 1), len(niepuste_idx)) - 1]
+                przypiete.setdefault(cel, []).extend(teksty)
     # nagłówek: pierwsze niepuste linie
     i = 0
     while i < len(lines) and not lines[i].strip():
@@ -313,30 +494,35 @@ def _pdf_strona(page, pierwsza):
     while i < len(lines) and _PDF_NAGLOWEK.match(lines[i]):
         i += 1
     lines = lines[i:]
+    przypiete = {max(k - i, 0): v for k, v in przypiete.items()}
     # stopka: znacznik daty / numer strony na samym dole
     while lines and (not lines[-1].strip() or _PDF_STOPKA.match(lines[-1])):
+        d = re.match(r"^\s*(\d{4}-\d{2}-\d{2})\s*$", lines[-1])
+        if d and info is not None:
+            info.setdefault("data_wydruku", d.group(1))
         lines.pop()
-    if pierwsza and any("Opracowano na" in l for l in lines):
-        # Pierwsza strona „tekstu ujednoliconego" Kancelarii Sejmu (np. Konstytucja) ma na prawym
-        # marginesie notkę „Opracowano na podstawie: Dz. U. …", którą -layout dokleja do linii
-        # preambuły — odcinamy wszystko, co zaczyna się w prawej ćwiartce strony
-        szer = max(len(l.rstrip()) for l in lines) or 1
-        prog = int(szer * 0.75)
-
-        def bez_notki(l):
-            if len(l) - len(l.lstrip(" ")) >= prog:
-                return ""
-            for m in re.finditer(r"\S( {6,})(?=\S)", l):
-                if m.end() >= prog:
-                    return l[:m.start() + 1]
-            return l
-        lines = [bez_notki(l) for l in lines]
+    if notki_bbox is not None:
+        notki_wierszy = {}
+        for k, v in przypiete.items():
+            notki_wierszy.setdefault(min(k, max(len(lines) - 1, 0)), []).extend(v)
+    else:
+        lines, notki_wierszy = _pdf_notki_marginesu(lines)
+    for k in sorted(notki_wierszy):
+        zostaja = []
+        for n in notki_wierszy[k]:
+            if n.startswith("Opracowano na") or (pierwsza and "Opracowano na" in n):
+                if info is not None:
+                    info.setdefault("podstawa", n[n.index("Opracowano na"):])
+            else:
+                zostaja.append(n)
+        notki_wierszy[k] = zostaja
     niepuste = [l for l in lines if l.strip()]
     if not niepuste:
         return [], {}
     margines = min(len(l) - len(l.lstrip(" ")) for l in niepuste)
-    wiersze = [(0, "") if not l.strip() else (len(l) - len(l.lstrip(" ")) - margines, " ".join(l.split()))
-               for l in lines]
+    wiersze = [(0, "", []) if not l.strip() else
+               (len(l) - len(l.lstrip(" ")) - margines, " ".join(l.split()), notki_wierszy.get(k) or [])
+               for k, l in enumerate(lines)]
     # blok przypisów: ostatni blok po pustej linii, zaczynający się od „N)" na marginesie
     przypisy = {}
     k = len(wiersze)
@@ -344,13 +530,13 @@ def _pdf_strona(page, pierwsza):
         k -= 1
     blok = wiersze[k:]
     if k > 0 and blok and blok[0][0] == 0 and _PDF_PRZYPIS.match(blok[0][1]):
-        numery = [m.group(1) for w, t in blok if w == 0 for m in [_PDF_PRZYPIS.match(t)] if m]
-        tresc_strony = "\n".join(t for w, t in wiersze[:k])
+        numery = [m.group(1) for w, t, _ in blok if w == 0 for m in [_PDF_PRZYPIS.match(t)] if m]
+        tresc_strony = "\n".join(t for w, t, _ in wiersze[:k])
         odsylacze = set(_PDF_ODSYLACZ.findall(tresc_strony))
-        tekst_bloku = " ".join(t for w, t in blok)
+        tekst_bloku = " ".join(t for w, t, _ in blok)
         if (set(numery) & odsylacze) or any(f in tekst_bloku for f in _PDF_FRAZY_PRZYPISU):
             biezacy = None
-            for w, t in blok:
+            for w, t, _ in blok:
                 m = _PDF_PRZYPIS.match(t) if w == 0 else None
                 if m:
                     biezacy = m.group(1)
@@ -358,7 +544,7 @@ def _pdf_strona(page, pierwsza):
                 elif biezacy is not None:
                     przypisy[biezacy] = _doklej(przypisy[biezacy], t)
             wiersze = wiersze[:k]
-    return [(w, t) for w, t in wiersze if t], przypisy
+    return [(w, t, n) for w, t, n in wiersze if t], przypisy
 
 
 def _zlacz_rozstrzelone(t):
@@ -387,33 +573,37 @@ def _pdf_normalizuj_indeksy(t):
     return re.sub(r"(?<=\d)([" + _SUPS + r"]+)", lambda m: " " + m.group(1).translate(_SUP), t)
 
 
-def pdf_layout_do_tekstu(raw):
+def pdf_layout_do_tekstu(raw, info=None, notki=None):
     """Tekst z `pdftotext -layout` → tekst w układzie jak z text.html.
 
     Strony są czyszczone z nagłówków/stopek, zawinięte wiersze są sklejane w akapity (nowy akapit
     zaczyna się od wciętego „Art."/„§"/„N)"/„lit."…, kontynuacja stoi na lewym marginesie),
     a odsyłacze do przypisów („§ 1.3)") znikają z numeracji — treść przypisu wychodzi pod
-    akapit jako „[przypis 3)] …", dokładnie jak w ścieżce HTML.
+    akapit jako „[przypis 3)] …", dokładnie jak w ścieżce HTML. Notki z prawego marginesu tekstu
+    ujednoliconego wychodzą pod akapitem jako „[margines: …]"; `info` (dict) dostaje „podstawa"
+    (notka „Opracowano na podstawie…") i „data_wydruku". `notki` — z `pdf_do_tekstu_z_notkami`.
     """
     strony = raw.split("\f")
-    akapity = []        # [wcięcie_nagłówka(bool), tekst, {strony}]
+    akapity = []        # [wcięcie_nagłówka(bool), tekst, {strony}, [notki marginesu]]
     przypisy = {}       # nr strony → {nr przypisu: treść}
     poprzedni_naglowek = False
     for nr, strona in enumerate(strony):
-        wiersze, przyp = _pdf_strona(strona, pierwsza=(nr == 0))
+        wiersze, przyp = _pdf_strona(strona, pierwsza=(nr == 0), info=info,
+                                     notki_bbox=(notki or {}).get(nr) if notki else None)
         if przyp:
             przypisy[nr] = przyp
-        for wciecie, t in wiersze:
+        for wciecie, t, notki_wiersza in wiersze:
             naglowek = wciecie >= _PDF_WCIECIE_NAGLOWKA and len(t) <= _PDF_MAKS_NAGLOWEK
             if naglowek:
                 t = _zlacz_rozstrzelone(t)
             nowy = (naglowek or poprzedni_naglowek or not akapity
                     or (wciecie > 0 and _PDF_NOWY_AKAPIT.match(t)) or _PDF_JEDNOSTKA.match(t))
             if nowy:
-                akapity.append([naglowek, t, {nr}])
+                akapity.append([naglowek, t, {nr}, list(notki_wiersza)])
             else:
                 akapity[-1][1] = _doklej(akapity[-1][1], t)
                 akapity[-1][2].add(nr)
+                akapity[-1][3].extend(notki_wiersza)
             poprzedni_naglowek = naglowek
     # Tekst jednolity zaczyna się od OBWIESZCZENIA Marszałka Sejmu (z cytowanymi przepisami
     # przejściowymi: „Art. 3. Ustawa wchodzi w życie…"). To nie jest treść aktu, a na początku
@@ -422,13 +612,13 @@ def pdf_layout_do_tekstu(raw):
     if zal and any("jednolitego tekstu" in a[1] for a in akapity[:zal]):
         for a in akapity[:zal]:
             a[1] = "» " + a[1]
-        akapity.insert(0, [True, "[obwieszczenie Marszałka Sejmu sprzed załącznika — wiersze ze znakiem » NIE są treścią aktu]", set()])
+        akapity.insert(0, [True, "[obwieszczenie Marszałka Sejmu sprzed załącznika — wiersze ze znakiem » NIE są treścią aktu]", set(), []])
     out = []
-    for naglowek, t, na_stronach in akapity:
+    for naglowek, t, na_stronach, notki_akapitu in akapity:
         t = _pdf_normalizuj_indeksy(t)
         odsylacze = []
         t = _PDF_ODSYLACZ.sub(lambda m: odsylacze.append(m.group(1)) or "", t)
-        if naglowek or re.match(r"^Art\.\s*\d", t):
+        if naglowek or re.match(r"^[\[<]?Art\.\s*\d", t):
             out.append("")
         out.append(t)
         for n in odsylacze:
@@ -438,6 +628,8 @@ def pdf_layout_do_tekstu(raw):
                     tresc = przypisy[s][n]
                     break
             out.append(f"[przypis {n})] {tresc}" if tresc else f"[przypis {n})] (treści przypisu nie odnaleziono na tej stronie PDF)")
+        for n in notki_akapitu:
+            out.append(f"[margines: {_pdf_normalizuj_indeksy(n)}]")
     t = "\n".join(out)
     t = re.sub(r"\n{3,}", "\n\n", t)
     return t.strip()
@@ -456,14 +648,21 @@ _ZNAK_WODNY = set("www.rcl.gov.pl")
 _PDF_MIN_LAM = 0.35   # wiersz tylko na lewo od rynny, a zaczyna się dalej niż tyle szerokości strony = wyśrodkowany
 _PDF_RYNNA_WOLNE = 0.5   # rynna: tyle niepustych wierszy strony ma w niej spację…
 _PDF_RYNNA_OBA = 0.15    # …a tyle ma tekst po obu jej stronach
+_PDF_TABELA = 0.3   # tyle wierszy bloku z ≥2 przerwami ≥3 spacji = wiersze tabeli, nie dwa łamy
+_MOJIBAKE = "∏Ê˝ƒÑ¸Â˚¡"   # bez „à"/„´": te bywają prawdziwe (francuski tekst umowy)
 
 
 def _pdf_bez_znaku_wodnego(raw):
     out = []
     for l in raw.split("\n"):
-        t = l.strip("\f ")
-        if t and len(t) <= 3 and set(t) <= _ZNAK_WODNY:
+        t = l.strip("\f ").replace(" ", "")
+        # kawałek napisu „www.rcl.gov.pl" („.go", „v.p", „rcl .", „ov.pl") — w łamie z lat 2010–2011 samotne
+        # „w"/„o" na końcu wiersza nie występują (reguła składu), więc nie gubimy treści
+        if t and (len(t) <= 5 and t in "www.rcl.gov.pl" or len(t) <= 4 and set(t) <= _ZNAK_WODNY):
             l = "\f" if l.startswith("\f") else ""
+        else:
+            # „w. ww Dziennik Ustaw Nr 1 — 3 — Poz. 1": kawałek znaku wodnego przed nagłówkiem strony
+            l = re.sub(r"^([\f ]*)(?:[wrclgovp.]{1,4} +)+(?=(?:Dziennik Ustaw|Monitor Polski)\s)", r"\1", l)
         out.append(l)
     return "\n".join(out)
 
@@ -505,7 +704,11 @@ def _pdf_lamy(strona):
     out, blok = [], []
 
     def zamknij():
-        if not any(l.strip() for l in blok):
+        tresc = [l.strip() for l in blok if l.strip()]
+        # blok z wierszami tabeli (≥2 wewnętrzne przerwy ≥3 spacji: „4   Radio z magnetofonem…   1,5") — nie łamy;
+        # zostaje w całości, jak dotąd
+        tabela = sum(len(re.findall(r"\S {3,}(?=\S)", l)) >= 2 for l in tresc) >= _PDF_TABELA * len(tresc)
+        if not tresc or tabela:
             out.extend(blok)
         else:
             out.extend(bez_wciecia([l[:rynna] for l in blok]))
@@ -529,8 +732,12 @@ def _pdf_wytnij_akt(raw, poz):
     def numer(i, n):
         if lines[i].strip("\f ") != str(n):
             return False
-        dalej = next((l.strip("\f ") for l in lines[i + 1:i + 9] if l.strip("\f ")), "")
-        return dalej[:1].isupper()
+        # pod numerem pozycji stoi tytuł aktu WIELKIMI LITERAMI („ROZPORZĄDZENIE MINISTRA ZDROWIA1)", „UCHWAŁA Nr 85 RADY MINISTRÓW") albo numer
+        # rejestru postanowienia Prezydenta („Rej. 250/2002"); komórka tabeli / „Załącznik nr 2" / nagłówek strony — nie
+        dalej = next((l.strip("\f ") for l in lines[i + 1:i + 9]
+                      if l.strip("\f ") and not _PDF_NAGLOWEK.match(l) and not _PDF_STOPKA.match(l)), "")
+        litery = [c for c in dalej if c.isalpha()]
+        return dalej.startswith("Rej.") or bool(litery) and sum(c.isupper() for c in litery) >= 0.8 * len(litery)
     od = next((i for i in range(len(lines)) if numer(i, poz)), None)
     if od is None:
         return raw
@@ -538,12 +745,44 @@ def _pdf_wytnij_akt(raw, poz):
     return "\n".join(lines[od:do])
 
 
+# Stopka wydawnicza zeszytu (prenumerata, wydawca, ISSN, cena) — na ostatniej stronie zeszytu, więc trafia
+# do tekstu OSTATNIEGO aktu w zeszycie. Początek stopki rozpoznajemy po stałych frazach z lat 2000–2011.
+_PDF_STOPKA_ZESZYTU = re.compile(r"Egzemplarze bieżące oraz archiwalne|Wydawca: Kancelaria|Szanowni Państwo"
+                                 r"|WYDZIAŁ WYDAWNICTW I POLIGRAFII")
+
+
+def _pdf_bez_stopki_zeszytu(raw):
+    """Usuwa stopkę wydawniczą z ostatniej strony zeszytu (tej z „ISSN …"); bez niej tekst wraca bez zmian.
+    Działa na wyniku `-layout` PRZED rozdzieleniem łamów — stopka jest na całą szerokość strony, pod oboma łamami."""
+    strony = raw.split("\f")
+    nr = next((i for i in range(len(strony) - 1, -1, -1) if re.search(r"ISSN\s*\d{4}-\d{3}[\dX]", strony[i])), None)
+    if nr is None:
+        return raw
+    for i in range(nr, -1, -1):
+        linie = strony[i].split("\n")
+        k = next((j for j, l in enumerate(linie) if _PDF_STOPKA_ZESZYTU.search(l)), None)
+        if k is not None:
+            strony[i] = "\n".join(linie[:k])
+            for j in range(i + 1, nr + 1):
+                strony[j] = ""
+            return "\f".join(strony)
+        if i < nr - 1:      # stopka nie zaczyna się dalej niż stronę przed tą z ISSN
+            break
+    return raw
+
+
 def pdf_zeszyt_do_aktu(raw, rok, poz):
     """`pdftotext -layout` PDF-u ogłoszonego aktu Dz.U./M.P. 2000–2011 → tekst tylko tego aktu, łam po łamie,
     z polskimi literami (2000–2009). Wynik idzie dalej do `pdf_layout_do_tekstu`."""
-    raw = _pdf_bez_znaku_wodnego(raw)
-    if rok <= 2009:
-        raw = raw.translate(_MAC_CE)
+    if rok >= 2010:
+        raw = _pdf_bez_znaku_wodnego(raw)
+    # fonty Mac CE poznaje się po treści (DU 2010 poz. 1 ma je mimo roku): strona bez żadnej polskiej litery,
+    # za to ze znakami „∏", „Ê", „˝"… — tabela tylko dla takich stron
+    raw = "\f".join(s.translate(_MAC_CE) if any(c in s for c in _MOJIBAKE)
+                     and not any(c in s for c in "ąęłńśźżĄĘŁŃŚŹŻ") else s for s in raw.split("\f"))
+    raw = _pdf_bez_stopki_zeszytu(raw)
+    # sam numer strony zeszytu („— 3052 —") na stronie bez nagłówka „Dziennik Ustaw Nr …"
+    raw = re.sub(r"(?m)^[ \f]*[—–]\s*\d{1,5}\s*[—–][ ]*$", lambda m: "\f" if "\f" in m.group(0) else "", raw)
     raw = "\f".join(_pdf_lamy(s) for s in raw.split("\f"))
     return _pdf_wytnij_akt(raw, poz) if poz else raw
 
@@ -560,7 +799,7 @@ def _wybierz_pdf(meta):
 
 
 # granice jednostek redakcyjnych w tekście po konwersji (nagłówki na początku linii)
-_GRANICE = r"(?m)^(Art\.\s*\d|Tytuł\s|TYTUŁ\s|Dział\s|DZIAŁ\s|Rozdział\s|Oddział\s|Księga\s|KSIĘGA\s|Załącznik)"
+_GRANICE = r"(?m)^[\[<]?(Art\.\s*\d|Tytuł\s|TYTUŁ\s|Dział\s|DZIAŁ\s|Rozdział\s|Oddział\s|Księga\s|KSIĘGA\s|Załącznik)"
 
 # unicodowe indeksy górne (art. 21¹) — do rozpoznania w zapytaniu i przełożenia na cyfry ASCII
 _SUPS = "¹²³⁴⁵⁶⁷⁸⁹⁰"
@@ -612,11 +851,11 @@ def _hity_naglowka(txt, fraza):
     if mi:
         idx, letter = mi.group(1), letter or mi.group(2)
     if idx:                       # indeks górny → w tekście rozdzielony spacją
-        pat = rf"(?m)^Art\.\s*{re.escape(base)}\s+{re.escape(idx)}\s*{re.escape(letter)}{_KONIEC_ART}"
+        pat = rf"(?m)^[\[<]?Art\.\s*{re.escape(base)}\s+{re.escape(idx)}\s*{re.escape(letter)}{_KONIEC_ART}"
     elif letter:                  # sufiks literowy → sklejony z numerem
-        pat = rf"(?m)^Art\.\s*{re.escape(base)}\s*{re.escape(letter)}{_KONIEC_ART}"
+        pat = rf"(?m)^[\[<]?Art\.\s*{re.escape(base)}\s*{re.escape(letter)}{_KONIEC_ART}"
     else:
-        pat = rf"(?m)^Art\.\s*{re.escape(base)}{_KONIEC_ART}"
+        pat = rf"(?m)^[\[<]?Art\.\s*{re.escape(base)}{_KONIEC_ART}"
     return [h.start() for h in re.finditer(pat, txt)]
 
 
@@ -653,6 +892,200 @@ def _fragmenty(txt, fraza, maks=8):
         else:
             spans.append((start, end))
     return spans
+
+
+# ---------------------------------------------------------------------------------------------
+# Przepisy, które jeszcze NIE obowiązują (wejście w życie po dniu dzisiejszym)
+# ---------------------------------------------------------------------------------------------
+_MIESIACE = {m: i for i, m in enumerate(("stycznia", "lutego", "marca", "kwietnia", "maja", "czerwca", "lipca",
+                                         "sierpnia", "września", "października", "listopada", "grudnia"), 1)}
+_DATA_SLOWNIE = r"(\d{1,2})\s+(" + "|".join(_MIESIACE) + r")\s+(\d{4})"
+_DATA_CYFRY = r"(\d{1,2})\.(\d{1,2})\.(\d{4})"
+# „wejdzie w życie z dn. 5.11.2026 r." (notka tekstu ujednoliconego), „wejdzie w życie z dniem 1 listopada
+# 2028 r." (przypis t.j.), „utraci moc z dniem …" — czas PRZYSZŁY = w dniu wydania tekstu jeszcze nie obowiązywało
+_WEJDZIE = re.compile(r"(wejdzie w życie|wejdą w życie|utraci moc|utracą moc|traci moc)\s+z\s+(?:dn\.|dniem)\s*(?:"
+                      + _DATA_CYFRY + "|" + _DATA_SLOWNIE + ")")
+
+
+def _dzis():
+    """Dzisiejsza data (ISO) — osobna funkcja, żeby testy nie starzały się wraz z kalendarzem."""
+    return datetime.date.today().isoformat()
+
+
+def _iso(d, m, r):
+    try:
+        return datetime.date(int(r), int(m), int(d)).isoformat()
+    except ValueError:
+        return ""
+
+
+def _data_wejscia(tekst):
+    """Ostatnia data „wejdzie w życie z dn./dniem …" w tekście notki/przypisu (ISO) albo "".
+
+    Przypis bywa dwuczęściowy: „…ustawy (Dz. U. poz. 507), która wejdzie w życie z dniem 14 października
+    2026 r.; wejdzie w życie z dniem 1 listopada 2028 r." — o samym przepisie mówi OSTATNIA data."""
+    daty = []
+    for m in _WEJDZIE.finditer(tekst):
+        if m.group(2):
+            daty.append(_iso(m.group(2), m.group(3), m.group(4)))
+        else:
+            daty.append(_iso(m.group(5), _MIESIACE[m.group(6)], m.group(7)))
+    daty = [d for d in daty if d]
+    return daty[-1] if daty else ""
+
+
+def _zmiany_w_tekscie(txt, dzis=None):
+    """Linie „[margines: …]" i „[przypis N)] …" z datą wejścia w życie → ([(data, opis)] przyszłe,
+    [(data, opis)] już obowiązujące). Opis = treść notki/przypisu (skrócona)."""
+    dzis = dzis or _dzis()
+    przyszle, minione, bylo = [], [], set()
+    for l in txt.split("\n"):
+        if not (l.startswith("[margines: ") or l.startswith("[przypis ")):
+            continue
+        d = _data_wejscia(l)
+        if not d:
+            continue
+        if l.startswith("[margines: "):
+            opis = l[len("[margines: "):-1]
+        else:
+            # przypis: najważniejsze jest ZDANIE z datą (bywa na końcu długiego przypisu) + początek przypisu
+            n = re.match(r"^\[przypis (\d+)\)\]\s*(.*)$", l)
+            ostatnie = list(_WEJDZIE.finditer(l))[-1]
+            poczatek = n.group(2) if n else l
+            opis = (f"przepis z przypisem {n.group(1) if n else '?'}) {ostatnie.group(0)} r. — "
+                    + (poczatek if len(poczatek) <= 140 else poczatek[:137] + "…"))
+        opis = opis if len(opis) <= 260 else opis[:257] + "…"
+        if (d, opis) in bylo:
+            continue
+        bylo.add((d, opis))
+        (przyszle if d > dzis else minione).append((d, opis))
+    return sorted(przyszle), sorted(minione)
+
+
+def _ostrzezenie_przyszle(txt, ujednolicony, dzis=None, maks=15):
+    """Ostrzeżenie dla wypisywanego tekstu (całego lub fragmentu) o brzmieniu, które jeszcze nie obowiązuje
+    — i, w tekście ujednoliconym, o zmianach, które od jego wydruku zdążyły już wejść w życie."""
+    dzis = dzis or _dzis()
+    przyszle, minione = _zmiany_w_tekscie(txt, dzis)
+    out = []
+    if przyszle:
+        out.append(f"UWAGA — PRZEPISY, KTÓRE JESZCZE NIE OBOWIĄZUJĄ (dziś {dzis}): {len(przyszle)}")
+        for d, opis in przyszle[:maks]:
+            out.append(f"  - od {d}: {opis}")
+        if len(przyszle) > maks:
+            out.append(f"  - … i {len(przyszle) - maks} kolejnych (pełna lista: linie „[margines:”/„[przypis” w tekście)")
+        if ujednolicony:
+            out.append("  Na dziś obowiązuje brzmienie w nawiasie kwadratowym [ … ] (albo brak przepisu, gdy jest tylko"
+                       " < … >); brzmienie w < … > zacznie obowiązywać w podanym dniu. Nie cytuj go jako obowiązującego.")
+        else:
+            out.append("  Przepis, przy którym stoi taki przypis, jeszcze NIE obowiązuje — nie cytuj go jako obowiązującego.")
+    if ujednolicony and minione:
+        out.append(f"UWAGA: od wydruku tekstu ujednoliconego weszły już w życie zmiany ({len(minione)}) — dla nich obowiązuje"
+                   " brzmienie w < … >, a brzmienie w [ … ] jest NIEAKTUALNE:")
+        for d, opis in minione[:maks]:
+            out.append(f"  - od {d}: {opis}")
+    return out
+
+
+_POZIOMY = ((r"KSIĘGA\s|Księga\s", 0), (r"TYTUŁ\s|Tytuł\s", 1), (r"DZIAŁ\s|Dział\s", 2), (r"ROZDZIAŁ\s|Rozdział\s", 3),
+            (r"ODDZIAŁ\s|Oddział\s", 4), (r"Art\.\s*\d", 5), (r"§\s*\d|\d+[a-z]?\.\s", 6), (r"\d+[a-z]?\)\s", 7),
+            (r"[a-z]\)\s", 8), (r"–\s", 9))
+
+
+def _poziom(t):
+    """Poziom jednostki redakcyjnej na początku wiersza (0 = księga … 9 = tiret) albo None."""
+    for wzor, poziom in _POZIOMY:
+        if re.match(wzor, t):
+            return poziom
+    return None
+
+
+def _otwarte_bloki(txt, pos):
+    """Tekst ujednolicony: bloki „< …" / „[ …" otwarte PRZED pozycją `pos` i niezamknięte do niej (np. cały
+    „<DZIAŁ IVFA … >" z dziesięcioma artykułami) → [(wiersz otwierający, [linie „[margines: …]" przy nim])].
+
+    Blok zamyka „>"/„]" na końcu akapitu ALBO następna jednostka tego samego lub wyższego poziomu
+    (Kancelaria Sejmu zdarza się zgubić nawias zamykający, np. k.p.c. art. 477⁹ § 2¹)."""
+    linie = txt[:pos].split("\n")
+    stos = []   # (znak otwarcia, indeks wiersza, poziom)
+    for i, l in enumerate(linie):
+        t = l.strip()
+        if not t or t.startswith(("[przypis ", "[margines: ", "[obwieszczenie", "» ")):
+            continue
+        otw = t[0] if t[0] in "<[" else ""
+        poziom = _poziom(t[1:] if otw else t)
+        if poziom is not None:
+            stos = [b for b in stos if b[2] is None or b[2] < poziom]
+        zam = {"<": ">", "[": "]"}
+        if otw and not t.endswith(zam[otw]):
+            stos.append((otw, i, poziom))
+        elif not otw and stos and t.endswith(zam[stos[-1][0]]):
+            stos.pop()
+    # wiersz, od którego zaczyna się fragment, też zamyka bloki tego samego lub niższego poziomu
+    biezacy = txt[pos:].split("\n", 1)[0].strip()
+    poziom = _poziom(biezacy[1:] if biezacy[:1] in "<[" and biezacy else biezacy)
+    if poziom is not None:
+        stos = [b for b in stos if b[2] is None or b[2] < poziom]
+    return [(linie[i], [l for l in linie[i + 1:i + 4] if l.startswith("[margines: ")]) for _, i, _ in stos]
+
+
+def _podstawa_ujednolicenia(notka):
+    """„Opracowano na podstawie: t.j. Dz. U. z 2025 r. poz. 383, 1818, 1872 oraz z 2026 r. poz. 902, 988."
+    → {(2025, 383), (2025, 1818), (2025, 1872), (2026, 902), (2026, 988)} (też „Nr 78, poz. 483")."""
+    out, rok = set(), None
+    for m in re.finditer(r"z\s+(\d{4})\s*r\.|poz\.\s*((?:\d+(?:\s*(?:,|i|oraz)\s*(?=\d))?)+)", notka or ""):
+        if m.group(1):
+            rok = int(m.group(1))
+        elif rok:
+            out |= {(rok, int(n)) for n in re.findall(r"\d+", m.group(2))}
+    return out
+
+
+_POZ_LISTY = re.compile(r"^  - (?:Dz\.U\.|M\.P\.) (\d{4}) (?:nr \d+ )?poz\. (\d+)\b")
+
+
+def _oznacz_uwzglednione(linie, podstawa):
+    """Lista nowelizacji po t.j. a tekst ujednolicony: pozycje, które Kancelaria Sejmu już wpisała do
+    tekstu, są oznaczone — nakładanie ich ręcznie po raz drugi zdublowałoby zmianę."""
+    if not podstawa:
+        return linie
+    out = []
+    for l in linie:
+        m = _POZ_LISTY.match(l)
+        if m:
+            l += ("  [UWZGLĘDNIONA w tym tekście ujednoliconym — NIE nakładaj ponownie]"
+                  if (int(m.group(1)), int(m.group(2))) in podstawa else
+                  "  [poza listą „Opracowano na podstawie” — sprawdź przypis/margines przy przepisie; jeśli tej zmiany "
+                  "tam nie ma, nałóż ją ręcznie]")
+        elif l.startswith("UWAGA: po tym tekście jednolitym"):
+            l += " (oznaczenia przy pozycjach: patrz notka „Opracowano na podstawie”)"
+        out.append(l)
+    return out
+
+
+def _cytat(d):
+    """Urzędowa forma cytatu publikatora: „Dz. U. z 2001 r. Nr 112, poz. 1198" / „Dz. U. z 2024 r. poz. 18"."""
+    m = re.match(r"^(Dz\.U\.|M\.P\.)\s+(\d{4})\s+(?:nr\s+(\d+)\s+)?poz\.\s+(\d+)$", (d.get("displayAddress") or "").strip())
+    if not m:
+        return ""
+    pub = "Dz. U." if m.group(1) == "Dz.U." else "M.P."
+    return f"{pub} z {m.group(2)} r. " + (f"Nr {m.group(3)}, " if m.group(3) else "") + f"poz. {m.group(4)}"
+
+
+def _jeszcze_nie_obowiazuje(d, dzis=None):
+    """Ostrzeżenia dla aktu w vacatio legis / z jednostkami wchodzącymi w życie później (lista linii)."""
+    dzis = dzis or _dzis()
+    out = []
+    eif = d.get("entryIntoForce") or ""
+    if eif and eif > dzis:
+        out.append(f"UWAGA: akt jeszcze NIE WSZEDŁ W ŻYCIE — wejście w życie {eif} (dziś {dzis}). Status API "
+                   f"„{d.get('status', '')}” znaczy tylko, że akt nie został uchylony; do tego dnia jego przepisy nie obowiązują.")
+    komentarz = " ".join(str(d.get("comments") or "").split())
+    pozniej = sorted({x for x in (_iso(a, _MIESIACE[b], c) for a, b, c in re.findall(_DATA_SLOWNIE, komentarz)) if x > dzis})
+    if pozniej:
+        out.append("UWAGA: część przepisów wchodzi w życie PÓŹNIEJ (" + ", ".join(pozniej) + ") — patrz „Uwagi”; "
+                   "do tych dni te przepisy nie obowiązują.")
+    return out
 
 
 def _eli_rok_poz(act):
@@ -988,13 +1421,31 @@ def cmd_meta(a):
     print(f"Akt: {label}")
     print(f"  Tytuł:   {d.get('title','').strip()}")
     print(f"  Adres:   {d.get('displayAddress','')}")
+    if _cytat(d):
+        print(f"  Cytat:   {_cytat(d)}   (urzędowa forma w piśmie)")
     print(f"  Typ:     {d.get('type','')}")
     print(f"  Status:  {d.get('status','')}  (inForce={d.get('inForce','')})")
+    if "uchylon" in (d.get("status") or "").lower():
+        try:
+            refs = _get(path + "/references", soft=True)
+            uchylajace = _lista(refs, "akty uchylające") if isinstance(refs, dict) else []
+        except VerificationUnknown:
+            uchylajace = None
+        if uchylajace:
+            for r in uchylajace:
+                print(f"  Uchylony przez: {_akt_opis(r['act'])}  {r['act'].get('title', '').strip()}"
+                      + (f"  (data wg API {r['date']})" if r.get("date") else ""))
+        elif uchylajace is None:
+            print(f"  Uchylony przez: nie udało się sprawdzić — odniesienia {label}")
+        else:
+            print("  Uchylony przez: API nie wskazuje aktu uchylającego (sprawdź „odniesienia” — np. utrata mocy z mocy ustawy)")
     # announcementDate = data AKTU (wydania/podpisania — „z dnia" w tytule), promulgation = data
     # OGŁOSZENIA w Dz.U./M.P. — vacatio legis liczy się od ogłoszenia (audyt 2026-08: mylono je)
     print(f"  Data aktu: {d.get('announcementDate') or '—'}   (data wydania — „z dnia” w tytule)")
     print(f"  Ogłoszono: {d.get('promulgation') or '— (brak w API)'}   (publikacja w Dz.U./M.P.)")
     print(f"  WEJŚCIE W ŻYCIE: {d.get('entryIntoForce') or '—'}")
+    for w in _jeszcze_nie_obowiazuje(d):
+        print(f"  {w}")
     if d.get("legalStatusDate"):
         print(f"  Stan prawny na: {d['legalStatusDate']}   (tekst jednolity oddaje stan na ten dzień)")
     if d.get("validFrom") and d.get("validFrom") != d.get("entryIntoForce"):
@@ -1018,8 +1469,12 @@ def cmd_meta(a):
         print(f"  → Akt ma tekst jednolity — ustal aktualny: python3 {sys.argv[0]} tj {label}")
 
 
-def _tekst_z_pdf(path, label, meta):
-    """Tekst aktu z jego WŁASNEGO urzędowego PDF (pdftotext -layout). Zwraca (tekst, url, błąd)."""
+def _tekst_z_pdf(path, label, meta, info=None):
+    """Tekst aktu z jego WŁASNEGO urzędowego PDF (pdftotext -layout). Zwraca (tekst, url, błąd).
+
+    `info` (dict) dostaje „typ" wybranego PDF, a dla tekstu ujednoliconego także „podstawa" (notka
+    „Opracowano na podstawie…") i „data_wydruku"."""
+    info = {} if info is None else info
     pick = _wybierz_pdf(meta)
     if not pick:
         return "", "", "brak PDF w metadanych aktu"
@@ -1030,12 +1485,20 @@ def _tekst_z_pdf(path, label, meta):
         data = _get_bytes(url, soft=True)
     except VerificationUnknown as e:
         return "", url, str(e)
-    raw = pdf_do_tekstu_layout(data)
+    raw, notki, info_pdf = pdf_do_tekstu_z_notkami(data)
+    info.update(info_pdf)
+    info["typ"] = pick["type"]
+    # strony bez warstwy tekstowej (skany: DU 2010 poz. 1 ma 564 z 566) — ich treści w wyniku nie będzie
+    strony = [p for p in raw.split("\f")][:-1] if raw.endswith("\f") else raw.split("\f")
+    puste = sum(1 for p in strony if len(re.sub(r"[\W\d_]", "", "\n".join(
+        l for l in p.split("\n") if not _PDF_NAGLOWEK.match(l)))) < 20)
+    if raw and puste:
+        info["puste_strony"] = (puste, len(strony))
     rok = meta.get("year")
     if raw and pick["type"] == "O" and meta.get("publisher") in ("DU", "MP") and isinstance(rok, int) \
             and 2000 <= rok <= 2011:
         raw = pdf_zeszyt_do_aktu(raw, rok, meta.get("pos"))
-    txt = pdf_layout_do_tekstu(raw) if raw else ""
+    txt = pdf_layout_do_tekstu(raw, info, notki) if raw else ""
     if not txt:
         return "", url, "pdftotext nie zwrócił tekstu (PDF bez warstwy tekstowej albo błąd konwersji)"
     return txt, url, ""
@@ -1092,21 +1555,47 @@ def cmd_tekst(a):
         for w in ostrz:
             print(w)
         return
+    ujednolicony = False
     html = _get(path + "/text.html")
     if not isinstance(html, str):
         sys.exit("BŁĄD: API zwróciło nieoczekiwaną odpowiedź zamiast tekstu HTML aktu.")
+    # akt w vacatio legis / z jednostkami wchodzącymi w życie później — status API „obowiązujący" tego nie mówi
+    try:
+        meta_aktu = _get(path, soft=True)
+    except VerificationUnknown:
+        meta_aktu = None
+    if isinstance(meta_aktu, dict):
+        ostrz = _jeszcze_nie_obowiazuje(meta_aktu) + ostrz
     txt = html_to_text(html if isinstance(html, str) else "")
     zrodlo = "z text.html; HTML→tekst"
     if not txt:
         # textHTML=false (np. k.c. DU 2026 795, Konstytucja DU 1997 483, świeże pozycje): najpierw
         # WŁASNY urzędowy PDF tego aktu — to jest jego tekst, więc --strict go przepuszcza
         meta = _expect_dict(_get(path), "metadane aktu")
-        txt, url, pdf_blad = _tekst_z_pdf(path, label, meta)
+        info_pdf = {}
+        txt, url, pdf_blad = _tekst_z_pdf(path, label, meta, info_pdf)
         if txt:
             zrodlo = "z urzędowego PDF przez pdftotext -layout"
+            if info_pdf.get("podstawa"):
+                ujednolicony = True
+                opis = (f"TEKST UJEDNOLICONY Kancelarii Sejmu — nieurzędowy"
+                        + (f", wydruk z {info_pdf['data_wydruku']}" if info_pdf.get("data_wydruku") else "")
+                        + f"; {info_pdf['podstawa'].rstrip('.')}. "
+                        + (f"To t.j. ze stanem prawnym na {meta['legalStatusDate']} PLUS późniejsze zmiany z tej listy"
+                           if meta.get("legalStatusDate") else "To akt w brzmieniu nadanym zmianami z tej listy")
+                        + ", także tymi, które jeszcze nie weszły w życie: brzmienie "
+                        "przyszłe stoi w < … >, brzmienie przez nie zastępowane w [ … ], datę wejścia w życie podaje "
+                        "linia „[margines: …]”")
+                ostrz = _oznacz_uwzglednione(ostrz, _podstawa_ujednolicenia(info_pdf["podstawa"]))
+            else:
+                opis = (f"stan prawny na {meta['legalStatusDate']}" if meta.get("legalStatusDate") else "tekst ogłoszony")
+            if info_pdf.get("puste_strony"):
+                n, m = info_pdf["puste_strony"]
+                ostrz.insert(0, f"UWAGA: {n} z {m} stron tego PDF nie ma warstwy tekstowej (skan albo strona pusta) — "
+                                "ich treści NIE MA poniżej. Sprawdź PDF: tekst " + label + " --pdf plik.pdf")
             ostrz = [f"ELI_TEXT_SOURCE_PDF={url}",
                      f"UWAGA: text.html dla {label} jest PUSTE w API (textHTML=false) — poniżej tekst "
-                     f"WYEKSTRAHOWANY z urzędowego PDF tego aktu ({meta.get('legalStatusDate') and 'stan prawny na ' + meta['legalStatusDate'] or 'tekst ogłoszony'}). "
+                     f"WYEKSTRAHOWANY z urzędowego PDF tego aktu ({opis}). "
                      "Sklejanie wierszy i dzielonych wyrazów jest automatyczne; linie „[przypis N)]\" to "
                      "przypisy z dołu strony PDF. Do dosłownego cytatu: tekst " + label + " --pdf plik.pdf"] + ostrz
         else:
@@ -1148,12 +1637,27 @@ def cmd_tekst(a):
         if re.match(r"(?i)^art\.?\s*\d", a.fragment.strip()) and not _hity_naglowka(txt, a.fragment):
             print(f"UWAGA: nie znalazłem NAGŁÓWKA {a.fragment!r} w tym akcie — poniżej trafienia "
                   "pełnotekstowe; sprawdź, czy to sam przepis, czy tylko odesłanie do niego.\n")
+        kontekst = []
+        if ujednolicony:
+            for otwarcie, notki in _otwarte_bloki(txt, spans[0][0]):
+                kontekst.append(f"UWAGA: ten fragment leży WEWNĄTRZ bloku „{otwarcie[:80]}” — "
+                                + ("brzmienie PRZYSZŁE (< … >)" if otwarcie.startswith("<") else "brzmienie zastępowane ([ … ])")
+                                + (": " + " ".join(n[len('[margines: '):-1] for n in notki) if notki else ""))
+        for w in kontekst + _ostrzezenie_przyszle("\n".join(["\n".join(n for _, nn in _otwarte_bloki(txt, spans[0][0]) for n in nn)]
+                                                             + [txt[s:e] for s, e in spans]) if ujednolicony
+                                                   else "\n".join(txt[s:e] for s, e in spans), ujednolicony):
+            print(w)
         for i, (s, e) in enumerate(spans):
             if i:
                 print("\n[...]\n")
             print(txt[s:e].strip())
         print(f"\n(fragmenty: {len(spans)} — pominięto resztę aktu; pełny tekst: bez --fragment)")
         return
+    przyszle = _ostrzezenie_przyszle(txt, ujednolicony)
+    for w in przyszle:
+        print(w)
+    if przyszle:
+        print()
     if len(txt) > 60000:
         print(f"(UWAGA: pełny tekst ma {len(txt)} znaków — do pojedynczego przepisu użyj --fragment \"art. N\")\n")
     print(txt)

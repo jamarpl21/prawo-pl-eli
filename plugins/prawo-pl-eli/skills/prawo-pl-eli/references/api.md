@@ -62,7 +62,19 @@ w HTML, odsyłacze do przypisów „§ 1.3)" → „§ 1." + linia `[przypis 3)]
 załącznika oznaczone „» "). Ogłoszony PDF (typ O) aktu Dz.U. i M.P. 2000–2011 to strony całego zeszytu w dwóch
 łamach: helper czyta łamy po kolei, wycina akt od wiersza z numerem jego pozycji do numeru następnej, usuwa
 nagłówki „Dziennik Ustaw Nr N — S — Poz. X"/„Monitor Polski Nr N — S — Poz. X" i znak wodny www.rcl.gov.pl (2010–2011), a w 2000–2009 poprawia
-polskie litery (fonty „…PL" w kodach Mac CE opisanych jako Mac Roman: „Za∏àcznik" → „Załącznik"). Bez `pdftotext` helper sięga po najnowszy STARSZY t.j. z HTML — z nagłówkiem
+polskie litery (fonty „…PL" w kodach Mac CE opisanych jako Mac Roman: „Za∏àcznik" → „Załącznik" — rozpoznawane po
+treści strony, nie po roku: DU 2010 poz. 1 też je ma); tabele zostają w całości, stopka wydawnicza zeszytu
+(„Egzemplarze bieżące…", „Wydawca:", ISSN, cena) nie trafia do ostatniego aktu. Ograniczenia: przypisy z dołu
+lewego łamu wychodzą między łamami; krótki wiersz wyśrodkowany w lewym łamie (np. podpis) może przestawić
+kolejność łamów na tej stronie. Strony bez warstwy tekstowej (skany) są zgłaszane („N z M stron…").
+
+PDF typu U (tekst ujednolicony Kancelarii Sejmu, nieurzędowy) to t.j. z WPISANYMI późniejszymi zmianami: notka
+„Opracowano na podstawie: t.j. Dz. U. z 2026 r. poz. 468, 473, 830, 1003, 1046." na 1. stronie, brzmienie
+zastępowane w `[ … ]`, brzmienie przyszłe w `< … >` i notka na prawym marginesie „Nowe brzmienie … wejdzie
+w życie z dn. 5.11.2026 r. (Dz. U. … poz. …)". Helper czyta współrzędne słów (`pdftotext -bbox`), przycina
+strony z notkami do szerokości treści (notka nie wpada w przepis), wypisuje notkę jako `[margines: …]` pod
+akapitem, podaje „Opracowano na podstawie" i datę wydruku w nagłówku, oznacza pozycje listy nowelizacji jako
+uwzględnione / spoza listy i ostrzega o brzmieniu, które wejdzie w życie po dniu dzisiejszym. Bez `pdftotext` helper sięga po najnowszy STARSZY t.j. z HTML — z nagłówkiem
 „NIEAKTUALNE BRZMIENIE MOŻLIWE" i listą zmian aktu bazowego po jego `legalStatusDate`; `--strict` to blokuje.
 
 ### Kody `type` w `texts[]`
@@ -70,7 +82,8 @@ polskie litery (fonty „…PL" w kodach Mac CE opisanych jako Mac Roman: „Za�
 - `O` — tekst ogłoszony / oryginał (PDF)
 - `I` — tekst ogłoszony (skan/obraz, PDF)
 - `T` — tekst jednolity (PDF)
-- `U` — tekst ujednolicony / aktualny tekst jednolity (PDF) ← zwykle najlepszy do dosłownego cytatu
+- `U` — tekst ujednolicony Kancelarii Sejmu (PDF, nieurzędowy): t.j. + późniejsze zmiany, także przyszłe
+  (`[obecne]` / `<przyszłe>` + data na marginesie) ← najaktualniejszy; do cytatu na dziś bierz brzmienie z `[ … ]`
 
 Plik pobierasz: `/acts/{pub}/{year}/{pos}/text/{type}/{fileName}` (np. `/text/U/D20240018Lj.pdf`).
 

@@ -96,7 +96,10 @@ Sygnaturę można podać w wielu formach: `DU 2000 1037`, `DU/2024/18`, `"Dz.U. 
   „z dnia …" w tytule) i **„Ogłoszono"** (`promulgation` = publikacja w Dz.U./M.P. — od niej liczy się
   vacatio legis); dalej **„WEJŚCIE W ŻYCIE"**, **„Stan prawny na"** (`legalStatusDate`, tylko t.j.) i
   **„Uwagi"** (`comments` — np. „art. 5 ust. 4 … wchodzą w życie z dniem 25 grudnia 2024 r.", czyli RÓŻNE
-  daty wejścia w życie dla różnych jednostek; czytaj je zawsze).
+  daty wejścia w życie dla różnych jednostek; czytaj je zawsze). Gdy wejście w życie jest PÓŹNIEJ niż dziś,
+  `meta` i `tekst` piszą „akt jeszcze NIE WSZEDŁ W ŻYCIE" (status API „obowiązujący" znaczy tylko „nie
+  uchylony"), a przyszłe daty z „Uwag" — „część przepisów wchodzi w życie PÓŹNIEJ". „Cytat:" to urzędowa
+  forma do pisma („Dz. U. z 2001 r. Nr 112, poz. 1198"); przy akcie uchylonym — „Uchylony przez: …".
 - **tj** — znajdź AKTUALNY TEKST JEDNOLITY dla aktu (posortowane, najnowszy oznaczony; na starym t.j. ostrzega o nowszym):
   `python3 scripts/eli.py tj DU 2000 1037`
 - **tekst** — treść aktu (z `text.html` → czysty tekst; gdy API nie ma HTML dla aktu — `textHTML=false`,
@@ -141,6 +144,19 @@ bazowym). Gdy `text.html` jest puste w API (`textHTML=false`), narzędzie czyta 
 (`pdftotext`); tylko bez `pdftotext` sięga po najnowszy STARSZY t.j. z HTML — wtedy nagłówek mówi
 „NIEAKTUALNE BRZMIENIE MOŻLIWE", wymienia pominięte t.j. i wypisuje INLINE zmiany aktu bazowego po stanie
 prawnym tego starszego t.j., które trzeba nałożyć samemu. Nie ignoruj tych ostrzeżeń.
+
+**Tekst ujednolicony (PDF typu U) i brzmienie PRZYSZŁE.** Dla wielu kodeksów (k.p.c., k.k., u.k.s.c.,
+Konstytucja) urzędowy PDF to „tekst ujednolicony" Kancelarii Sejmu — t.j. z WPISANYMI późniejszymi zmianami,
+także tymi, które jeszcze nie weszły w życie. Nagłówek mówi wtedy „TEKST UJEDNOLICONY… Opracowano na
+podstawie: …", a pozycje listy nowelizacji są oznaczone „[UWZGLĘDNIONA w tym tekście…]" (NIE nakładaj ich
+drugi raz) albo „[poza listą „Opracowano na podstawie”…]". W samym tekście: `[ … ]` = brzmienie obecne,
+które zostanie zastąpione; `< … >` = brzmienie PRZYSZŁE; linia `[margines: … wejdzie w życie z dn. …]` podaje
+datę. Przed tekstem narzędzie wypisuje „UWAGA — PRZEPISY, KTÓRE JESZCZE NIE OBOWIĄZUJĄ" z datami (także dla
+przypisów t.j. „wejdzie w życie z dniem …", np. k.c. art. 860 § 3–4 od 2028-11-01) i ostrzega, gdy fragment
+leży wewnątrz bloku `<DZIAŁ …>`. **Na dziś cytuj brzmienie z `[ … ]` (albo stwierdź brak przepisu, gdy jest
+tylko `< … >`); brzmienie z `< … >` cytuj wyłącznie jako przyszłe, z datą.** `--strict` tego nie blokuje
+(tekst jest oznaczony i sprawdzalny) — decyzja należy do Ciebie. Gdy część stron PDF nie ma warstwy
+tekstowej (skan), narzędzie pisze „N z M stron … nie ma warstwy tekstowej" — tej treści w wyniku nie ma.
 
 ### Akty bazowe głównych kodeksów (pomiń `szukaj`)
 
