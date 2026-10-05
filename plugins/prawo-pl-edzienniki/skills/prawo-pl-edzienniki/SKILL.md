@@ -91,18 +91,28 @@ Nie szukaj helpera przez `find` po katalogach użytkownika ani systemu i nie pob
   liczy więcej trafień, obejrzyj resztę przez `--strona 2..N` albo `--limit <liczba trafień>`.
   „Nie ma w pierwszej dziesiątce" NIE znaczy „akt nie istnieje" — przed wnioskiem o braku
   aktu przejrzyj WSZYSTKIE trafienia (najprościej: `--limit` ≥ liczba trafień z nagłówka).
+  Pozycje techniczne (numer bez opublikowanego aktu — host śląski) są pomijane i liczone osobno
+  w nagłówku; `akt`/`tekst` na takiej pozycji mówią to wprost.
   Wiersz trafienia podaje **datę aktu** („z dnia…") i **datę ogłoszenia** w dzienniku oraz status
   „wg listy rocznika" (z `--strict` status jest weryfikowany w rekordzie aktu). Nagłówek mówi, które
   roczniki FAKTYCZNIE przeszukano i czy lista rocznika była pełna.
-- **akt** — metadane: typ, organ, **Data aktu** (uchwalenia) i **Ogłoszony** (publikacja w dzienniku —
-  od niej liczy się vacatio legis), status, hasła, linki PDF/HTML oraz **Powiązania** z rejestru
-  dziennika: sprostowania, uchylenia, rozstrzygnięcia nadzorcze (nieważność w całości/części):
+- **akt** — metadane: **Cytat** w formie urzędowej („Dz. Urz. Woj. Dolnośląskiego z 2026 r. poz. 3299" —
+  `displayAddress` z API nie podaje województwa), typ, organ, **Data aktu** (uchwalenia) i **Ogłoszony**
+  (publikacja w dzienniku — od niej liczy się vacatio legis), **Wejście w życie** ze wskazaniem źródła
+  (ELI ma tu zwykle pustą wartość; host śląski podaje datę w rejestrze — `BindingDateFrom`), status,
+  hasła, linki PDF/HTML oraz **Powiązania** z rejestru dziennika: sprostowania, uchylenia, zmiany,
+  rozstrzygnięcia nadzorcze i uchwały RIO (nieważność w całości/części) — z **tytułem** rozstrzygnięcia
+  i zakresem nieważności, gdy tytuł go podaje („§ 6 ust. 4 we fragmencie …"):
   `python3 scripts/edzienniki.py akt DS 2026 3299`
 - **tekst** — treść aktu z **urzędowego PDF** (`pdftotext -layout`, nagłówki/stopki stron usunięte,
   zawinięte linie scalone); `--fragment "§ 2"` / `"art. 5"` zwraca **całą jednostkę** (do następnego §;
   każde wystąpienie, np. § 2 uchwały i § 2 statutu w załączniku), inna fraza — okna rozszerzone do
   granic akapitu; `--pdf` zapisuje urzędowy PDF:
   `python3 scripts/edzienniki.py tekst DS 2026 3299 --fragment "§ 2"`
+  Przed treścią `tekst` pokazuje te same powiązania co `akt` (linie `UWAGA:`): nieważność w całości
+  lub w części (z tytułem rozstrzygnięcia i unieważnioną jednostką), sprostowanie, uchylenie, zmiany —
+  oraz ostrzega, gdy wypisany `--fragment` leży w unieważnionej jednostce. Tekst z PDF to ZAWSZE
+  brzmienie z ogłoszenia (bez sprostowań, z unieważnionymi przepisami) — nie tekst jednolity.
   Bez `pdftotext` na PATH: tekst z `text.html` z głośnym ostrzeżeniem (zwykle tylko 1. strona —
   „nie znaleziono frazy" NIE jest wtedy dowodem braku przepisu) — pobierz PDF przez `--pdf`.
 - każda komenda przyjmuje `--json` oraz `--strict`; obie flagi działają przed komendą i po niej.
@@ -117,8 +127,14 @@ Nie szukaj helpera przez `find` po katalogach użytkownika ani systemu i nie pob
 - `tekst`: tekst z `text.html` (brak `pdftotext` → tylko 1. strona) → blokada; znaki zastępcze U+FFFD
   (uszkodzona konwersja, np. host podlaski) → blokada; brak oznaczeń `§`/`Art.` → blokada tylko dla
   `text.html` albo gdy tekst z PDF jest krótszy niż 300 znaków (skan/pusta ekstrakcja) — akt narracyjny
-  z PDF (rozstrzygnięcie nadzorcze, obwieszczenie) przechodzi z ostrzeżeniem. Poprawny tekst z PDF
-  nigdy nie jest blokowany.
+  z PDF (rozstrzygnięcie nadzorcze, obwieszczenie) przechodzi z ostrzeżeniem. Ponadto `tekst --strict`
+  blokuje, gdy: nie udało się pobrać powiązań z rejestru dziennika (nieważność/sprostowania
+  niesprawdzone); akt jest **nieważny w całości** (tekst bez mocy prawnej); `--fragment` leży
+  w jednostce, której nieważność stwierdzono (zakres z tytułu rozstrzygnięcia). Nieważność w części
+  (poza wypisanym fragmentem albo o zakresie nieustalonym z tytułu), sprostowanie, uchylenie i zmiany
+  → głośne `UWAGA:` bez blokady — reszta aktu pozostaje prawem, a zakres wskazuje polecenie
+  `tekst <woj> <rok> <poz>` rozstrzygnięcia/obwieszczenia. `--pdf` zapisuje urzędowy PDF zawsze (z tymi
+  samymi ostrzeżeniami).
 - `akt`: powiązania z rejestru dziennika są best-effort — ich brak to ostrzeżenie, nie blokada.
 
 Typowy przepływ: ustal województwo → `szukaj --woj <kod> "<gmina lub przedmiot>"` →
@@ -126,25 +142,33 @@ Typowy przepływ: ustal województwo → `szukaj --woj <kod> "<gmina lub przedmi
 
 ## Zasady (ważne — dlaczego)
 
-1. **Sygnatura aktu miejscowego** = dziennik + rocznik + pozycja (np. „Dz. Urz. Woj. Doln.
-   z 2026 r. poz. 3299") — podawaj ją przy cytacie razem z organem i datą uchwały.
+1. **Sygnatura aktu miejscowego** = dziennik + rocznik + pozycja w formie urzędowej (np. „Dz. Urz. Woj.
+   Dolnośląskiego z 2026 r. poz. 3299" — linia „Cytat" z `akt`/`tekst`) — podawaj ją przy cytacie razem
+   z organem i datą uchwały; nie przepisuj surowego `displayAddress` („DZ. URZ. WOJ. 2026.3299").
 2. **Sprawdzaj status i wejście w życie w TREŚCI aktu** — pola `inForce`/`entryIntoForce` w API
-   bywają niewypełnione; akty miejscowe wchodzą w życie zwykle 14 dni od **ogłoszenia** (art. 4
+   bywają niewypełnione (`akt` mówi wtedy „brak w metadanych" albo podaje datę z rejestru z jej źródłem); akty miejscowe wchodzą w życie zwykle 14 dni od **ogłoszenia** (art. 4
    ustawy o ogłaszaniu aktów normatywnych) — liczonego od daty „Ogłoszony" z `akt` (publikacja
    w dzienniku), NIE od „Data aktu" (uchwalenia); uchwały podatkowe od 1 stycznia itd.
 3. **Uchwała może być uchylona** rozstrzygnięciem nadzorczym wojewody albo wyrokiem WSA, a jej
    treść **sprostowana** obwieszczeniem — `akt` pokazuje te powiązania z rejestru dziennika
-   („Powiązania:"); przy sprawie spornej sprawdź też orzecznictwo (skill prawo-pl-cbosa).
+   („Powiązania:"), a `tekst` ostrzega o nich nad treścią. Nieważność w części: przeczytaj tytuł/treść
+   rozstrzygnięcia (`tekst <woj> <rok> <poz>` z ostrzeżenia) i NIE cytuj unieważnionej jednostki jako
+   obowiązującej; sprostowanie: przed cytatem sprawdź treść obwieszczenia. Przy sprawie spornej
+   sprawdź też orzecznictwo (skill prawo-pl-cbosa).
 4. **Cytuj z tekstu PDF** — `tekst` czyta urzędowy PDF przez `pdftotext` (nagłówek wyniku: „tekst
    z urzędowego PDF"). `text.html` na hostach dzienników to zwykle **tylko 1. strona aktu** (bez
    dalszych §, stawek, załączników), a na hoście podlaskim bywa uszkodzony (znaki U+FFFD, brak „§",
    zlepione wyrazy) — silnik to wykrywa i ostrzega; do dosłownego cytatu z takiego wyniku użyj
    `tekst … --pdf`.
-5. **mazowieckie (MZ)** bywa nieosiągalne spoza Polski (CDN) — silnik zgłosi to czytelnie;
-   wtedy wskaż użytkownikowi UI: https://edziennik.mazowieckie.pl/ **Małopolskie (MP), lubuskie (LS)
-   i łódzkie (LD)** wysyłają niepełny łańcuch certyfikatów TLS — silnik dociąga certyfikat pośredni
-   (AIA) i weryfikuje pełny łańcuch sam; gdy to zawiedzie, komunikat mówi o łańcuchu (to nie jest
-   blokada geograficzna).
+5. **mazowieckie (MZ)** stoi za filtrem antybotowym (Akamai), który żądania klientów
+   nieprzeglądarkowych przetrzymuje bez odpowiedzi (timeout) — także z polskiego IP, to NIE jest blokada
+   geograficzna. Silnik wysyła nagłówki, które filtr przepuszcza (zweryfikowane 2026-10-05); gdy mimo to
+   zgłosi timeout MZ, filtr zmienił reguły — wskaż użytkownikowi UI w przeglądarce i ręczne pobranie
+   PDF: https://edziennik.mazowieckie.pl/ **Małopolskie (MP), lubuskie (LS) i łódzkie (LD)** wysyłają
+   niepełny łańcuch certyfikatów TLS — silnik dociąga certyfikat pośredni (AIA) i weryfikuje pełny
+   łańcuch sam. Inne błędy TLS silnik nazywa po imieniu — np. **wygasły certyfikat** serwera (pomorskie
+   PM od 2026-10-01) to błąd po stronie hosta: silnik nie wyłącza weryfikacji, powiedz o tym
+   użytkownikowi i wskaż UI.
 6. Pełna tabela hostów, endpointy i pułapki API: `references/api.md`.
 
 ## Czego ten skill NIE obejmuje
@@ -164,4 +188,5 @@ Pytanie: „jaka jest stawka podatku od nieruchomości w Ząbkowicach Śląskich
 3. `akt DS 2025 <poz>` → metadane (data ogłoszenia, sprostowania); `tekst DS 2025 <poz> --fragment "§ 1"`
    → cały § 1 ze stawkami (z PDF; `--fragment "od gruntów"` = okno wokół frazy).
 4. (opcjonalnie) upoważnienie ustawowe: skill prawo-pl-eli, art. 5 ustawy o podatkach i opłatach
-   lokalnych. W odpowiedzi: stawka + „Dz. Urz. Woj. Doln. z 2025 r. poz. X" + data uchwały.
+   lokalnych. W odpowiedzi: stawka + „Dz. Urz. Woj. Dolnośląskiego z 2025 r. poz. X" + data uchwały
+   (+ ostrzeżenia `UWAGA:` z `tekst`, jeśli uchwałę sprostowano albo stwierdzono jej nieważność).

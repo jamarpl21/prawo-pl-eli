@@ -486,6 +486,13 @@ class TestTekst(unittest.TestCase):
                   "\x0cDziennik Urzędowy Województwa X  –2–  Poz. 3654\n"
                   "   § 3. Druga strona: od budowli – 2% ich\nwartości.\n\x0c")
 
+    def setUp(self):
+        # tekst odpytuje rejestr dziennika (powiązania) — w tych testach akt bez powiązań, bez sieci
+        p = mock.patch.object(edz, "_get_rejestr", return_value={
+            "actstatus": {"isinvalid": False, "ispartialinvalid": False, "description": ""}, "actrelations": []})
+        p.start()
+        self.addCleanup(p.stop)
+
     def _get(self, host, path, params=None, raw=False):
         if path.endswith("text.pdf"):
             return b"%PDF-1.4 ..."
@@ -688,10 +695,417 @@ class TestTls(unittest.TestCase):
         self.assertEqual(otworz.call_count, 1)
 
     def test_soft_zwraca_none(self):
-        urlopen = mock.Mock(side_effect=self._blad_cert())
-        with mock.patch.object(edz.urllib.request, "urlopen", urlopen), \
+        otworz = mock.Mock(side_effect=self._blad_cert())
+        with mock.patch.object(edz, "_otworz", otworz), \
                 mock.patch.object(edz, "_ctx_z_aia", return_value=None), mock.patch.object(edz, "_SSL_CTX", None):
             self.assertIsNone(edz._fetch("https://dzienniki.luw.pl/api/legalact", "dzienniki.luw.pl", soft=True))
+
+
+# --- 2.1.1: powiązania w `tekst`, tytuły rozstrzygnięć, cytat, wejście w życie, pozycje techniczne,
+# nagłówek dziennika, diagnoza TLS, filtr Akamai na MZ. Odpowiedzi odtworzone z prawdziwych (2026-10-05).
+
+def _rejestr(pascal):
+    """Rejestr dziennika jak po _get_rejestr (klucze znormalizowane do lowercase)."""
+    return edz._norm(pascal)
+
+
+_BRAK = {"IsInvalid": False, "IsPartialInvalid": False, "Description": "", "ShowCheckDateMsg": False}
+# DS 2026/584 — uchwała Rady Gminy Rudna; DS 2026/1099 — rozstrzygnięcie nadzorcze (nieważność w części)
+REJ_DS584 = _rejestr({
+    "Title": "Uchwała nr XXI/142/2026 Rady Gminy Rudna z dnia 21 stycznia 2026 r. w sprawie ustalenia Regulaminu "
+             "określającego wysokość oraz szczegółowe warunki przyznawania nauczycielom dodatków",
+    "IsTechnicalPosition": False, "BindingDateFrom": "", "ActDate": "2026-01-21T00:00:00",
+    "PublicationDate": "2026-02-03T09:56:29.53",
+    "ActStatus": {"IsInvalid": False, "IsPartialInvalid": True,
+                  "Description": "Stwierdzono częściową nieważność aktu", "ShowCheckDateMsg": False},
+    "ActRelations": [
+        {"RelationType": "Uchyla", "Description": "Uchyla", "LegalActsRelated": [
+            {"CaseNumber": "XXXII/305/2018", "ActDate": "2018-10-18T10:10:55", "LegalActType": "Uchwała",
+             "Position": 5364, "Year": 2018, "Description": "DZ. URZ. WOJ. 2018.5364"}]},
+        {"RelationType": "PartialDecision", "Description": "Ma rozstrzygnięcie nadzorcze (nieważność w części)",
+         "LegalActsRelated": [
+             {"CaseNumber": "PNK-N.4131.117.1.2026.AO", "ActDate": "2026-02-25T16:10:52",
+              "LegalActType": "Rozstrzygnięcie nadzorcze", "Position": 1099, "Year": 2026,
+              "Description": "DZ. URZ. WOJ. 2026.1099"}]}]})
+REJ_DS1099 = _rejestr({
+    "Title": "Rozstrzygnięcie nadzorcze nr PNK-N.4131.117.1.2026.AO Wojewody Dolnośląskiego z dnia 25 lutego "
+             "2026 r. stwierdzające nieważność § 6 ust. 4 we fragmencie „wyniki pracy placówki” uchwały nr "
+             "XXI/142/2026 Rady Gminy Rudna  z dnia 21 stycznia 2026 r. w sprawie ustalenia Regulaminu",
+    "IsTechnicalPosition": False, "ActStatus": _BRAK,
+    "ActRelations": [{"RelationType": "PartialDecision",
+                      "Description": "Jest rozstrzygnięciem nadzorczym dla (nieważność w części)",
+                      "LegalActsRelated": [{"Position": 584, "Year": 2026, "LegalActType": "Uchwała"}]}]})
+# WP 2025/9326 — RIO stwierdziła nieważność § 2 (tytuł uchwały RIO jednostki NIE podaje)
+REJ_WP9326 = _rejestr({
+    "Title": "Uchwała nr 114/25 Rady Gminy Rzgów z dnia 28 listopada 2025 r. w sprawie określenia wysokości "
+             "stawek podatku od nieruchomości na 2026 rok", "IsTechnicalPosition": False, "BindingDateFrom": "",
+    "ActStatus": {"IsInvalid": False, "IsPartialInvalid": True,
+                  "Description": "Stwierdzono częściową nieważność aktu", "ShowCheckDateMsg": False},
+    "ActRelations": [{"RelationType": "PartialDecision",
+                      "Description": "Ma rozstrzygnięcie nadzorcze (nieważność w części)",
+                      "LegalActsRelated": [{"CaseNumber": "24.1323.2025", "ActDate": "2025-12-17T00:00:00",
+                                            "LegalActType": "Uchwała", "Position": 9932, "Year": 2025,
+                                            "Description": "DZ. URZ. WOJ. 2025.9932"}]}]})
+REJ_WP9932 = _rejestr({
+    "Title": "Uchwała nr 24.1323.2025 Kolegium Regionalnej Izby Obrachunkowej w Poznaniu z dnia 17 grudnia "
+             "2025 r. stwierdzające częściową nieważność uchwały Nr 114/25 Rady Gminy Rzgów z dnia 28 listopada "
+             "2025 r. w sprawie określenia wysokości stawek podatku od nieruchomości na 2026 rok",
+    "IsTechnicalPosition": False, "ActStatus": _BRAK, "ActRelations": []})
+# MP 2025/7877 — sprostowana obwieszczeniem MP 2026/446
+REJ_MP7877 = _rejestr({
+    "Title": "Uchwała Nr XII/112/2025 Rady Miejskiej w Koszycach", "IsTechnicalPosition": False,
+    "BindingDateFrom": "", "ActStatus": _BRAK,
+    "ActRelations": [{"RelationType": "JestSprostowaniemDla", "Description": "Ma sprostowanie",
+                      "LegalActsRelated": [{"CaseNumber": "", "ActDate": "2026-01-26T00:00:00",
+                                            "LegalActType": "Obwieszczenie", "Position": 446, "Year": 2026,
+                                            "Description": "DZ. URZ. WOJ. 2026.446"}]}]})
+REJ_MP446 = _rejestr({"Title": "Obwieszczenie  Wojewody Małopolskiego z dnia 26 stycznia 2026 r. w sprawie "
+                               "sprostowania błędu", "IsTechnicalPosition": False, "ActStatus": _BRAK,
+                      "ActRelations": []})
+# PM 2026/3104 — nieważność w CAŁOŚCI (rozstrzygnięcie PM 2026/3258)
+REJ_PM3104 = _rejestr({
+    "Title": "Uchwała nr XXXVII/356/2026 Rady Gminy Redzikowo", "IsTechnicalPosition": False,
+    "ActStatus": {"IsInvalid": True, "IsPartialInvalid": False, "Description": "Stwierdzono nieważność aktu",
+                  "ShowCheckDateMsg": False},
+    "ActRelations": [{"RelationType": "FullDecision", "Description": "Ma rozstrzygnięcie nadzorcze (nieważność w całości)",
+                      "LegalActsRelated": [{"CaseNumber": "PN-I.4131.47.2026.BS", "ActDate": "2026-08-07T00:00:00",
+                                            "LegalActType": "Rozstrzygnięcie nadzorcze", "Position": 3258,
+                                            "Year": 2026, "Description": "DZ. URZ. WOJ. 2026.3258"}]}]})
+REJ_PM3258 = _rejestr({"Title": "Rozstrzygnięcie nadzorcze nr PN-I.4131.47.2026.BS Wojewody Pomorskiego z dnia "
+                                "7 sierpnia 2026 r. w sprawie stwierdzenia nieważności uchwały Nr XXXVII/356/2026",
+                       "IsTechnicalPosition": False, "ActStatus": _BRAK, "ActRelations": []})
+# DS 2018/5364 — „Akt uchylony" z IsInvalid=true (flaga NIE oznacza nieważności)
+REJ_DS5364 = _rejestr({
+    "Title": "Uchwała nr XXXII/305/2018 Rady Gminy Rudna", "IsTechnicalPosition": False,
+    "ActStatus": {"IsInvalid": True, "IsPartialInvalid": True, "Description": "Akt uchylony", "ShowCheckDateMsg": False},
+    "ActRelations": [{"RelationType": "Uchyla", "Description": "Uchylany przez",
+                      "LegalActsRelated": [{"CaseNumber": "XXI/142/2026", "ActDate": "2026-01-21T00:00:00",
+                                            "LegalActType": "Uchwała", "Position": 584, "Year": 2026,
+                                            "Description": "DZ. URZ. WOJ. 2026.584"}]}]})
+# SL 2026/5464 — pozycja techniczna
+REJ_SL5464 = _rejestr({"Title": "Z przyczyn technicznych pod tym numerem pozycji nie został opublikowany żaden akt prawny",
+                       "IsTechnicalPosition": True, "LegalActType": None, "ActStatus": _BRAK, "ActRelations": []})
+
+# fragment tekstu DS 2026/584 po pdftotext -layout (§ 6 ust. 4 zawiera unieważniony fragment)
+PDF_DS584 = ("                     DZIENNIK URZĘDOWY\n             WOJEWÓDZTWA DOLNOŚLĄSKIEGO\n\n"
+             "                    Wrocław, dnia 3 lutego 2026 r.\n                    Poz. 584\n\n"
+             "   § 6. 1. Dyrektorowi przysługuje dodatek funkcyjny w wysokości od 20% do 60% jego wynagrodzenia.\n"
+             "4. Wysokość dodatku funkcyjnego dla Dyrektora ustala Wójt Gminy w granicach stawek określonych w ust. 1\n"
+             "uwzględniając m.in. wielkość placówki, wyniki pracy placówki.\n"
+             "5. Wysokość dodatku funkcyjnego dla wicedyrektora ustala Dyrektor.\n"
+             "   § 7. 1. Nauczycielowi przysługuje dodatek za warunki pracy.\n\x0c")
+
+
+def _rejestry(mapa):
+    """side_effect dla _get_rejestr: (rok, poz) → rejestr (rejestr aktu ≠ rejestr rozstrzygnięcia)."""
+    return lambda host, rok, poz: mapa.get((int(rok), int(poz)))
+
+
+def _get_pdf(host, path, params=None, raw=False):
+    if path.endswith("text.pdf"):
+        return b"%PDF-1.4 ..."
+    raise AssertionError(path)
+
+
+def _tekst(argv, rejestry, pdf=PDF_DS584):
+    return _uruchom(argv, _get={"side_effect": _get_pdf}, _get_rejestr={"side_effect": _rejestry(rejestry)},
+                    _pdftotext_dostepny={"return_value": "/usr/bin/pdftotext"}, _pdftotext={"return_value": pdf})
+
+
+class TestTekstPowiazania(unittest.TestCase):
+    """Pkt 1: `tekst` pokazuje nieważność/sprostowania jak `akt`; strict blokuje akt nieważny w całości,
+    fragment z unieważnionej jednostki i brak rejestru; nieważność w części / sprostowanie = ostrzeżenie."""
+    DS = {(2026, 584): REJ_DS584, (2026, 1099): REJ_DS1099}
+
+    def test_ds584_fragment_w_uniewaznionej_jednostce_ostrzega(self):
+        out, e = _tekst(["tekst", "DS", "2026", "584", "--fragment", "wyniki pracy placówki"], self.DS)
+        self.assertIsNone(e)
+        self.assertIn("UWAGA: NIEWAŻNOŚĆ W CZĘŚCI — Rozstrzygnięcie nadzorcze nr PNK-N.4131.117.1.2026.AO z 2026-02-25 "
+                      "(DZ. URZ. WOJ. 2026.1099; tekst DS 2026 1099)", out)
+        self.assertIn("unieważniona jednostka: § 6 ust. 4 we fragmencie „wyniki pracy placówki”", out)
+        self.assertIn("UWAGA: wypisany fragment leży w § 6 — jednostce objętej stwierdzeniem nieważności", out)
+        self.assertLess(out.index("NIEWAŻNOŚĆ W CZĘŚCI"), out.index("wyniki pracy placówki."))
+
+    def test_ds584_strict_blokuje_uniewazniony_fragment(self):
+        out, e = _tekst(["tekst", "DS", "2026", "584", "--fragment", "wyniki pracy placówki", "--strict"], self.DS)
+        self.assertIsNotNone(e)
+        self.assertIn("jednostce objętej stwierdzeniem nieważności", str(e))
+        self.assertIn("§ 6 ust. 4", str(e))
+        self.assertEqual(out, "")
+
+    def test_ds584_strict_inna_jednostka_przechodzi_z_ostrzezeniem(self):
+        out, e = _tekst(["tekst", "DS", "2026", "584", "--fragment", "§ 7", "--strict"], self.DS)
+        self.assertIsNone(e)
+        self.assertIn("NIEWAŻNOŚĆ W CZĘŚCI", out)
+        self.assertNotIn("wypisany fragment leży", out)
+        self.assertIn("§ 7. 1. Nauczycielowi", out)
+
+    def test_wp9326_zakres_nieznany_wskazuje_tekst_rozstrzygniecia(self):
+        out, e = _tekst(["tekst", "WP", "2025", "9326", "--strict"],
+                        {(2025, 9326): REJ_WP9326, (2025, 9932): REJ_WP9932})
+        self.assertIsNone(e)
+        self.assertIn("NIEWAŻNOŚĆ W CZĘŚCI — Uchwała nr 24.1323.2025 z 2025-12-17", out)
+        self.assertIn("Kolegium Regionalnej Izby Obrachunkowej w Poznaniu", out)
+        self.assertIn("zakres nieważności nie wynika z tytułu — sprawdź treść: tekst WP 2025 9932", out)
+
+    def test_mp7877_sprostowanie(self):
+        out, e = _tekst(["tekst", "MP", "2025", "7877", "--strict"],
+                        {(2025, 7877): REJ_MP7877, (2026, 446): REJ_MP446})
+        self.assertIsNone(e)
+        self.assertIn("UWAGA: SPROSTOWANIE — Obwieszczenie z 2026-01-26 (DZ. URZ. WOJ. 2026.446; tekst MP 2026 446): "
+                      "„Obwieszczenie Wojewody Małopolskiego z dnia 26 stycznia 2026 r. w sprawie sprostowania błędu”", out)
+        self.assertIn("BEZ sprostowania", out)
+
+    def test_pm3104_niewaznosc_w_calosci(self):
+        rej = {(2026, 3104): REJ_PM3104, (2026, 3258): REJ_PM3258}
+        out, e = _tekst(["tekst", "PM", "2026", "3104"], rej)
+        self.assertIsNone(e)
+        self.assertIn("UWAGA: AKT NIEWAŻNY W CAŁOŚCI", out)
+        self.assertIn("tekst PM 2026 3258", out)
+        out, e = _tekst(["--strict", "tekst", "PM", "2026", "3104"], rej)
+        self.assertIsNotNone(e)
+        self.assertIn("AKT NIEWAŻNY W CAŁOŚCI", str(e))
+        self.assertEqual(out, "")
+
+    def test_brak_rejestru_ostrzega_a_strict_blokuje(self):
+        out, e = _tekst(["tekst", "DS", "2026", "584"], {})
+        self.assertIsNone(e)
+        self.assertIn("NIESPRAWDZONE: nieważność", out)
+        out, e = _tekst(["tekst", "DS", "2026", "584", "--strict"], {})
+        self.assertIsNotNone(e)
+        self.assertIn("nie udało się pobrać powiązań", str(e))
+        self.assertEqual(out, "")
+
+    def test_json_zawiera_powiazania(self):
+        import json
+        out, e = _tekst(["tekst", "DS", "2026", "584", "--json"], self.DS)
+        d = json.loads(out)
+        self.assertEqual(d["cytat"], "Dz. Urz. Woj. Dolnośląskiego z 2026 r. poz. 584")
+        czesc = [w for w in d["powiazania"] if w["rodzaj"] == "niewaznosc_czesc"]
+        self.assertEqual(czesc[0]["jednostki"], ["§ 6"])
+        self.assertTrue(any("NIEWAŻNOŚĆ W CZĘŚCI" in u for u in d["uwagi_powiazan"]))
+
+    def test_uchylony_z_isinvalid_to_nie_niewaznosc(self):
+        # IsInvalid=true przy „Akt uchylony" — strict NIE blokuje jak nieważności, ostrzega o uchyleniu
+        out, e = _tekst(["--strict", "tekst", "DS", "2018", "5364"], {(2018, 5364): REJ_DS5364})
+        self.assertIsNone(e)
+        self.assertIn("AKT UCHYLONY przez Uchwała nr XXI/142/2026 z 2026-01-21", out)
+        self.assertNotIn("NIEWAŻNY", out)
+
+
+class TestRodzajRelacji(unittest.TestCase):
+    def test_kierunek_z_opisu(self):
+        r = edz._rodzaj_relacji
+        self.assertEqual(r("Ma rozstrzygnięcie nadzorcze (nieważność w części)"), "niewaznosc_czesc")
+        self.assertEqual(r("Ma rozstrzygnięcie nadzorcze (nieważność w całości)"), "niewaznosc_calosc")
+        self.assertEqual(r("Ma sprostowanie"), "sprostowanie")
+        self.assertEqual(r("Uchylany przez"), "uchylenie")
+        self.assertEqual(r("Jest zmieniany przez"), "zmiana")
+        for czynne in ("Uchyla", "Zmienia", "Jest sprostowaniem dla",
+                       "Jest rozstrzygnięciem nadzorczym dla (nieważność w części)"):
+            self.assertEqual(r(czynne), "czynne", czynne)
+
+    def test_status_uchylony_mimo_isinvalid(self):
+        self.assertEqual(edz._status_rejestru(REJ_DS5364), "uchylony")
+        self.assertEqual(edz._status_rejestru(REJ_PM3104), "niewaznosc_calosc")
+        self.assertEqual(edz._status_rejestru(REJ_DS584), "niewaznosc_czesc")
+
+
+class TestJednostkaZTytulu(unittest.TestCase):
+    """Pkt 2: zakres nieważności z tytułu rozstrzygnięcia / uchwały RIO."""
+
+    def test_paragraf_ustep_i_fragment(self):
+        self.assertEqual(edz._jednostka_z_tytulu(REJ_DS1099["title"]),
+                         ("§ 6 ust. 4 we fragmencie „wyniki pracy placówki”", ["§ 6"]))
+
+    def test_tytul_bez_jednostki(self):
+        self.assertEqual(edz._jednostka_z_tytulu(REJ_WP9932["title"]), (None, []))
+
+    def test_kilka_jednostek_zalacznika(self):
+        # DS 2018/5584 (rozstrzygnięcie dla DS 2018/5364)
+        t = ("Rozstrzygnięcie nadzorcze nr NK-N.4131.117.8.2018.MF Wojewody Dolnośląskiego z dnia 7 listopada 2018 r. "
+             "stwierdzające nieważność § 3 ust. 1 i ust. 2 oraz § 9 ust. 1 i ust. 4 załącznika do uchwały nr "
+             "XXXII/305/2018 Rady Gminy Rudna z dnia 18 października 2018 r.")
+        self.assertEqual(edz._jednostka_z_tytulu(t),
+                         ("§ 3 ust. 1 i ust. 2 oraz § 9 ust. 1 i ust. 4 załącznika", ["§ 3", "§ 9"]))
+
+    def test_w_czesci_dotyczacej(self):
+        t = ("Rozstrzygnięcie nadzorcze stwierdzające nieważność uchwały nr X Rady Gminy Y w części dotyczącej "
+             "§ 3 pkt 2 lit. b")
+        self.assertEqual(edz._jednostka_z_tytulu(t), ("§ 3 pkt 2 lit. b", ["§ 3"]))
+
+
+class TestAktPowiazaniaICytat(unittest.TestCase):
+    """Pkt 2 i 7: tytuł rozstrzygnięcia (który § unieważniono), urzędowy cytat, wejście w życie."""
+    ELI_DS584 = {"title": "Uchwała nr XXI/142/2026 Rady Gminy Rudna z dnia 21 stycznia 2026 r.", "type": "Uchwała",
+                 "releasedby": ["Rada Gminy Rudna"], "status": "Stwierdzono częściową nieważność aktu",
+                 "announcementdate": "2026-01-21T00:00:00", "promulgation": "2026-02-03T09:56:29.53",
+                 "entryintoforce": "0001-01-01T00:00:00", "validfrom": "0001-01-01T00:00:00",
+                 "displayaddress": "DZ. URZ. WOJ. 2026.584", "textpdf": True}
+
+    def test_akt_ds584_tytul_i_zakres_rozstrzygniecia(self):
+        wolania = []
+
+        def rej(host, rok, poz):
+            wolania.append((rok, poz))
+            return {(2026, 584): REJ_DS584, (2026, 1099): REJ_DS1099}.get((rok, poz))
+        out, e = _uruchom(["akt", "DS", "2026", "584"], _get={"return_value": dict(self.ELI_DS584)},
+                          _get_rejestr={"side_effect": rej})
+        self.assertIsNone(e)
+        self.assertIn("tytuł: Rozstrzygnięcie nadzorcze nr PNK-N.4131.117.1.2026.AO Wojewody Dolnośląskiego", out)
+        self.assertIn("zakres nieważności (z tytułu): § 6 ust. 4 we fragmencie „wyniki pracy placówki”", out)
+        self.assertIn("UWAGA: częściowa nieważność aktu (rejestr dziennika) — unieważniono: § 6 ust. 4", out)
+        # tytuł dociągany tylko dla rozstrzygnięcia, nie dla uchylanej uchwały 2018/5364
+        self.assertEqual(wolania, [(2026, 584), (2026, 1099)])
+
+    def test_cytat_urzedowy(self):
+        out, e = _uruchom(["akt", "DS", "2026", "584"], _get={"return_value": dict(self.ELI_DS584)},
+                          _get_rejestr={"return_value": None})
+        self.assertIn("# Dz. Urz. Woj. Dolnośląskiego z 2026 r. poz. 584", out)
+        self.assertIn("Cytat:    Dz. Urz. Woj. Dolnośląskiego z 2026 r. poz. 584  (urzędowa forma; adres w API: "
+                      "DZ. URZ. WOJ. 2026.584)", out)
+        self.assertEqual(edz._cytat("KP", 2026, 1), "Dz. Urz. Woj. Kujawsko-Pomorskiego z 2026 r. poz. 1")
+        self.assertEqual(edz._cytat("WM", 2026, 100), "Dz. Urz. Woj. Warmińsko-Mazurskiego z 2026 r. poz. 100")
+        self.assertEqual(edz._cytat("LD", 2025, 7), "Dz. Urz. Woj. Łódzkiego z 2025 r. poz. 7")
+        self.assertEqual(edz._cytat("LB", 2026, 100), "Dz. Urz. Woj. Lubelskiego z 2026 r. poz. 100")
+        self.assertEqual(edz._cytat("LS", 2026, 100), "Dz. Urz. Woj. Lubuskiego z 2026 r. poz. 100")
+
+    def test_wejscie_w_zycie_placeholder_i_bindingdatefrom(self):
+        out, e = _uruchom(["akt", "DS", "2026", "584"], _get={"return_value": dict(self.ELI_DS584)},
+                          _get_rejestr={"return_value": None})
+        self.assertIn("Wejście w życie: brak w metadanych (ELI: pusta wartość 0001-01-01) — ustal z treści aktu", out)
+        rej_sl = dict(REJ_MP446, bindingdatefrom="01.01.2026")   # SL 2026/100: BindingDateFrom „01.01.2026"
+        out, e = _uruchom(["akt", "SL", "2026", "100"], _get={"return_value": dict(self.ELI_DS584)},
+                          _get_rejestr={"return_value": rej_sl})
+        self.assertIn("Wejście w życie: 2026-01-01 (rejestr dziennika, pole BindingDateFrom", out)
+        self.assertEqual(edz._data_rejestru(""), None)
+
+
+class TestPozycjeTechniczne(unittest.TestCase):
+    """Pkt 6: pozycje techniczne hosta śląskiego — poza listą trafień, czytelny komunikat w akt/tekst."""
+    PUSTA = {"eli": None, "pos": 0, "year": 0, "title": None, "type": None, "displayaddress": None,
+             "promulgation": "0001-01-01T00:00:00", "announcementdate": "0001-01-01T00:00:00"}
+
+    def test_szukaj_pomija_pozycje_techniczne(self):
+        akt = {"pos": 1, "year": 2026, "title": "Uchwała nr 133/XXIII/2025 Rady Gminy Kroczyce", "type": "Uchwała",
+               "status": "obowiązujący", "displayaddress": "DZ. URZ. WOJ. SLA 2026.1",
+               "promulgation": "2025-12-17T00:00:00", "announcementdate": "2026-01-02T07:49:15.85"}
+        rocznik = {"items": [akt, dict(self.PUSTA), dict(self.PUSTA)], "totalcount": 3}
+        out, e = _uruchom(["szukaj", "--woj", "SL", "--rok", "2026"], _get={"return_value": rocznik})
+        self.assertIsNone(e)
+        self.assertNotIn("[0/0]", out)
+        self.assertIn("2026: 1/3", out)
+        self.assertIn("pominięto pozycje techniczne bez aktu — 2026: 2", out)
+        self.assertNotIn("NIEPEŁNA", out)
+
+    def test_akt_pozycja_techniczna(self):
+        out, e = _uruchom(["akt", "SL", "2026", "5464"], _get={"return_value": None},
+                          _get_rejestr={"return_value": REJ_SL5464})
+        self.assertIsNotNone(e)
+        self.assertIn("POZYCJĄ TECHNICZNĄ", str(e))
+        self.assertIn("Z przyczyn technicznych", str(e))
+        self.assertNotIn("HTTP 400", str(e))
+
+    def test_tekst_pozycja_techniczna_przed_pobraniem_pdf(self):
+        out, e = _uruchom(["tekst", "SL", "2026", "5464"], _get={"side_effect": AssertionError("bez PDF")},
+                          _get_rejestr={"return_value": REJ_SL5464})
+        self.assertIn("POZYCJĄ TECHNICZNĄ", str(e))
+
+    def test_przekierowanie_na_404_notfound_to_404(self):
+        req = edz.urllib.request.Request("https://dzienniki.slask.eu/api/eli/acts/POL_WOJ_SL/2026/5464")
+        with self.assertRaises(edz.urllib.error.HTTPError) as cm:
+            edz._PrzekierowaniaHttps().redirect_request(
+                req, None, 302, "Found", {}, "https://dzienniki.slask.eu/api/eli/acts/POL_WOJ_SL/2026/404_notfound")
+        self.assertEqual(cm.exception.code, 404)
+        cm.exception.close()
+
+    def test_akt_nieistniejacy_bez_rejestru(self):
+        out, e = _uruchom(["akt", "SL", "2026", "99999"], _get={"return_value": None},
+                          _get_rejestr={"return_value": None})
+        self.assertIn("Nie znaleziono aktu POL_WOJ_SL/2026/99999", str(e))
+
+
+class TestNaglowekDziennika(unittest.TestCase):
+    """Pkt 5: miejscowość wielowyrazowa (LS) i dzień tygodnia po „dnia" (WM) — wiersze z prawdziwych PDF."""
+
+    def _naglowek(self, linia, poz):
+        surowy = ("                     DZIENNIK URZĘDOWY\n                 WOJEWÓDZTWA X\n\n" + linia + "\n"
+                  "                                                   Data: 26.01.2026 15:59:51\n"
+                  f"                                                 Poz. {poz}\n\n   § 1. Tekst.\n\x0c")
+        return edz._czysc_pdf(surowy)[2]
+
+    def test_gorzow_wielkopolski(self):
+        self.assertEqual(self._naglowek("                         Gorzów Wielkopolski, dnia 26 stycznia 2026 r. "
+                                        "Podpisany przez:", 100),
+                         "Gorzów Wielkopolski, dnia 26 stycznia 2026 r., poz. 100")
+
+    def test_dzien_tygodnia(self):
+        self.assertEqual(self._naglowek("                             Olsztyn, dnia czwartek, 8 stycznia 2026 r."
+                                        "            Podpisany przez:", 100),
+                         "Olsztyn, dnia 8 stycznia 2026 r., poz. 100")
+
+
+class TestTlsDiagnoza(unittest.TestCase):
+    """Pkt 4: wygasły certyfikat (PM, notAfter 2026-10-01) ≠ niepełny łańcuch — bez AIA, prawdziwa diagnoza."""
+    # fragment DER certyfikatu PM: pole validity (UTCTime notBefore/notAfter)
+    DER = b"\x30\x1e\x17\x0d251001110527Z\x17\x0d261001110526Z\x30\x1d"
+
+    def _wygasly(self):
+        e = ssl.SSLCertVerificationError(
+            1, "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: certificate has expired (_ssl.c:1082)")
+        e.verify_code, e.verify_message = 10, "certificate has expired"
+        return urllib.error.URLError(e)
+
+    def test_waznosc_z_der(self):
+        self.assertEqual(edz._waznosc_certyfikatu(self.DER), ("2025-10-01 11:05:27 UTC", "2026-10-01 11:05:26 UTC"))
+        self.assertIsNone(edz._waznosc_certyfikatu(b"\x30\x00"))
+
+    def test_wygasly_certyfikat_bez_aia_i_z_data(self):
+        aia = mock.Mock(return_value=None)
+        with mock.patch.object(edz, "_otworz", mock.Mock(side_effect=self._wygasly())), \
+                mock.patch.object(edz, "_ctx_z_aia", aia), mock.patch.object(edz, "_lisc_der", return_value=self.DER), \
+                mock.patch.object(edz, "_SSL_CTX", None), mock.patch.object(edz.time, "sleep"):
+            with self.assertRaises(SystemExit) as cm:
+                edz._fetch("https://edziennik.gdansk.uw.gov.pl/api/eli/acts", "edziennik.gdansk.uw.gov.pl")
+        msg = str(cm.exception)
+        self.assertIn("Certyfikat serwera edziennik.gdansk.uw.gov.pl WYGASŁ (ważny do 2026-10-01 11:05:26 UTC)", msg)
+        self.assertNotIn("wysyła niepełny łańcuch", msg)
+        self.assertNotIn("SSL_CERT_FILE z dołożonym", msg)
+        aia.assert_not_called()
+
+    def test_rodzaj_po_tresci_gdy_brak_kodu(self):
+        self.assertEqual(edz._rodzaj_bledu_tls(Exception("certificate verify failed: certificate has expired")), "wygasl")
+        self.assertEqual(edz._rodzaj_bledu_tls(Exception("unable to get local issuer certificate")), "lancuch")
+        self.assertEqual(edz._rodzaj_bledu_tls(Exception("Hostname mismatch")), "inny")
+
+
+class TestFiltrMazowiecki(unittest.TestCase):
+    """Pkt 3: filtr Akamai na edziennik.mazowieckie.pl przetrzymuje żądania bez Accept-Language i z URL
+    w User-Agent (z polskiego IP) — silnik wysyła akceptowane nagłówki, a komunikat nie mówi o „spoza PL"."""
+
+    def test_naglowki_akceptowane_przez_filtr(self):
+        odp = mock.MagicMock()
+        odp.__enter__.return_value.read.return_value = b"[]"
+        otworz = mock.Mock(return_value=odp)
+        with mock.patch.object(edz, "_otworz", otworz):
+            edz._fetch("https://edziennik.mazowieckie.pl/api/eli/acts", "edziennik.mazowieckie.pl")
+        req = otworz.call_args.args[0]
+        self.assertTrue(req.get_header("Accept-language"))
+        self.assertNotIn("http", req.get_header("User-agent"))
+
+    def test_komunikat_timeoutu_mowi_prawde(self):
+        with mock.patch.object(edz, "_otworz", mock.Mock(side_effect=urllib.error.URLError(TimeoutError("timed out")))), \
+                mock.patch.object(edz.time, "sleep"):
+            with self.assertRaises(SystemExit) as cm:
+                edz._fetch("https://edziennik.mazowieckie.pl/api/eli/acts", "edziennik.mazowieckie.pl")
+        msg = str(cm.exception)
+        self.assertIn("filtrem antybotowym (Akamai)", msg)
+        self.assertIn("NIE jest blokada geograficzna", msg)
+        self.assertNotIn("spoza PL", msg)
+
+    def test_lista_dziennikow_bez_spoza_pl(self):
+        out, e = _uruchom(["dzienniki"])
+        self.assertNotIn("spoza PL", out)
 
 
 if __name__ == "__main__":
