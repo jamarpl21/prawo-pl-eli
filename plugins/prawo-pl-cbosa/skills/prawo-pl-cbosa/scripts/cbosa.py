@@ -564,6 +564,13 @@ def _wyniki(strona_html):
         pozycje.append({"doc_id": m.group(1), "opis": opis, "snippet": snippet, "powiazane": powiazane})
     if total is None and not pozycje and not komunikat:
         raise VerificationUnknown("CBOSA zwróciło stronę bez licznika i listy wyników")
+    if total is None and not pozycje and _ascii(komunikat).startswith("blad przy szukaniu"):
+        # „Błąd przy szukaniu orzeczeń" (2026-10-05, w czasie awarii serwera) to błąd SERWERA, nie
+        # odrzucone zapytanie: to samo zapytanie po kilku minutach zwróciło 297 wyników
+        raise VerificationUnknown(f"CBOSA zwróciło stronę błędu wyszukiwarki („{komunikat}”)",
+                                  porada="To błąd po stronie serwera CBOSA, a nie złe zapytanie ani brak "
+                                         "wyników — ponów to samo zapytanie za kilka minut; nie zmieniaj "
+                                         "zapytania i nie obchodź helpera innym narzędziem.")
     return total, pozycje, komunikat
 
 

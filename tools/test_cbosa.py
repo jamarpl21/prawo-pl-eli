@@ -934,5 +934,21 @@ class TestDiagnozaBleduSieci(unittest.TestCase):
         self.assertIn("Spróbuj ponownie za chwilę", str(caught.exception.code))
 
 
+class TestBladWyszukiwarki(unittest.TestCase):
+    """2026-10-05: w czasie awarii CBOSA wyszukiwarka zwraca „Błąd przy szukaniu orzeczeń" — to błąd
+    serwera (UNKNOWN z poradą ponowienia), nie „CBOSA odrzuciło zapytanie"."""
+
+    def test_blad_przy_szukaniu_to_awaria_serwera(self):
+        strona = '<html><body><div class="warning">Błąd przy szukaniu orzeczeń</div></body></html>'
+        with self.assertRaises(cbosa.VerificationUnknown) as ctx:
+            cbosa._wyniki(strona)
+        self.assertIn("Błąd przy szukaniu orzeczeń", str(ctx.exception))
+        self.assertIn("ponów to samo zapytanie", ctx.exception.porada)
+
+    def test_niepoprawna_data_nadal_odrzucona(self):
+        strona = '<html><body><div class="warning">Niepoprawny format daty</div></body></html>'
+        self.assertEqual(cbosa._wyniki(strona), (None, [], "Niepoprawny format daty"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
