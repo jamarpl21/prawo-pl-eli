@@ -1,6 +1,6 @@
 {
   "name": "gibek-skills",
-  "description": "Otwarte skille prawnicze dla Claude Code oraz OpenAI Codex (standard Agent Skills): prawo polskie z oficjalnego API ELI Sejmu, prawo miejscowe z wojewódzkich dzienników urzędowych, prawo UE z CELLAR/EUR-Lex, orzecznictwo z API SAOS, orzecznictwo sądów administracyjnych z CBOSA, decyzje UODO z oficjalnego API i umowy jednostek sektora finansów publicznych z Centralnego Rejestru Umów. Orzeczenia sądów powszechnych bezpośrednio z Portalu Orzeczeń MS (HTML/RSS).",
+  "description": "Otwarte skille prawnicze dla Claude Code i OpenAI Codex (standard Agent Skills): prawo polskie z oficjalnego API ELI Sejmu, prawo miejscowe z wojewódzkich dzienników urzędowych, prawo UE z CELLAR/EUR-Lex, orzecznictwo z API SAOS i bezpośrednio z Portalu Orzeczeń MS, orzecznictwo sądów administracyjnych z CBOSA, decyzje UODO z oficjalnego API oraz umowy jednostek sektora finansów publicznych z Centralnego Rejestru Umów.",
   "owner": {
     "name": "Krzysztof Gibek"
   },
@@ -18,7 +18,7 @@
     {
       "name": "prawo-pl-edzienniki",
       "source": "./plugins/prawo-pl-edzienniki",
-      "description": "Prawo miejscowe z API ELI 16 wojewódzkich dzienników urzędowych: uchwały rad gmin/powiatów/sejmików (podatki i opłaty lokalne, plany miejscowe MPZP, statuty), rozporządzenia wojewody. Wyszukiwanie po tytule i roczniku, metadane, pełna treść i urzędowy PDF. Read-only, bez klucza.",
+      "description": "Prawo miejscowe z API ELI 16 wojewódzkich dzienników urzędowych: uchwały rad gmin/powiatów/sejmików (podatki i opłaty lokalne, plany miejscowe MPZP, statuty), rozporządzenia wojewody. Wyszukiwanie po tytule i roczniku, metadane ze stwierdzoną nieważnością, sprostowaniami i uchyleniami, pełna treść i urzędowy PDF. Read-only, bez klucza.",
       "version": "2.1.0",
       "author": {
         "name": "Krzysztof Gibek",
@@ -28,7 +28,7 @@
     {
       "name": "prawo-eu-eurlex",
       "source": "./plugins/prawo-eu-eurlex",
-      "description": "Prawo UE z oficjalnego repozytorium CELLAR/EUR-Lex (CELEX, bez klucza) do każdego pytania o prawo unijne: rozporządzenia, dyrektywy, wersje skonsolidowane, pojedyncze artykuły po polsku, nowelizacje, podstawa prawna.",
+      "description": "Prawo UE z oficjalnego repozytorium CELLAR/EUR-Lex (CELEX, bez klucza) do każdego pytania o prawo unijne: rozporządzenia, dyrektywy, wersje skonsolidowane, pojedyncze artykuły po polsku, nowelizacje, sprostowania, podstawa prawna.",
       "version": "2.1.0",
       "author": {
         "name": "Krzysztof Gibek",
@@ -58,7 +58,7 @@
     {
       "name": "prawo-pl-uodo",
       "source": "./plugins/prawo-pl-uodo",
-      "description": "Decyzje Prezesa UODO z oficjalnego API Portalu Orzeczeń UODO (orzeczenia.uodo.gov.pl): kary za naruszenia RODO, upomnienia, nakazy. Wyszukiwanie pełnotekstowe i po tytule/dacie; pełna treść decyzji po sygnaturze. Read-only, bez klucza.",
+      "description": "Decyzje Prezesa UODO z oficjalnego API Portalu Orzeczeń UODO (orzeczenia.uodo.gov.pl): kary za naruszenia RODO, upomnienia, nakazy oraz powiązane orzeczenia sądów. Wyszukiwanie pełnotekstowe i po tytule/dacie; pełna treść decyzji po sygnaturze. Read-only, bez klucza.",
       "version": "2.1.0",
       "author": {
         "name": "Krzysztof Gibek",

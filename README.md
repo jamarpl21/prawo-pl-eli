@@ -37,8 +37,15 @@ potrafi podać brzmienie sprzed kilku zmian. Ten skill sięga do **źródła pie
 - pobrać metadane (w tym **datę wejścia w życie**), pełny tekst i **TEKST JEDNOLITY**,
 - wyciąć **pojedynczy artykuł** (`tekst --fragment "art. 299"`) — pod cytat w umowie lub piśmie procesowym,
 - sprawdzić **nowelizacje**, podstawę prawną i czy akt **nadal obowiązuje** (narzędzie samo ostrzega
-  przed cytowaniem nieaktualnej wersji),
-- zacytować przepis z poprawną sygnaturą `Dz.U.`/`M.P.` i identyfikatorem ELI.
+  przed cytowaniem nieaktualnej wersji, przed aktem, który jeszcze nie wszedł w życie, i przed
+  przepisami w brzmieniu przyszłym — „PRZEPISY, KTÓRE JESZCZE NIE OBOWIĄZUJĄ”),
+- zacytować przepis z poprawną sygnaturą `Dz.U.`/`M.P.` i identyfikatorem ELI (`meta` podaje urzędową
+  formę cytatu, np. „Dz. U. z 2001 r. Nr 112, poz. 1198”).
+
+Teksty bez HTML czyta z plików PDF w API ELI: kodeksy z nieurzędowego tekstu ujednoliconego Kancelarii Sejmu
+(notki z marginesu osobno, nie w treści przepisu), akty Dz.U. i M.P. z lat 2000–2011 łam po łamie
+oraz zeszyty z lat 1990–1999, których warstwa tekstowa to OCR — liczby, daty i kwoty z tych lat
+sprawdź w PDF (narzędzie o tym ostrzega).
 
 Pomyślany jako wsparcie pracy nad **umowami i pismami procesowymi** (tworzenie i analiza) — wszędzie tam,
 gdzie trzeba odwołać się do przepisów i procedur prawa polskiego.
@@ -51,9 +58,12 @@ Tych aktów nie ma w Dz.U./M.P. — publikuje je 16 **wojewódzkich dzienników 
 z własnym API zgodnym z ELI. Silnik `edzienniki.py` zna tabelę hostów i pozwala:
 
 - listować dzienniki i roczniki: `dzienniki --woj DS`,
-- szukać aktów po tytule (nazwa gminy, przedmiot uchwały): `szukaj --woj DS "plan zagospodarowania" --rok 2026`
-  (API dzienników ignoruje filtry serwerowe — silnik pobiera rocznik i filtruje lokalnie),
-- pobrać metadane i treść: `akt DS 2026 3299`, `tekst DS 2026 3299 --fragment "§ 2"`, `--pdf plan.pdf`.
+- szukać aktów po tytule (nazwa gminy, przedmiot uchwały): `szukaj --woj DS "planu zagospodarowania" --rok 2026`
+  (API dzienników ignoruje filtry serwerowe — silnik pobiera rocznik i filtruje lokalnie; fraza musi
+  pasować do odmiany w tytule),
+- pobrać metadane i treść: `akt DS 2026 3299`, `tekst DS 2026 3299 --fragment "§ 2"`, `--pdf plan.pdf`,
+- zobaczyć **stwierdzoną nieważność** (także częściową, z unieważnioną jednostką), sprostowania,
+  uchylenia i zmiany aktu oraz urzędową formę cytatu („Dz. Urz. Woj. Dolnośląskiego z 2026 r. poz. 584”).
 
 ## prawo-eu-eurlex
 
@@ -66,6 +76,11 @@ repozytorium Urzędu Publikacji UE zasilające EUR-Lex (SPARQL + REST, bez rejes
 - wyciąć **pojedynczy artykuł po polsku** (lub w 23 innych językach):
   `tekst 02016R0679-20160504 --fragment "art. 28"`, `--pdf` zapisuje urzędowy PDF,
 - sprawdzić **nowelizacje, sprostowania i podstawę traktatową**: `odniesienia 32016R0679`.
+
+`tekst` aktu bazowego wymienia sprostowania w danym języku i ostrzega, gdy wycięty artykuł ma brzmienie
+sprzed sprostowania (np. RODO art. 4). `tekst` i `--pdf` działają dla starszych aktów (dyrektywa
+95/46/WE, e-Privacy 2002/58/WE), a akty dostępne w danym języku tylko w PDF są czytane z urzędowego
+PDF przez `pdftotext`.
 
 Identyfikatorem jest numer **CELEX** (`32016R0679`), akceptowana też forma ELI (`reg/2016/679`).
 Skille odsyłają do siebie nawzajem: dyrektywa UE → transpozycja → polska ustawa (prawo-pl-eli);
@@ -81,8 +96,11 @@ Trzeci skill domyka komplet: **orzecznictwo** (judykatura). Silnik `saos.py` odp
   `szukaj "odpowiedzialność członka zarządu" --przepis "Kodeks spółek handlowych" --sad SN`,
 - pobrać **pełne orzeczenie** po ID: teza/uzasadnienie, **powołane przepisy** i **powołane orzeczenia**
   (z ID do dalszego skoku po linii orzeczniczej): `orzeczenie 76341`,
-- odszukać wyrok po numerze sprawy: `sygnatura III CSK 203/09`,
+- odszukać wyrok po numerze sprawy: `sygnatura III CSK 203/09` (z nazwą sądu i wydziałem przy każdym
+  trafieniu i ostrzeżeniem, gdy ta sama sygnatura dotyczy różnych spraw w różnych sądach),
 - wyciąć fragment długiego uzasadnienia wokół frazy: `orzeczenie 76341 --fragment "rękojmia"`.
+
+Przy dokumencie typu „uzasadnienie” silnik ostrzega, że podana data to data uzasadnienia, a nie wyroku.
 
 Podział ról: **treść przepisu → prawo-pl-eli (ELI)**, **jak sądy go stosują → prawo-pl-saos (SAOS)**.
 Most między nimi: ustal akt w ELI, potem `szukaj --przepis "<akt>"` w SAOS. **Uwaga:** SAOS to baza
@@ -104,7 +122,12 @@ Wymaga tylko standardowej biblioteki Pythona; dostęp HTTPS z przetestowanym Use
 `curl/8.7.1` działał 20.09.2026 bez przeglądarki. F5/TSPD nadal może odmówić dostępu;
 taka odpowiedź to błąd, nie zero trafień. Metryka rozdziela datę wyroku i publikacji.
 Brak oznaczenia prawomocności to `null`; `--strict` blokuje wtedy pobranie dokumentu.
-RSS to ograniczone okno publikacji, nie kompletne archiwum. Szczegóły i filtry:
+RSS to ograniczone okno publikacji, nie kompletne archiwum.
+
+**Stan źródła (sprawdzone 5.10.2026):** od 24.09.2026 portal MS — także portale poszczególnych sądów —
+nie wydaje treści żadnego nowo opublikowanego orzeczenia (strona „Błąd danych”), a SAOS, który importuje
+z tego samego zaplecza, ma te orzeczenia bez tekstu. Oba silniki mówią to wprost; treści nie wolno
+odtwarzać z fragmentu wyszukiwarki. Metryka takich orzeczeń działa. Szczegóły i filtry:
 [SKILL.md](plugins/prawo-pl-orzeczenia-ms/skills/prawo-pl-orzeczenia-ms/SKILL.md).
 
 ## prawo-pl-cbosa
@@ -113,10 +136,11 @@ Czwarty skill wypełnia największą lukę: **orzecznictwo sądów administracyj
 podatki, skargi na decyzje organów, interpretacje, k.p.a., prawo budowlane. Źródłem jest **CBOSA**
 ([orzeczenia.nsa.gov.pl](https://orzeczenia.nsa.gov.pl), ~2,4 mln orzeczeń od 2004 r.). CBOSA **nie ma
 oficjalnego API**, więc silnik `cbosa.py` czyta publiczne strony HTML (read-only, z throttlingiem
-≥0,5 s i awaryjną obsługą niekompletnego łańcucha SSL) — i pozwala:
+≥0,5 s; błąd certyfikatu TLS daje wynik nieustalony — bez weryfikacji tylko po jawnym
+`CBOSA_INSECURE_TLS=1`) — i pozwala:
 
-- szukać po frazie, **sygnaturze**, sądzie, **symbolu sprawy**, sędzim i dacie:
-  `szukaj "odpowiedzialność członków zarządu" --sad NSA --od 2024-01-01`,
+- szukać po frazie, **sygnaturze**, sądzie, **symbolu sprawy**, rodzaju skarżonego organu
+  (`--organ UODO`), sędzim i dacie: `szukaj "odpowiedzialność członków zarządu" --sad NSA --od 2024-01-01`,
 - pobrać **pełne orzeczenie** (sentencja + uzasadnienie + powołane przepisy): `orzeczenie 8889489BE0`,
 - skakać między instancjami po **sygnaturach powiązanych** (WSA ↔ NSA tej samej sprawy),
 - wyciąć fragment długiego uzasadnienia: `orzeczenie <doc_id> --fragment "art. 116"`.
@@ -130,7 +154,11 @@ bez klucza). Silnik `uodo.py` pozwala:
 - przeglądać najnowsze decyzje: `najnowsze --limit 10`,
 - szukać pełnotekstowo (regex, bez rozróżniania wielkości liter): `szukaj "biometr"`,
   po tytule i dacie publikacji: `szukaj --tytul "kara" --od 2026-01-01`,
-- pobrać **pełną treść decyzji** po sygnaturze: `decyzja DKN.5131.9.2025 --fragment "art. 33"`.
+- pobrać **pełną treść decyzji** po sygnaturze: `decyzja DKN.5131.9.2025 --fragment "art. 6"`.
+
+Przy decyzji nieprawomocnej `decyzja` podaje gotowe zapytania CBOSA, które znajdują wyrok sądu
+administracyjnego w tej sprawie (CBOSA anonimizuje numery decyzji, więc wyszukiwanie po samym numerze
+daje zero).
 
 Komplet RODO: treść rozporządzenia → **prawo-eu-eurlex**, decyzje organu → **prawo-pl-uodo**,
 sądowa kontrola decyzji (WSA/NSA) → **prawo-pl-cbosa**.
@@ -150,7 +178,8 @@ adresy), przedmiotem, wartością i zmianami. Silnik `rejestrumow.py` pozwala:
   jawności): `umowa <idUmowy>`.
 
 Rejestr pokazuje **zawarte umowy** (nie przetargi — te są w BZP/TED) i obejmuje wyłącznie umowy
-od 1.07.2026; podstawa prawna (art. 34a–34b u.f.p.) → **prawo-pl-eli**.
+od 1.07.2026; podstawa prawna (art. 34a–34b u.f.p.) → **prawo-pl-eli**. Rejestr nie podaje waluty
+ani tego, czy kwota jest netto czy brutto — silnik pokazuje kwotę bez „zł”.
 
 Wszystkie skille są w otwartym standardzie **[Agent Skills](https://agentskills.io)** (`SKILL.md`), więc działają w
 **Claude Code** i **OpenAI Codex**. Silniki (`scripts/eli.py`, `scripts/edzienniki.py`, `scripts/eurlex.py`,
@@ -162,8 +191,10 @@ Wszystkie skille są w otwartym standardzie **[Agent Skills](https://agentskills
 - Python 3.8+ (tylko stdlib; brak `pip install`)
 - **zalecane: `pdftotext` (poppler)** — `brew install poppler` / `apt install poppler-utils`. Od 2.0 silniki
   ELI i e-dzienników czytają treść aktu z **urzędowego PDF**, gdy API nie ma HTML (k.c. Dz.U. 2026 poz. 795,
-  Konstytucja) albo gdy HTML jest tylko pierwszą stroną (wszystkie dzienniki wojewódzkie). Bez pdftotext
-  silnik sięga po tekst zastępczy z głośnym ostrzeżeniem, a `--strict` go odrzuca.
+  Konstytucja, akty Dz.U. i M.P. z lat 1990–2011) albo gdy HTML jest tylko pierwszą stroną (wszystkie
+  dzienniki wojewódzkie); EUR-Lex czyta przez niego akty dostępne w danym języku tylko w PDF. Bez
+  pdftotext silnik sięga po tekst zastępczy z głośnym ostrzeżeniem albo odsyła do `--pdf`, a `--strict`
+  takiego wyniku nie przepuszcza.
 - dostęp do internetu (`api.sejm.gov.pl`, hosty e-dzienników wojewódzkich, `publications.europa.eu`,
   `www.saos.org.pl`, `orzeczenia.ms.gov.pl`, `orzeczenia.nsa.gov.pl`, `orzeczenia.uodo.gov.pl`, `rejestrumow.gov.pl`)
 
@@ -243,9 +274,8 @@ done
 ### Paczka ZIP (offline / pojedyncza sesja)
 
 Każdy tag `v*` publikuje po jednym zipie na plugin w GitHub Releases
-(`prawo-pl-eli-<wersja>.zip`, `prawo-pl-edzienniki-<wersja>.zip`, `prawo-eu-eurlex-<wersja>.zip`,
-`prawo-pl-saos-<wersja>.zip`, `prawo-pl-cbosa-<wersja>.zip`, `prawo-pl-uodo-<wersja>.zip`,
-`prawo-pl-rejestr-umow-<wersja>.zip`, `prawo-pl-orzeczenia-ms-<wersja>.zip`):
+(`<plugin>-v<wersja>.zip`, np. `prawo-pl-eli-v<wersja>.zip`, `prawo-pl-saos-v<wersja>.zip` — po jednym
+dla każdego z ośmiu pluginów):
 
 ```bash
 claude --plugin-dir ./prawo-pl-saos-v2.1.0.zip
@@ -263,6 +293,7 @@ cd plugins/prawo-pl-saos/skills/prawo-pl-saos && python3 scripts/saos.py <komend
 cd plugins/prawo-pl-cbosa/skills/prawo-pl-cbosa && python3 scripts/cbosa.py <komenda> [...]
 cd plugins/prawo-pl-uodo/skills/prawo-pl-uodo && python3 scripts/uodo.py <komenda> [...]
 cd plugins/prawo-pl-rejestr-umow/skills/prawo-pl-rejestr-umow && python3 scripts/rejestrumow.py <komenda> [...]
+cd plugins/prawo-pl-orzeczenia-ms/skills/prawo-pl-orzeczenia-ms && python3 scripts/orzeczenia_ms.py <komenda> [...]
 ```
 
 Dwie flagi globalne, w każdym silniku, działają przed komendą i po niej:
@@ -278,12 +309,16 @@ Dwie flagi globalne, w każdym silniku, działają przed komendą i po niej:
     podasz sygnaturę starego t.j.), tekst zastępczy ze starszego t.j. (brak pdftotext), nieudana
     ekstrakcja PDF, niekompletna lista nowelizacji po t.j.;
   - **EUR-Lex:** awaria SPARQL, starsza wersja skonsolidowana, treść aktu bazowego, gdy istnieje
-    konsolidacja, `meta` aktu bazowego znowelizowanego (daty stosowania w CELLAR są wtedy nieaktualne);
+    konsolidacja albo sprostowanie w danym języku (tekst niesprostowany), `meta` aktu bazowego
+    znowelizowanego (daty stosowania w CELLAR są wtedy nieaktualne);
   - **SAOS:** zakres dat poza końcem zbioru SN (22.06.2016) / TK (9.12.2015) / KIO (6.09.2018) —
     granica potwierdzana na żywo; **CBOSA:** treść bez weryfikacji TLS, orzeczenie **nieprawomocne** lub
     bez potwierdzonej prawomocności; **UODO:** decyzja bez pełnej treści, decyzja **uchylona przez sąd**;
+  - **Portal Orzeczeń MS:** metryka, treść, przepisy lub PDF orzeczenia, którego prawomocności portal
+    nie potwierdza;
   - **e-dzienniki:** pominięty lub niekompletny rocznik, tekst z text.html (tylko 1. strona), tekst
-    uszkodzony (U+FFFD, brak §); **rejestr umów:** zbiór większy niż okno API (10 000).
+    uszkodzony (U+FFFD, brak §), akt nieważny w całości, fragment z unieważnionej jednostki, brak
+    możliwości pobrania powiązań aktu; **rejestr umów:** zbiór większy niż okno API (10 000).
 
   Wszystkie kontrole wykonują się PRZED emisją wyniku, również dla `--json`. Strict nie zastępuje oceny
   prawnika: t.j. z późniejszymi nowelizacjami nadal przechodzi (z listą „Nowelizacje po tekście
@@ -295,7 +330,7 @@ Dwie flagi globalne, w każdym silniku, działają przed komendą i po niej:
 | Komenda | Opis | Przykład |
 |---|---|---|
 | `szukaj` | znajdź akt po tytule/typie/roku/haśle | `szukaj "Kodeks spółek handlowych" --typ Ustawa --limit 5` |
-| `meta` | metadane aktu: status, **data aktu** („z dnia"), **ogłoszono** (publikacja w Dz.U.), wejście w życie, stan prawny t.j., uwagi o rozłożonym wejściu w życie | `meta DU 2000 1037` |
+| `meta` | metadane aktu: status, **data aktu** („z dnia"), **ogłoszono** (publikacja w Dz.U.), wejście w życie (z ostrzeżeniem, gdy akt jeszcze nie obowiązuje), stan prawny t.j., uwagi o rozłożonym wejściu w życie, urzędowa forma cytatu, akt uchylający | `meta DU 2000 1037` |
 | `tj` | znajdź AKTUALNY tekst jednolity (najnowszy oznaczony) | `tj DU 2000 1037` |
 | `odniesienia` | nowelizacje, podstawa prawna, tekst jednolity | `odniesienia DU 2024 18` |
 | `tekst` | treść aktu; `--fragment` wycina pojedynczy artykuł; `--pdf` zapisuje urzędowy PDF | `tekst DU 2024 18 --fragment "art. 299"` |
@@ -314,16 +349,17 @@ Każda komenda przyjmuje `--json` i `--strict` (wyżej). Sygnaturę można poda�
 | Komenda | Opis | Przykład |
 |---|---|---|
 | `dzienniki` | lista 16 dzienników; z `--woj` roczniki i liczba aktów | `dzienniki --woj DS` |
-| `szukaj` | akty województwa po frazie z tytułu (filtr lokalny) | `szukaj --woj DS "plan zagospodarowania" --rok 2026` |
-| `akt` | metadane aktu (typ, organ, **data aktu** i **data publikacji** w dzienniku, status, powiązania: sprostowania, uchylenia, rozstrzygnięcia nadzorcze) | `akt DS 2026 3299` |
-| `tekst` | treść aktu **z urzędowego PDF** (pdftotext); `--fragment "§ N"` zwraca cały §; `--pdf` zapisuje PDF | `tekst DS 2026 3299 --fragment "§ 2"` |
+| `szukaj` | akty województwa po frazie z tytułu (filtr lokalny) | `szukaj --woj DS "planu zagospodarowania" --rok 2026` |
+| `akt` | metadane aktu (typ, organ, **data aktu** i **data publikacji** w dzienniku, status, urzędowa forma cytatu, powiązania: sprostowania, uchylenia, rozstrzygnięcia nadzorcze z zakresem nieważności) | `akt DS 2026 3299` |
+| `tekst` | treść aktu **z urzędowego PDF** (pdftotext) z ostrzeżeniem o nieważności, sprostowaniach i zmianach; `--fragment "§ N"` zwraca cały §; `--pdf` zapisuje PDF | `tekst DS 2026 3299 --fragment "§ 2"` |
 
 Kody województw = sufiks publishera ELI (`DS`=dolnośląskie, `MZ`=mazowieckie, `SL`=śląskie…);
 można też podać nazwę (`--woj lodzkie`). API dzienników ignoruje filtry serwerowe — silnik pobiera
 rocznik i filtruje tytuły lokalnie (bez `?limit=…`, bo ten wariant serwer podaje z przestarzałego cache'u —
 silnik porównuje liczbę pozycji z `totalCount`). `text.html` dzienników zawiera tylko pierwszą stronę aktu,
 dlatego treść pochodzi z PDF. Hosty z niepełnym łańcuchem certyfikatów (MP, LS, LD) obsługiwane przez
-dociągnięcie certyfikatu pośredniego (AIA) z pełną weryfikacją.
+dociągnięcie certyfikatu pośredniego (AIA) z pełną weryfikacją; inne błędy TLS (np. wygasły certyfikat)
+są nazywane wprost.
 
 ### eurlex.py (prawo UE)
 
@@ -354,7 +390,7 @@ SAOS spłaszcza indeksy górne (art. 417¹ → „4171") — silnik ostrzega; w 
 
 | Komenda | Opis | Przykład |
 |---|---|---|
-| `szukaj` | orzeczenia po frazie/sądzie/sygnaturze/symbolu/sędzim/dacie | `szukaj "odpowiedzialność członków zarządu" --sad NSA --od 2024-01-01` |
+| `szukaj` | orzeczenia po frazie/sądzie/sygnaturze/symbolu/organie (`--organ`)/sędzim/dacie | `szukaj "odpowiedzialność członków zarządu" --sad NSA --od 2024-01-01` |
 | `orzeczenie` | pełne orzeczenie po doc_id (metadane, sentencja, uzasadnienie, powołane przepisy); `--fragment` | `orzeczenie 8889489BE0 --fragment "art. 116"` |
 | `sygnatura` | szybkie odszukanie po sygnaturze | `sygnatura II FSK 2870/18` |
 
@@ -369,7 +405,7 @@ gdy orzeczenie jest nieprawomocne (mogło zostać uchylone — zob. orzeczenia p
 |---|---|---|
 | `najnowsze` | ostatnio **wydane** dokumenty (API sortuje po dacie decyzji) | `najnowsze --limit 10` |
 | `szukaj` | pełnotekstowo (regex) / po tytule / dacie **decyzji** (`--od/--do`) lub **publikacji** (`--pub-od/--pub-do`) | `szukaj "biometr" --od 2026-01-01` |
-| `decyzja` | pełna treść decyzji po sygnaturze albo URN; blok **„Kontrola sądowa"** (uchylenia/utrzymania z sygnaturami WSA/NSA); `--fragment` | `decyzja DKN.5131.9.2025 --fragment "art. 33"` |
+| `decyzja` | pełna treść decyzji po sygnaturze albo URN; blok **„Kontrola sądowa"** (uchylenia/utrzymania z sygnaturami WSA/NSA, przy nieprawomocnej — zapytania CBOSA); `--fragment` | `decyzja DKN.5131.9.2025 --fragment "art. 6"` |
 
 API stosuje jeden warunek filtrujący na zapytanie (fraza ALBO tytuł); zaawansowane filtry:
 `--warunek "indeks:operator:wartość"`. Decyzja uchylona przez sąd jest oznaczana nagłówkiem „DECYZJA
@@ -453,16 +489,21 @@ plugins/<plugin>/                        # prawo-pl-eli | prawo-pl-edzienniki | 
     ├── scripts/<silnik>.py               # eli.py | edzienniki.py | eurlex.py | saos.py | cbosa.py | uodo.py | rejestrumow.py | orzeczenia_ms.py
     └── references/api.md                 # referencja endpointów źródła
 tools/validate.py                        # walidator manifestów wszystkich pluginów (używany w CI)
-tools/test_*.py                          # testy jednostkowe silników, offline (używane w CI)
+tools/release_notes.py                   # opis wydania z CHANGELOG.md (brak wpisu blokuje wydanie)
+tools/test_*.py, tools/fixtures/         # testy jednostkowe silników, offline (używane w CI)
+CHANGELOG.md                             # historia zmian; sekcja „Niewydane” do kolejnego wydania
+docs/                                    # raport audytu merytorycznego, instrukcja instalacji w aplikacjach
 .github/workflows/release.yml            # GitHub Actions: walidacja + testy + ZIP-y release na tagu v*
 ```
 
 ## GitHub Actions (deploy)
 
 - **push / PR** → `tools/validate.py` waliduje manifesty WSZYSTKICH pluginów (Claude + Codex), oba marketplace'y
-  i frontmattery `SKILL.md`; `tools/test_*.py` testują silniki (offline, bez sieci).
+  i frontmattery `SKILL.md`; `tools/release_notes.py` sprawdza wpis w `CHANGELOG.md` dla bieżącej
+  wersji; `tools/test_*.py` testują silniki (offline, bez sieci).
 - **tag `v*`** → build po jednym zipie na plugin + GitHub Release z paczkami
-  (instalowalnymi przez `claude --plugin-dir` / `--plugin-url`).
+  (instalowalnymi przez `claude --plugin-dir` / `--plugin-url`) i opisem zmian z sekcji tej wersji
+  w `CHANGELOG.md`.
 
 ## Wersjonowanie
 
@@ -483,7 +524,8 @@ w silnikach → `sha256` każdego silnika + nowa wersja do bloku „3) Piaskowni
 istnieje dopiero po wypchnięciu tagu, a marketplace śledzi `main`).
 
 Przed tagowaniem uzupełnij `CHANGELOG.md`: przenieś gotowe wpisy z sekcji `Niewydane` do sekcji
-`## X.Y.Z — RRRR-MM-DD`. Sprawdź ją poleceniem `python3 tools/release_notes.py vX.Y.Z`.
+`## X.Y.Z — RRRR-MM-DD`. Sprawdź ją poleceniem `python3 tools/release_notes.py vX.Y.Z`. W README
+podbij „obecnie X.Y.Z” (wyżej) i numer wersji w przykładzie paczki ZIP (sekcja „Instalacja”).
 GitHub Actions dołącza treść tej sekcji do opisu wydania i blokuje publikację, jeśli wpisu brakuje.
 Po publikacji sprawdź opis GitHub Release oraz dostępność wszystkich ośmiu paczek.
 
@@ -518,16 +560,21 @@ mapowanie pól rejestru umów (NIP-y kontrahentów zgodne z Białą listą) — 
 | rejestr umów | `--nip/--regon` pasowały do dowolnej strony umowy; strona za oknem 10 000 = fałszywe zero; `api.md` z nieistniejącą sekcją filtrów zmian | `--rola`, komunikaty o oknie, prawdziwa sekcja `zmianyUmowy` + `--zmiana-*` |
 | wszystkie | `--strict` dawał fałszywy „pass" tam, gdzie nie było dedykowanej kontroli; obietnica „zero trafień → kod ≠ 0 także z `--json`" fałszywa dla `szukaj` w ELI/EUR-Lex/SAOS | kontrakt strict opisany per silnik i rozszerzony (wyżej); `szukaj` wszędzie kończy zero komunikatem i kodem ≠ 0 |
 
-Testy jednostkowe: 276 → 491. Audyt wskazał też luki do kolejnych testów (przepisy znowelizowane
+Testy jednostkowe: 276 → 502. Audyt wskazał też luki do kolejnych testów (przepisy znowelizowane
 w ostatnich 90 dniach, t.j. z brzmieniem z datą przyszłą, indeksy literowe w k.p.c., tabele załączników)
-— zob. sekcję D raportu.
+— zob. sekcję D raportu. Część z nich sprawdzono i naprawiono w wydaniu 2.2.0 (brzmienie przyszłe
+i vacatio legis w ELI, sprostowania w EUR-Lex, nieważność aktów w e-dziennikach, łańcuch UODO → CBOSA,
+kolizje sygnatur); stan każdej luki opisuje nota na początku raportu.
 
 ## Ważne zastrzeżenia
 
 - **To nie jest porada prawna.** Narzędzie pomaga dotrzeć do treści i sygnatury aktu / orzeczenia —
   interpretacja należy do prawnika.
 - **Akt OGŁOSZONY ≠ OBOWIĄZUJĄCY.** Sprawdzaj `wejście w życie`/vacatio legis i odnoś przepis do **daty
-  zdarzenia/sprawy**. Tekst jednolity oddaje stan na `legalStatusDate`; nowsze zmiany trzeba nałożyć ręcznie.
+  zdarzenia/sprawy**. Tekst jednolity oddaje stan na `legalStatusDate`; nowsze zmiany trzeba nałożyć ręcznie
+  (narzędzie je wymienia). Nieurzędowy tekst ujednolicony Kancelarii Sejmu zawiera już część zmian —
+  także brzmienie przyszłe, oznaczone `< … >` i ostrzeżeniem z datą wejścia w życie; do pisma cytuj
+  akt urzędowy (t.j. i akty zmieniające).
 - **Indeksacja bywa opóźniona** — brak nowelizacji w API ≠ pewność, że jej nie ma. Przy sprawie na
   konkretną datę zweryfikuj dodatkowo (np. `dziennikustaw.gov.pl`, proces legislacyjny).
 - **Wersja skonsolidowana EUR-Lex ma charakter dokumentacyjny** (nie jest tekstem autentycznym) —

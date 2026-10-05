@@ -1,5 +1,36 @@
 # Audyt merytoryczny silników (wersja 1.7.0) — 22–23 sierpnia 2026
 
+> **Nota o stanie (wydanie 2.2.0, październik 2026).** Treść raportu poniżej jest niezmieniona i opisuje
+> stan wersji 1.7.0. Defekty z sekcji A i B naprawiło wydanie 2.0.0. Luki i zalecane testy z sekcji D
+> („Krytyk kompletności”) w wydaniu 2.2.0 — według `CHANGELOG.md`:
+>
+> **Sprawdzone, z naprawą:**
+> - ELI, t.j. z brzmieniem przyszłym: ostrzeżenie „PRZEPISY, KTÓRE JESZCZE NIE OBOWIĄZUJĄ” z datami
+>   (k.c. art. 860 § 3–4 od 1.11.2028; k.p.c. dział IVFA od 28.10.2026); `tekst` kodeksów z tekstu
+>   ujednoliconego Kancelarii Sejmu ma brzmienie obecne i przyszłe w osobnych akapitach.
+> - ELI, vacatio legis: `meta` i `tekst` ostrzegają, gdy akt jeszcze nie wszedł w życie (DU 2026/1046).
+> - ELI, akt uchylony i forma cytatu sprzed 2012 r.: `meta` podaje akt uchylający i urzędowy cytat
+>   („Dz. U. z 2001 r. Nr 112, poz. 1198”).
+> - ELI, indeksy literowe: `--fragment` znajduje artykuły dodane w nawiasach (`<Art. 477⁶ᵃ.`); k.k. nie
+>   był przedmiotem tej rundy.
+> - e-dzienniki: częściowa nieważność z unieważnioną jednostką (DS 2026/584 § 6 ust. 4), sprostowania,
+>   uchylenia i zmiany w `tekst`; urzędowa forma cytatu; data wejścia w życie, gdy rejestr ją podaje.
+> - e-dzienniki, hosty: MZ działa (przyczyną był filtr antybotowy, nie blokada geograficzna); błąd TLS
+>   hosta PM nazwany trafnie (wygasły certyfikat); nagłówki LS i WM oraz pozycje techniczne SL.
+> - EUR-Lex: sprostowanie RODO (art. 4, 10, 82 ust. 2) — ostrzeżenie i blokada w `--strict`;
+>   dyrektywa 95/46/WE czytana bez błędu 404.
+> - UODO → CBOSA: decyzja nieprawomocna prowadzi do wyroku WSA (DKN.5131.1.2025 → II SA/Wa 837/25).
+> - SAOS/MS: kolizje sygnatur w różnych sądach, data uzasadnienia a data wyroku, „Data uprawomocnienia”.
+> - Rejestr umów: kwoty bez „zł” — rejestr nie podaje waluty ani netto/brutto.
+>
+> **Nadal otwarte (bez wpisu w CHANGELOG):** porównanie przepisu znowelizowanego w ostatnich 90 dniach
+> z aktem zmieniającym (k.p.c. DU 2026/830, 2026/1003); przepis utracił moc po wyroku TK; indeksy w k.k.
+> (178a, 190a); kwoty obok cyfr przypisów; treść załączników i tabel; `struktura` a spis treści PDF;
+> zerowe wyniki i `--haslo`; „Stan prawny na” a preambuła PDF; data „Ogłoszono” w M.P. przy różnych
+> datach; ponowny pomiar przestarzałego cache'u `limit=100000`; host ZP; AIA dla LS/LD; wybór wersji
+> skonsolidowanej i rozbieżność PL/EN w EUR-Lex; luki pokrycia SAOS; NIP/REGON i daty w rejestrze umów
+> wobec interfejsu rejestru oraz kompletność `najnowsze`.
+
 Cel: sprawdzić, czy to, co zwracają silniki, jest w 100% prawdą — nie jakość kodu, tylko **zgodność z niezależnym źródłem urzędowym**.
 
 **Metoda.** 15 agentów w trzech fazach: (1) siedem sond, po jednej na silnik, wykonywało komendy na żywo i porównywało każde

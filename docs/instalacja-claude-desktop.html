@@ -220,7 +220,7 @@
   <strong>jamarpl21/prawo-pl-eli</strong> w aplikacjach desktopowych (Mac/Windows):
   <strong>Claude Desktop</strong> i <strong>ChatGPT Desktop</strong>. Bez terminala
   i bez pobierania plików — wystarczy <strong>wkleić adres repozytorium</strong>
-  w ustawieniach aplikacji. Wszystkie sześć skilli instaluje się w ~2 minuty.</p>
+  w ustawieniach aplikacji. Wszystkie osiem skilli instaluje się w ~2 minuty.</p>
 
   <div class="skill-badges">
     <span class="badge">prawo-pl-eli</span>
@@ -229,6 +229,8 @@
     <span class="badge">prawo-pl-saos</span>
     <span class="badge">prawo-pl-cbosa</span>
     <span class="badge">prawo-pl-uodo</span>
+    <span class="badge">prawo-pl-rejestr-umow</span>
+    <span class="badge">prawo-pl-orzeczenia-ms</span>
   </div>
 
   <h2>Claude Desktop</h2>
@@ -288,12 +290,12 @@
     <div>
       <h3>Wybierz skille i zainstaluj</h3>
       <p>Z wczytanego katalogu wybierz pluginy, które chcesz mieć, i kliknij
-      <kbd class="ui">Install</kbd> przy każdym. Możesz zainstalować wszystkie sześć
+      <kbd class="ui">Install</kbd> przy każdym. Możesz zainstalować wszystkie osiem
       albo tylko te potrzebne — np. samo <code>prawo-pl-eli</code> (ustawy) i
       <code>prawo-pl-saos</code> (orzecznictwo).</p>
       <div class="mock" role="img" aria-label="Makieta katalogu pluginów z przyciskami Install">
         <div class="mock-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>
-          <span class="mock-title">gibek-skills · 6 pluginów</span></div>
+          <span class="mock-title">gibek-skills · 8 pluginów</span></div>
         <div class="mock-body">
           <div class="mock-row">
             <span class="lbl">prawo-pl-eli
@@ -341,8 +343,10 @@
     <b class="t">Ograniczenie: dostęp do internetu</b>
     <p>Skille z tego repozytorium odpytują publiczne API (Sejm, SAOS, EUR-Lex…). W zwykłym
     czacie Claude wykonuje kod w piaskownicy, która może nie mieć dostępu do tych serwerów —
-    wtedy skill się załaduje, ale nie pobierze danych. Pełną funkcjonalność daje
-    <strong>Cowork</strong> (wykonywanie na Twoim komputerze).</p>
+    wtedy skill się załaduje, ale nie pobierze danych. Gdy piaskownica nie widzi plików pluginu,
+    skill sam pobiera swój helper z repozytorium (dokładnie swoją wersję, sprawdzaną sumą SHA-256
+    zapisaną w SKILL.md) — do tego potrzebny jest dostęp do <code>raw.githubusercontent.com</code>
+    i do API źródeł. Bez sieci skill nie uruchomi helpera i powie to wprost.</p>
   </div>
 
   <h2>ChatGPT Desktop (tryby Work i Codex)</h2>
@@ -433,8 +437,8 @@
     </tr>
     <tr>
       <td>Skill działa, ale nie pobiera danych</td>
-      <td>Piaskownica czatu nie ma dostępu do API — użyj Cowork
-      (ramka wyżej).</td>
+      <td>Piaskownica czatu nie ma dostępu do API albo do
+      <code>raw.githubusercontent.com</code> — użyj środowiska z dostępem do sieci (ramka wyżej).</td>
     </tr>
     <tr>
       <td>ChatGPT: plugin widać, skille nieaktywne</td>
