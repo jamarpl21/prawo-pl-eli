@@ -247,7 +247,9 @@ def html_to_text(html):
 # ---------------------------------------------------------------------------------------------
 # Urzędowy PDF → tekst (gdy API ma textHTML=false: np. k.c. DU 2026 795, Konstytucja DU 1997 483)
 # ---------------------------------------------------------------------------------------------
-_PDF_NAGLOWEK = re.compile(r"^\s*(©\s*Kancelaria Sejmu|(Dziennik Ustaw|Monitor Polski)\s+–\s*\d+\s*–)")
+# „Dziennik Ustaw Nr 105        — 7006 —        Poz. 990 i 991" — nagłówek strony zeszytu z lat do 2011
+_PDF_NAGLOWEK = re.compile(r"^\s*(©\s*Kancelaria Sejmu|(Dziennik Ustaw|Monitor Polski)\s+–\s*\d+\s*–"
+                           r"|(Dziennik Ustaw|Monitor Polski)\s+Nr\s+\d+\s+[—–]\s*\d+\s*[—–])")
 _PDF_STOPKA = re.compile(r"^\s*(\d{4}-\d{2}-\d{2}|–?\s*\d{1,4}\s*–?)\s*$")
 _PDF_PRZYPIS = re.compile(r"^(\d{1,3})\)(?:\s+(.*))?$")
 # glued odsyłacz do przypisu: „§ 1.3)", „(uchylony)5)", „chemicznych2)" — cyfry + „)" sklejone
@@ -439,6 +441,111 @@ def pdf_layout_do_tekstu(raw):
     t = "\n".join(out)
     t = re.sub(r"\n{3,}", "\n\n", t)
     return t.strip()
+
+
+# Dz.U. i M.P. 2000–2011: PDF ogłoszonego aktu (typ O) to strony całego zeszytu, złożone w dwóch łamach, więc
+# zawiera też akty wydrukowane na tych samych stronach. W latach 2000–2009 polskie litery są w fontach
+# QuarkXPress „…PL" z kodami Mac Central European, które PDF opisuje jako Mac Roman: pdftotext daje
+# „Za∏àcznik", „rozporzàdzenia", „wyp∏at´". Tabela zmienia też prawdziwe „à", „ç", „è" (np. francuskie
+# teksty umów), dlatego tylko dla tych lat.
+_MAC_CE = str.maketrans({bytes([b]).decode("mac_roman"): bytes([b]).decode("mac_latin2")
+                         for b in range(128, 256) if bytes([b]).decode("mac_latin2") in "ąćęłńśźżĄĆĘŁŃŚŹŻ"})
+# pionowy znak wodny www.rcl.gov.pl na stronach z lat 2010–2011 biegnie przez rynnę; -layout daje go
+# jako osobne wiersze po 1–3 znaki („.go", „v.p", „rcl")
+_ZNAK_WODNY = set("www.rcl.gov.pl")
+_PDF_MIN_LAM = 0.35   # wiersz tylko na lewo od rynny, a zaczyna się dalej niż tyle szerokości strony = wyśrodkowany
+_PDF_RYNNA_WOLNE = 0.5   # rynna: tyle niepustych wierszy strony ma w niej spację…
+_PDF_RYNNA_OBA = 0.15    # …a tyle ma tekst po obu jej stronach
+
+
+def _pdf_bez_znaku_wodnego(raw):
+    out = []
+    for l in raw.split("\n"):
+        t = l.strip("\f ")
+        if t and len(t) <= 3 and set(t) <= _ZNAK_WODNY:
+            l = "\f" if l.startswith("\f") else ""
+        out.append(l)
+    return "\n".join(out)
+
+
+def _pdf_lamy(strona):
+    """Strona z `pdftotext -layout` złożona w dwóch łamach → najpierw lewy łam, potem prawy.
+
+    -layout stawia łamy obok siebie, więc sklejanie wierszy mieszałoby je („ustawy z dnia § 4. 1. Minimalna
+    norma"). Rynna = kolumna znaków, w której (z sąsiednią) prawie każdy wiersz ma spację. Wiersze przez nią
+    przechodzące (tytuł aktu, tabela na całą szerokość), nagłówek strony i wiersze wyśrodkowane (numer pozycji aktu)
+    zostają na swoim miejscu i dzielą stronę na bloki; każdy blok to lewy łam, potem prawy, oba bez wcięcia
+    strony. Strona bez takiej rynny wraca bez zmian.
+    """
+    lines = strona.split("\n")
+    niepuste = [l for l in lines if l.strip()]
+    if len(niepuste) < 8:
+        return strona
+    szer = max(len(l.rstrip()) for l in niepuste)
+
+    def wolne(l, x):
+        return all(x + k >= len(l) or l[x + k] == " " for k in (0, 1))
+    najl, rynna = 0, None
+    for x in range(int(szer * 0.35), int(szer * 0.65)):
+        w = sum(wolne(l, x) for l in niepuste)
+        oba = sum(wolne(l, x) and l[:x].strip() != "" and l[x:].strip() != "" for l in niepuste)
+        if oba >= _PDF_RYNNA_OBA * len(niepuste) and w > najl:
+            najl, rynna = w, x
+    if rynna is None or najl < _PDF_RYNNA_WOLNE * len(niepuste):
+        return strona
+
+    def w_lamie(l):
+        if not wolne(l, rynna) or _PDF_NAGLOWEK.match(l):
+            return False
+        return bool(l[rynna:].strip()) or len(l) - len(l.lstrip(" ")) < _PDF_MIN_LAM * szer
+
+    def bez_wciecia(ws):
+        wc = min((len(l) - len(l.lstrip(" ")) for l in ws if l.strip()), default=0)
+        return [l[wc:].rstrip() for l in ws]
+    out, blok = [], []
+
+    def zamknij():
+        if not any(l.strip() for l in blok):
+            out.extend(blok)
+        else:
+            out.extend(bez_wciecia([l[:rynna] for l in blok]))
+            out.extend(bez_wciecia([l[rynna:] for l in blok]))
+        blok.clear()
+    for l in lines:
+        if not l.strip() or w_lamie(l):
+            blok.append(l)
+        else:
+            zamknij()
+            out.append(l)
+    zamknij()
+    return "\n".join(out)
+
+
+def _pdf_wytnij_akt(raw, poz):
+    """Tekst zeszytu → tylko akt poz. `poz`: od wiersza z samym numerem pozycji (nad tytułem aktu) do
+    wiersza z numerem następnej pozycji albo do końca. Bez znalezionego numeru tekst wraca bez zmian."""
+    lines = raw.split("\n")
+
+    def numer(i, n):
+        if lines[i].strip("\f ") != str(n):
+            return False
+        dalej = next((l.strip("\f ") for l in lines[i + 1:i + 9] if l.strip("\f ")), "")
+        return dalej[:1].isupper()
+    od = next((i for i in range(len(lines)) if numer(i, poz)), None)
+    if od is None:
+        return raw
+    do = next((i for i in range(od + 1, len(lines)) if numer(i, poz + 1)), len(lines))
+    return "\n".join(lines[od:do])
+
+
+def pdf_zeszyt_do_aktu(raw, rok, poz):
+    """`pdftotext -layout` PDF-u ogłoszonego aktu Dz.U./M.P. 2000–2011 → tekst tylko tego aktu, łam po łamie,
+    z polskimi literami (2000–2009). Wynik idzie dalej do `pdf_layout_do_tekstu`."""
+    raw = _pdf_bez_znaku_wodnego(raw)
+    if rok <= 2009:
+        raw = raw.translate(_MAC_CE)
+    raw = "\f".join(_pdf_lamy(s) for s in raw.split("\f"))
+    return _pdf_wytnij_akt(raw, poz) if poz else raw
 
 
 def _wybierz_pdf(meta):
@@ -924,6 +1031,10 @@ def _tekst_z_pdf(path, label, meta):
     except VerificationUnknown as e:
         return "", url, str(e)
     raw = pdf_do_tekstu_layout(data)
+    rok = meta.get("year")
+    if raw and pick["type"] == "O" and meta.get("publisher") in ("DU", "MP") and isinstance(rok, int) \
+            and 2000 <= rok <= 2011:
+        raw = pdf_zeszyt_do_aktu(raw, rok, meta.get("pos"))
     txt = pdf_layout_do_tekstu(raw) if raw else ""
     if not txt:
         return "", url, "pdftotext nie zwrócił tekstu (PDF bez warstwy tekstowej albo błąd konwersji)"

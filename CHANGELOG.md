@@ -2,6 +2,11 @@
 
 ## Niewydane
 
+- ELI: `tekst` dla aktów Dz.U. i M.P. 2000–2011 bez HTML (czytanych z ogłoszonego PDF; M.P. z tych lat nie ma HTML wcale) zwraca tekst samego aktu, łam po łamie. Dotąd `pdftotext -layout` stawiał dwa łamy obok siebie i sklejanie wierszy je mieszało („ustawy z dnia § 4. 1. Minimalna norma"), a tekst zawierał też akty wydrukowane na tych samych stronach zeszytu (`tekst DU 2003 991` zaczynał się od załącznika do poz. 990).
+- ELI: w aktach Dz.U. i M.P. 2000–2009 z PDF polskie litery są poprawne („Załącznik", „rozporządzenia" zamiast „Za∏àcznik", „rozporzàdzenia"), więc `--fragment` znajduje frazy z polskimi literami. Usuwane są też nagłówki stron zeszytu („Dziennik Ustaw Nr 105 — 7006 — Poz. 990 i 991") i znak wodny www.rcl.gov.pl (2010–2011).
+- Na 58 losowych aktach Dz.U. 2000–2011 z HTML (wzorzec) odsetek słów HTML we właściwej kolejności (najdłuższy wspólny podciąg słów) wzrósł z 0,405 do 0,891, a udział słów wyniku w tym podciągu z 0,335 do 0,856. Na 12 losowych aktach M.P. 2000–2011 (bez HTML, więc bez tej miary) znaki „∏", „Ê", „˝" itp. znikły we wszystkich 9 aktach 2000–2008, które je miały, a akt został wycięty we wszystkich 12. Akty z PDF tekstu ujednoliconego (typ U/T) i lata spoza 2000–2011 są czytane jak dotąd.
+- Dodano 8 testów na skróconym zeszycie Dz.U. 2003 Nr 105.
+
 ## 2.1.0 — 2026-09-20
 
 - Dodano ósmy plugin `prawo-pl-orzeczenia-ms`: wyszukiwanie orzeczeń SA/SO/SR bezpośrednio w Portalu Orzeczeń MS, metryki, pełne uzasadnienia, powołane przepisy, eksport PDF i kanały RSS.

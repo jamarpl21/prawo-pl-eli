@@ -1170,6 +1170,119 @@ class TestAudyt2026TekstZPdf(unittest.TestCase):
         self.assertIn("/text/U/D19970483Lj.pdf", out.getvalue())
 
 
+def _dwa_lamy(wiersze):
+    """[(lewy łam, prawy łam)] → wiersze jak z `pdftotext -layout` (łamy obok siebie, rynna od kol. 52)."""
+    return "\n".join(("    " + l).ljust(56) + p if p else "    " + l for l, p in wiersze) + "\n"
+
+
+# Zeszyt Dz.U. 2003 Nr 105 (skrócony): koniec poz. 990, poz. 991 w dwóch łamach, początek poz. 992.
+# Litery jak z pdftotext dla fontów „…PL" z lat 2000–2009 (kody Mac CE opisane jako Mac Roman).
+PDF_ZESZYT_2003 = (
+    "Dziennik Ustaw Nr 105                         — 7006 —                            Poz. 990 i 991\n"
+    "\n"
+    "Za∏àczniki:\n"
+    "1. Potwierdzenie wp∏aty sk∏adki rocznej do Funduszu ˚eglugi Âródlàdowej przez wnioskodawc´ za dany rok.\n"
+    "\n"
+    "                                                  991\n"
+    "                                    ROZPORZÑDZENIE MINISTRA KULTURY\n"
+    "\n"
+    "                                         z dnia 2 czerwca 2003 r.\n"
+    "   w sprawie okreÊlenia kategorii urzàdzeƒ i noÊników s∏u˝àcych do utrwalania utworów oraz op∏at\n"
+    "\n"
+    + _dwa_lamy([
+        ("Na podstawie art. 20 ust. 5 ustawy z dnia", "§ 1. Rozporzàdzenie okreÊla:"),
+        ("4 lutego 1994 r. o prawie autorskim i pra-", "1) kategorie urzàdzeƒ i czystych noÊników"),
+        ("wach pokrewnych (Dz. U. z 2000 r. Nr 80,", "   s∏u˝àcych do utrwalania utworów;"),
+        ("poz. 904) zarzàdza si´, co nast´puje:", "2) wysokoÊç op∏at od urzàdzeƒ i noÊników,"),
+        ("", "   o których mowa w pkt 1."),
+    ])
+    + "\f"
+    "Dziennik Ustaw Nr 105                         — 7007 —                            Poz. 991 i 992\n"
+    "\n"
+    + _dwa_lamy([
+        ("§ 2. Op∏ata od magnetofonów wynosi 3 %", "§ 3. Rozporzàdzenie wchodzi w ˝ycie po"),
+        ("ceny sprzeda˝y.", "up∏ywie 14 dni od dnia og∏oszenia."),
+        ("", ""),
+        ("", "Minister Kultury: W. Dàbrowski"),
+    ])
+    + "\n"
+    "                                                  992\n"
+    "                                    ROZPORZÑDZENIE MINISTRA ZDROWIA\n"
+    "\n"
+    + _dwa_lamy([
+        ("Na podstawie art. 7 ustawy o Êrodkach", "§ 2. Rozporzàdzenie wchodzi w ˝ycie"),
+        ("farmaceutycznych zarzàdza si´, co nast´puje:", "z dniem og∏oszenia."),
+        ("§ 1. Wykaz leków stanowi za∏àcznik.", ""),
+    ]))
+
+
+class TestPdfZeszytDzU2000_2011(unittest.TestCase):
+    """PDF ogłoszonego aktu Dz.U./M.P. 2000–2011 to strony zeszytu w dwóch łamach (z sąsiednimi aktami);
+    w 2000–2009 polskie litery w kodach Mac CE opisanych jako Mac Roman."""
+
+    def setUp(self):
+        self.t = eli.pdf_layout_do_tekstu(eli.pdf_zeszyt_do_aktu(PDF_ZESZYT_2003, 2003, 991))
+
+    def test_polskie_litery(self):
+        self.assertIn("ROZPORZĄDZENIE MINISTRA KULTURY", self.t)
+        self.assertIn("w sprawie określenia kategorii urządzeń i nośników służących", self.t)
+        for zle in ("∏", "à", "Ê", "´", "˝", "ƒ"):
+            self.assertNotIn(zle, self.t, zle)
+
+    def test_lamy_po_kolei(self):
+        self.assertIn("Na podstawie art. 20 ust. 5 ustawy z dnia 4 lutego 1994 r. o prawie autorskim i prawach "
+                      "pokrewnych (Dz. U. z 2000 r. Nr 80, poz. 904) zarządza się, co następuje:", self.t)
+        self.assertIn("\n§ 1. Rozporządzenie określa:\n1) kategorie urządzeń i czystych nośników służących do "
+                      "utrwalania utworów;\n2) wysokość opłat od urządzeń i nośników, o których mowa w pkt 1.", self.t)
+        self.assertLess(self.t.index("§ 2. Opłata"), self.t.index("§ 3. Rozporządzenie"))
+
+    def test_tylko_ten_akt_bez_naglowkow_zeszytu(self):
+        self.assertTrue(self.t.startswith("991\n"), self.t[:40])
+        for obce in ("Załączniki", "Funduszu Żeglugi", "992", "MINISTRA ZDROWIA", "Wykaz leków",
+                     "Dziennik Ustaw", "— 7007 —"):
+            self.assertNotIn(obce, self.t, obce)
+        self.assertIn("Minister Kultury: W. Dąbrowski", self.t)
+
+    def test_fragment_po_polskiej_frazie(self):
+        frag = [self.t[s:e] for s, e in eli._fragmenty(self.t, "§ 3")]
+        self.assertEqual(len(frag), 1)
+        self.assertIn("wchodzi w życie po upływie 14 dni od dnia ogłoszenia", frag[0])
+
+    def test_znak_wodny_2010_2011_i_bez_tabeli_liter(self):
+        raw = PDF_ZESZYT_2003.replace("\n\n                                         z dnia",
+                                      "\n                    .go\n                                         z dnia")
+        t = eli.pdf_layout_do_tekstu(eli.pdf_zeszyt_do_aktu(raw, 2010, 991))
+        self.assertNotIn(".go", t)
+        self.assertIn("ROZPORZÑDZENIE", t)         # 2010–2011: litery są poprawne, tabela ich nie rusza
+        self.assertNotIn("MINISTRA ZDROWIA", t)
+
+    def test_bez_numeru_pozycji_tekst_caly(self):
+        t = eli.pdf_layout_do_tekstu(eli.pdf_zeszyt_do_aktu(PDF_ZESZYT_2003, 2003, 995))
+        self.assertIn("Załączniki", t)
+        self.assertIn("MINISTRA ZDROWIA", t)
+        self.assertIn("prawach pokrewnych", t)
+
+    def test_strona_w_jednym_lamie_bez_zmian(self):
+        for strona in PDF_LAYOUT.split("\f"):
+            self.assertEqual(eli._pdf_lamy(strona), strona)
+
+    def test_tekst_z_pdf_tylko_dla_ogloszonego_aktu_2000_2011(self):
+        def tekst(meta):
+            with mock.patch.object(eli, "_get_bytes", return_value=b"%PDF"), \
+                    mock.patch.object(eli, "pdftotext_dostepny", return_value=True), \
+                    mock.patch.object(eli, "pdf_do_tekstu_layout", return_value=PDF_ZESZYT_2003):
+                return eli._tekst_z_pdf("/acts/DU/%s/%s" % (meta["year"], meta["pos"]), "", meta)[0]
+        o = {"publisher": "DU", "year": 2003, "pos": 991, "texts": [{"fileName": "D20030991.pdf", "type": "O"}]}
+        for ten in (o, dict(o, publisher="MP")):
+            with self.subTest(meta=ten):
+                self.assertIn("ROZPORZĄDZENIE MINISTRA KULTURY", tekst(ten))
+                self.assertNotIn("MINISTRA ZDROWIA", tekst(ten))
+        for inny in (dict(o, year=2012), dict(o, year=1999),
+                     dict(o, texts=[{"fileName": "D20030991Lj.pdf", "type": "U"}])):
+            with self.subTest(meta=inny):
+                self.assertIn("MINISTRA ZDROWIA", tekst(inny))   # bez zmian: cały tekst jak dotąd
+
+
 class TestAudyt2026Cache(unittest.TestCase):
     def test_get_bez_parametrow_jest_cache_owany_a_z_parametrami_nie(self):
         eli._CACHE.clear()

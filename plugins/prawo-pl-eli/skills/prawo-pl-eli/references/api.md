@@ -59,7 +59,10 @@ t.j. DU/2026/468, świeże pozycje (DU/2026/694). Helper `tekst` czyta wtedy WŁ
 typ U > T > O) przez `pdftotext -layout` i czyści go (nagłówki „Dziennik Ustaw – N – Poz. X"/„©Kancelaria
 Sejmu", stopki z datą, sklejanie zawiniętych wierszy i dzielonych wyrazów, indeks górny `68[1]` → „68 1" jak
 w HTML, odsyłacze do przypisów „§ 1.3)" → „§ 1." + linia `[przypis 3)] …` z dołu strony, obwieszczenie sprzed
-załącznika oznaczone „» "). Bez `pdftotext` helper sięga po najnowszy STARSZY t.j. z HTML — z nagłówkiem
+załącznika oznaczone „» "). Ogłoszony PDF (typ O) aktu Dz.U. i M.P. 2000–2011 to strony całego zeszytu w dwóch
+łamach: helper czyta łamy po kolei, wycina akt od wiersza z numerem jego pozycji do numeru następnej, usuwa
+nagłówki „Dziennik Ustaw Nr N — S — Poz. X"/„Monitor Polski Nr N — S — Poz. X" i znak wodny www.rcl.gov.pl (2010–2011), a w 2000–2009 poprawia
+polskie litery (fonty „…PL" w kodach Mac CE opisanych jako Mac Roman: „Za∏àcznik" → „Załącznik"). Bez `pdftotext` helper sięga po najnowszy STARSZY t.j. z HTML — z nagłówkiem
 „NIEAKTUALNE BRZMIENIE MOŻLIWE" i listą zmian aktu bazowego po jego `legalStatusDate`; `--strict` to blokuje.
 
 ### Kody `type` w `texts[]`
