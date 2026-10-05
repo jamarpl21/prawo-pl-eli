@@ -6,7 +6,9 @@ import io
 import json
 import sys
 import importlib.util
+import http.client
 import pathlib
+import socket
 import ssl
 import unittest
 import urllib.error
@@ -840,6 +842,96 @@ class TestOrganIAnonimizacja(unittest.TestCase):
     def test_samo_organ_jest_kryterium(self):
         _, msg, _ = self._uruchom(["szukaj", "--organ", "UODO"], self.HTML_ZERO)
         self.assertNotIn("Podaj kryterium", msg)
+
+
+class TestDiagnozaBleduSieci(unittest.TestCase):
+    """Błąd sieci ≠ „serwer CBOSA ucina połączenia": proxy piaskownicy, brak DNS/sieci, awaria
+    serwera i timeout dostają osobną diagnozę i poradę (dawniej każdy był „winą CBOSA")."""
+
+    def _fetch(self, blad, proxy=None):
+        opener = mock.Mock()
+        opener.open.side_effect = blad
+        spanie = []
+        cbosa._ostatnie[0] = 0.0
+        with mock.patch.object(cbosa.urllib.request, "build_opener", return_value=opener), \
+                mock.patch.object(cbosa.urllib.request, "getproxies", return_value=proxy or {}), \
+                mock.patch.object(cbosa.time, "sleep", side_effect=spanie.append):
+            with self.assertRaises(cbosa.VerificationUnknown) as caught:
+                cbosa._fetch("/cbo/search", data={"submit": "Szukaj"})
+        return caught.exception, opener.open.call_count, sum(s for s in spanie if s > 0.5)
+
+    def test_proxy_odrzuca_tunel_to_blokada_srodowiska_bez_ponawiania(self):
+        e, proby, czekanie = self._fetch(urllib.error.URLError(
+            OSError("Tunnel connection failed: 403 Forbidden")))
+        self.assertIn("blokada środowiska", str(e))
+        self.assertNotIn("ucina", str(e))
+        self.assertIn("Ponawianie nic nie da", e.porada)
+        self.assertEqual(proby, 1)
+        self.assertEqual(czekanie, 0)
+
+    def test_brak_dns_to_brak_sieci_z_jedna_krotka_proba(self):
+        e, proby, czekanie = self._fetch(urllib.error.URLError(
+            socket.gaierror(8, "nodename nor servname provided, or not known")))
+        self.assertIn("brak sieci w tym środowisku", str(e))
+        self.assertNotIn("ucina", str(e))
+        self.assertIn("nie serwera CBOSA", e.porada)
+        self.assertEqual(proby, 2)
+        self.assertLess(czekanie, 5)
+
+    def test_polaczenie_odrzucone_bez_proxy_to_brak_sieci(self):
+        e, _, _ = self._fetch(urllib.error.URLError(ConnectionRefusedError(61, "Connection refused")))
+        self.assertIn("brak sieci", str(e))
+
+    def test_polaczenie_odrzucone_przy_proxy_to_srodowisko(self):
+        # przy ustawionym HTTPS_PROXY łączymy się z proxy, nie z CBOSA
+        e, proby, _ = self._fetch(urllib.error.URLError(ConnectionRefusedError(61, "Connection refused")),
+                                  proxy={"https": "http://127.0.0.1:9"})
+        self.assertIn("blokada środowiska", str(e))
+        self.assertEqual(proby, 1)
+
+    def test_zerwane_polaczenie_to_awaria_serwera_po_26_s(self):
+        for blad in (http.client.RemoteDisconnected("Remote end closed connection without response"),
+                     urllib.error.URLError(ConnectionResetError(54, "Connection reset by peer")),
+                     urllib.error.URLError(BrokenPipeError(32, "Broken pipe")),
+                     urllib.error.URLError(ssl.SSLEOFError(8, "EOF occurred in violation of protocol"))):
+            with self.subTest(blad=repr(blad)):
+                e, proby, czekanie = self._fetch(blad)
+                self.assertIn("awaria po stronie serwera CBOSA", str(e))
+                self.assertIn("kilka–kilkanaście minut", e.porada)
+                self.assertRegex(e.porada, r"sprawdzono o \d\d:\d\d")
+                self.assertEqual(proby, 5)
+                self.assertGreaterEqual(czekanie, 26)
+
+    def test_http_5xx_to_awaria_serwera(self):
+        err = urllib.error.HTTPError("https://orzeczenia.nsa.gov.pl/cbo/search", 503,
+                                     "Service Unavailable", {}, None)
+        e, proby, czekanie = self._fetch(err)
+        self.assertIn("awaria po stronie serwera CBOSA", str(e))
+        self.assertIn("HTTP 503", str(e))
+        self.assertIn("21:00", e.porada)
+        self.assertEqual(proby, 5)
+        self.assertGreaterEqual(czekanie, 26)
+
+    def test_timeout_opisany_uczciwie(self):
+        e, proby, _ = self._fetch(urllib.error.URLError(socket.timeout("timed out")))
+        self.assertIn("serwer CBOSA odpowiada wolno albo łącze jest niestabilne", str(e))
+        self.assertEqual(proby, 5)
+
+    def test_main_podaje_porade_zamiast_ogolnika(self):
+        blad = cbosa.VerificationUnknown("blokada środowiska", porada="PORADA-X")
+        with mock.patch.object(cbosa, "_fetch", side_effect=blad), \
+                mock.patch.object(sys, "argv", ["cbosa.py", "szukaj", "RODO"]):
+            with self.assertRaises(SystemExit) as caught:
+                cbosa.main()
+        self.assertIn("PORADA-X", str(caught.exception.code))
+        self.assertNotIn("za chwilę", str(caught.exception.code))
+
+    def test_main_bez_porady_zostaje_ogolnik(self):
+        with mock.patch.object(cbosa, "_fetch", side_effect=cbosa.VerificationUnknown("x")), \
+                mock.patch.object(sys, "argv", ["cbosa.py", "szukaj", "RODO"]):
+            with self.assertRaises(SystemExit) as caught:
+                cbosa.main()
+        self.assertIn("Spróbuj ponownie za chwilę", str(caught.exception.code))
 
 
 if __name__ == "__main__":

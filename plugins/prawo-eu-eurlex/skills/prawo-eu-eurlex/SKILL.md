@@ -116,6 +116,16 @@ wersje skonsolidowane `02016R0679-20160504`, sprostowania `32016R0679R(01)`, tra
   i PDF pod innym plikiem niż `DOC_1` — `tekst` i `--pdf` pobierają je normalnie. 404 na akcie
   bazowym narzędzie wyjaśnia: „sprawdź numer CELEX" tylko gdy aktu nie ma w metadanych; gdy akt
   istnieje, mówi, czego brakuje (języka → `--jezyk`, HTML → `--pdf`).
+  **Akt tylko w PDF.** Część starszych aktów CELLAR ma w danym języku WYŁĄCZNIE PDF (np. polskie
+  wydanie specjalne Dz.Urz. UE: `32004R0883`, `32004L0037`, `31994R0114`). Wtedy `tekst` (także
+  z `--fragment`) czyta urzędowy PDF przez `pdftotext -layout` (poppler; opcjonalny: `brew install
+  poppler` / `apt install poppler-utils`): nagłówek „tekst z urzędowego PDF przez pdftotext -layout",
+  linia `EURLEX_TEXT_SOURCE_PDF=<URL>` ze źródłem, łamy rozdzielone, zawinięte wiersze i dzielone
+  wyrazy sklejone, nagłówki stron usunięte, przypisy zebrane na końcu (fragment artykułu ich nie
+  ciągnie). Tabele bywają rozsypane, a tekst PDF bywa wadliwy (883/2004: dwa razy „1." w art. 11 —
+  to treść PDF, poprawiona sprostowaniem) — do dosłownego cytatu weź `--pdf`. Bez pdftotext
+  zostaje komunikat z odesłaniem do `--pdf`. `--strict` przepuszcza tekst z WŁASNEGO PDF aktu,
+  ale dalej blokuje akt ze sprostowaniem albo wersją skonsolidowaną.
   **Sprostowania.** Tekst aktu bazowego (i jego PDF) to brzmienie z Dz.U. SPRZED sprostowań. Gdy
   w danym języku istnieje sprostowanie (`…R(nn)`), `tekst` wypisuje je (CELEX, data, poprawione
   artykuły) i wskazuje wersję skonsolidowaną, która je zawiera; przy `--fragment "art. N"`

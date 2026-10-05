@@ -21,6 +21,13 @@ Wszystko publiczne, bez klucza. Read-only.
   ?mtype . ?item cdm:item_belongs_to_manifestation ?man` (typy: `xhtml`, `html`, `pdfa2a`, `pdfa1a`,
   `pdfa1b`, `pdf`, `fmx4`; `print` nie ma plików). Negocjacja `Accept: application/pdf` działa
   niekonsekwentnie (32002L0058 → 303 na DOC_2, 32016R0679 → 404), więc jest tylko zapasem.
+  **Akty tylko w PDF** (sprawdzone na żywo 2026-10-05): część aktów ma w języku pol manifestacje
+  wyłącznie `pdf` + `print`, bez `html`/`xhtml` — m.in. 32004R0883, 32004L0037, 32004L0040,
+  32004D0804, 31994R0114 (wydanie specjalne Dz.Urz. UE; HTML jest tylko w części innych języków).
+  Silnik czyta wtedy PDF przez `pdftotext -layout` i rozdziela dwa łamy strony (rynna = kolumna
+  spacji między łamami); nagłówki stron: wydanie specjalne („72  PL  Dziennik Urzędowy Unii
+  Europejskiej  05/t. 5"), CELEX nad aktem, nagłówek pierwotnego Dz.Urz. („30.4.2004  DZIENNIK
+  URZĘDOWY UNII EUROPEJSKIEJ  L 166/1").
 - **Struktura XHTML** (do cięcia fragmentów): artykuł = `div.eli-subdivision#art_N`; akt bazowy —
   formuła końcowa i podpisy w `div.oj-final` (`p` „Sporządzono w…", `div.oj-signatory`), przypisy
   po `hr.oj-note` jako `p.oj-note`; wersja skonsolidowana — formuła w `div#fnp_1`, przypisy jako

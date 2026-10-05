@@ -96,8 +96,15 @@ nadzwyczajna), aktualności powołanych przepisów (→ ELI), ani tego, czy NSA 
 
 ## Wskazówki
 
-- **Throttling ≥0,5 s** między żądaniami (wbudowany). Serwer bywa przeciążony i ucina połączenia bez
-  odpowiedzi — silnik ponawia z rosnącym odstępem; nie zrównoleglaj zapytań.
+- **Throttling ≥0,5 s** między żądaniami (wbudowany, w obrębie jednego wywołania). Serwer bywa
+  przeciążony i ucina połączenia bez odpowiedzi — silnik ponawia z rosnącym odstępem (~26 s);
+  nie zrównoleglaj zapytań (także z kilku agentów naraz).
+- **Diagnoza błędów sieci** (`_diagnoza` w silniku): odrzucenie przez proxy („Tunnel connection
+  failed: 403”, albo brak połączenia przy ustawionym proxy) = blokada środowiska, bez ponawiania;
+  DNS / połączenie odrzucone / sieć nieosiągalna = brak sieci w środowisku (jedna krótka
+  ponowna próba); połączenie zerwane po nawiązaniu (RemoteDisconnected, reset, broken pipe, EOF
+  w TLS) albo HTTP 5xx = awaria serwera CBOSA (pełne ponawianie, potem „ponów za kilka–kilkanaście
+  minut”); timeout = wolny serwer albo niestabilne łącze.
 - **SSL:** gdy system nie potrafi zweryfikować łańcucha certyfikatów CBOSA, domyślnym wynikiem jest
   `UNKNOWN`, bez automatycznego obniżenia zabezpieczeń. Jednorazowy, świadomy opt-in
   `CBOSA_INSECURE_TLS=1 python3 scripts/cbosa.py ...` pozwala ponowić żądanie bez weryfikacji TLS.

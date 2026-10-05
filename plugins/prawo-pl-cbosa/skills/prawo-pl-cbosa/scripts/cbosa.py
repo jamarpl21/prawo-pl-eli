@@ -31,8 +31,8 @@ Prawomocność: strona /doc/{id} niesie w wierszu „Data orzeczenia" kursywę �
 / „orzeczenie nieprawomocne". Silnik ją parsuje (pole JSON `prawomocne`: true/false/null) — lista
 wyników wyszukiwarki tego oznaczenia NIE ma, więc flaga jest dostępna tylko przez `orzeczenie`.
 """
-import sys, os, json, re, time, argparse, ssl, calendar, html as html_mod
-import urllib.request, urllib.parse, urllib.error, http.cookiejar
+import sys, os, json, re, time, argparse, ssl, socket, calendar, html as html_mod
+import urllib.request, urllib.parse, urllib.error, http.client, http.cookiejar
 
 __version__ = "2.1.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://orzeczenia.nsa.gov.pl"
@@ -40,7 +40,14 @@ CONTENT_HOSTS = ("orzeczenia.nsa.gov.pl",)
 
 
 class VerificationUnknown(RuntimeError):
-    """Zapytanie nie pozwoliło ustalić, czy dane istnieją."""
+    """Zapytanie nie pozwoliło ustalić, czy dane istnieją.
+
+    `porada` — co zrobić dalej (zależy od przyczyny: blokada środowiska, brak sieci, awaria
+    serwera CBOSA); main() dopisuje ją do komunikatu zamiast ogólnego „spróbuj ponownie"."""
+
+    def __init__(self, *args, porada=None):
+        super().__init__(*args)
+        self.porada = porada
 
 
 def _wymus_https(url):
@@ -175,6 +182,84 @@ def _data(s, koniec=False):
     return f"{rok}-{mm:02d}-{dd:02d}"
 
 
+# ── Diagnoza błędów transportu ──────────────────────────────────────────────────────────
+# Dawniej KAŻDY błąd sieci kończył się dopiskiem „serwer CBOSA ucina połączenia" — także blokada
+# proxy piaskownicy i brak DNS, co odsyłało użytkownika do czekania na naprawę serwera, który działał.
+PROXY, BRAK_SIECI, SERWER, TIMEOUT, INNY = "proxy", "brak_sieci", "serwer", "timeout", "inny"
+_WZORCE_PROXY = ("tunnel connection failed", "proxy")
+_WZORCE_BRAK_SIECI = ("getaddrinfo", "nodename nor servname", "name or service not known",
+                      "temporary failure in name resolution", "no address associated",
+                      "connection refused", "network is unreachable", "no route to host",
+                      "host is unreachable")
+_WZORCE_SERWER = ("remote end closed", "connection reset", "broken pipe", "connection aborted",
+                  "eof occurred in violation", "unexpected eof", "incompleteread",
+                  "remotedisconnected", "badstatusline")
+
+
+def _diagnoza(e):
+    """Błąd transportu → PROXY / BRAK_SIECI / SERWER / TIMEOUT / INNY.
+
+    urllib owija błędy gniazda w URLError(reason=<OSError>) — rozpakowujemy `reason`. Przy
+    ustawionym proxy (zmienne HTTP(S)_PROXY albo systemowe) brak połączenia to też sprawa
+    środowiska: łączymy się wtedy z proxy, a nie z CBOSA."""
+    if isinstance(e, urllib.error.HTTPError):
+        return SERWER if e.code >= 500 else INNY
+    przyczyna = getattr(e, "reason", None) if isinstance(e, urllib.error.URLError) else e
+    if not isinstance(przyczyna, BaseException):
+        przyczyna = e
+    opis = f"{type(przyczyna).__name__} {przyczyna} {e}".lower()
+    if any(w in opis for w in _WZORCE_PROXY):
+        return PROXY
+    if isinstance(przyczyna, (socket.timeout, TimeoutError)) or "timed out" in opis:
+        return TIMEOUT
+    if isinstance(przyczyna, (socket.gaierror, ConnectionRefusedError)) \
+            or any(w in opis for w in _WZORCE_BRAK_SIECI):
+        try:
+            proxy = bool(urllib.request.getproxies())
+        except Exception:  # noqa: BLE001
+            proxy = False
+        return PROXY if proxy else BRAK_SIECI
+    if isinstance(przyczyna, (http.client.RemoteDisconnected, http.client.IncompleteRead,
+                              http.client.BadStatusLine, ConnectionResetError,
+                              ConnectionAbortedError, BrokenPipeError, ssl.SSLEOFError,
+                              ssl.SSLZeroReturnError)) \
+            or any(w in opis for w in _WZORCE_SERWER):
+        return SERWER
+    return INNY
+
+
+def _blad_transportu(url, e, rodzaj):
+    """VerificationUnknown z prawdziwą diagnozą błędu transportu i poradą dla użytkownika."""
+    godz = time.strftime("%H:%M")
+    if rodzaj == PROXY:
+        return VerificationUnknown(
+            f"blokada środowiska, nie awaria CBOSA: proxy/zapora odrzuca połączenie z "
+            f"orzeczenia.nsa.gov.pl ({e})",
+            porada="Ponawianie nic nie da — to ustawienie środowiska (np. lista dozwolonych hostów "
+                   "piaskownicy albo proxy firmowe). Zgłoś: „CBOSA zablokowana w tym środowisku "
+                   "(proxy)”; nie obchodź blokady innym narzędziem do pobierania stron.")
+    if rodzaj == BRAK_SIECI:
+        return VerificationUnknown(
+            f"brak sieci w tym środowisku — nie da się nawiązać połączenia z orzeczenia.nsa.gov.pl "
+            f"(DNS albo połączenie odrzucone; {e})",
+            porada="To problem łączności środowiska, nie serwera CBOSA — sprawdź połączenie "
+                   "z internetem / DNS i ponów.")
+    if rodzaj == TIMEOUT:
+        return VerificationUnknown(
+            f"przekroczony czas oczekiwania na odpowiedź ({url}; {e}) — serwer CBOSA odpowiada "
+            "wolno albo łącze jest niestabilne",
+            porada=f"Ponów za kilka minut (stan o {godz}); jeśli się powtarza, zgłoś: „CBOSA nie "
+                   f"odpowiada (sprawdzono o {godz})”.")
+    if rodzaj == SERWER:
+        return VerificationUnknown(
+            f"awaria po stronie serwera CBOSA — połączenie zrywane zaraz po nawiązaniu albo "
+            f"błąd 5xx mimo ponawiania przez ~26 s ({url}; {e})",
+            porada=f"Ponów za kilka–kilkanaście minut. Zgłoś: „CBOSA niedostępne (sprawdzono o "
+                   f"{godz})”; CBOSA ma też codzienne krótkie okno serwisowe ok. 21:00. To nie "
+                   "błąd skilla — nie obchodź go własnym pobieraniem stron.")
+    return VerificationUnknown(f"błąd sieci: {url} ({e})")
+
+
 # ── HTTP: throttling, ciasteczka sesji (paginacja), jawny opt-in TLS ────────────────────
 _jar = http.cookiejar.CookieJar()
 _ostatnie = [0.0]
@@ -240,6 +325,19 @@ def _opis_braku_oznaczenia(d):
             "(zmiana układu strony?)")
 
 
+def _ponow(url, e, odstep):
+    """Po błędzie transportu: True = odczekaj `odstep` i ponów; inaczej VerificationUnknown.
+
+    Blokada proxy jest deterministyczna — bez ponawiania. Brak sieci/DNS — jedna krótka próba
+    (chwilowa czkawka łącza). Zerwane połączenia, timeouty i błędy nierozpoznane — pełne ~26 s
+    ponawiania (CBOSA miewa kilkunastosekundowe okna, w których ucina połączenia)."""
+    rodzaj = _diagnoza(e)
+    if odstep is None or rodzaj == PROXY or (rodzaj == BRAK_SIECI and odstep != 2):
+        raise _blad_transportu(url, e, rodzaj) from e
+    time.sleep(odstep)
+    return True
+
+
 def _fetch(path, data=None):
     """GET/POST strony CBOSA (HTML). Throttling >=0,5 s; ponowienia z rosnącym odstępem.
     Zwraca pobrany HTML jako FOUND; UNKNOWN przekazuje przez VerificationUnknown.
@@ -294,8 +392,9 @@ def _fetch(path, data=None):
                         f"Nie znaleziono orzeczenia o id {path[len('/doc/'):]!r} w CBOSA "
                         f"(HTTP {e.code} — zweryfikowany brak). doc_id bierz z komendy "
                         "szukaj albo sygnatura."))
-                dopisek = "; CBOSA ma codzienne krótkie okno serwisowe ok. 21:00" if e.code >= 500 else ""
-                raise VerificationUnknown(f"HTTP {e.code}: {url}{dopisek}") from e
+                if e.code >= 500:
+                    raise _blad_transportu(url, f"HTTP {e.code}", SERWER) from e
+                raise VerificationUnknown(f"HTTP {e.code}: {url}") from e
             except urllib.error.URLError as e:
                 if isinstance(getattr(e, "reason", None), ssl.SSLCertVerificationError):
                     # Domyślnie odmawiamy; obniżenie wymaga jawnej decyzji operatora.
@@ -314,15 +413,11 @@ def _fetch(path, data=None):
                         ssl_ctx.check_hostname, ssl_ctx.verify_mode = False, ssl.CERT_NONE
                         insecure_tls = True
                         continue
-                if odstep is not None:
-                    time.sleep(odstep)
+                if _ponow(url, e, odstep):
                     break
-                raise VerificationUnknown(f"błąd sieci: {url} ({e}); serwer CBOSA ucina połączenia") from e
             except Exception as e:  # noqa: BLE001
-                if odstep is not None:
-                    time.sleep(odstep)
+                if _ponow(url, e, odstep):
                     break
-                raise VerificationUnknown(f"błąd sieci: {url} ({e}); serwer CBOSA ucina połączenia") from e
     raise VerificationUnknown(f"nie udało się pobrać {url} po kilku próbach")
 
 
@@ -759,7 +854,7 @@ def main():
         a.func(a)
     except VerificationUnknown as e:
         sys.exit(f"BŁĄD: nie udało się zweryfikować danych w CBOSA ({e}). "
-                 "Spróbuj ponownie za chwilę.")
+                 + (e.porada or "Spróbuj ponownie za chwilę."))
 
 
 if __name__ == "__main__":

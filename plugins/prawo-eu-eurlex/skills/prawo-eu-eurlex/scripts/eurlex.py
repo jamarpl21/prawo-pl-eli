@@ -11,9 +11,10 @@ Komendy:
                                  termin transpozycji dyrektywy, czy obowiązuje, ELI); na wersji
                                  skonsolidowanej: data „stan na" + daty AKTU BAZOWEGO
   tekst <CELEX> [--jezyk pol] [--fragment "art. 6"] [--pdf ŚCIEŻKA]
-                                 tekst aktu z CELLAR (XHTML/HTML → czysty tekst); --fragment wycina
-                                 tylko jednostki z frazą; --pdf zapisuje urzędowy PDF; na akcie
-                                 bazowym ostrzega o sprostowaniach w danym języku
+                                 tekst aktu z CELLAR (XHTML/HTML → czysty tekst; akt tylko w PDF —
+                                 z urzędowego PDF przez `pdftotext -layout`, jeśli jest w PATH);
+                                 --fragment wycina tylko jednostki z frazą; --pdf zapisuje urzędowy
+                                 PDF; na akcie bazowym ostrzega o sprostowaniach w danym języku
   skonsolidowany <CELEX>         wersje skonsolidowane aktu (odpowiednik tekstu jednolitego)
   odniesienia <CELEX>            nowelizacje, sprostowania, uchylenia (w obie strony), podstawa prawna
 Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
@@ -21,7 +22,8 @@ Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
 
 CELEX np.: 32016R0679 (RODO), 02016R0679-20160504 (wersja skonsolidowana), reg/2016/679 (ELI).
 """
-import sys, json, re, time, argparse, textwrap, urllib.request, urllib.parse, urllib.error
+import sys, os, json, re, time, argparse, shutil, subprocess, tempfile, textwrap
+import urllib.request, urllib.parse, urllib.error
 from html.parser import HTMLParser
 
 __version__ = "2.1.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
@@ -673,6 +675,282 @@ def _pobierz_pdf(celex, lang, lang3):
     raise blad
 
 
+class _TylkoPdf(SystemExit):
+    """Akt jest w CELLAR w tym języku TYLKO jako PDF (bez HTML/XHTML). Podklasa SystemExit: kto nie
+    obsługuje ścieżki PDF (np. _zakres_sprostowania), dostaje dotychczasowy komunikat z --pdf."""
+
+
+# --- tekst z urzędowego PDF (akt bez HTML/XHTML w danym języku) -----------------------------------
+# Starsze akty w językach państw z 2004 r. i później (polskie wydanie specjalne Dz.Urz. UE, np.
+# 32004R0883, 32004L0037, 31994R0114) CELLAR ma TYLKO jako PDF. `tekst` czyta wtedy ten PDF przez
+# `pdftotext -layout` (poppler; opcjonalny — bez niego zostaje odesłanie do --pdf), tak jak skill
+# prawo-pl-eli dla aktów bez text.html. Strona Dz.Urz. UE jest złożona w DWÓCH ŁAMACH, a -layout
+# stawia je obok siebie — bez rozdzielenia łamów sklejanie wierszy mieszałoby motywy i artykuły.
+# Nagłówki stron: wydanie specjalne („72  PL  Dziennik Urzędowy Unii Europejskiej  05/t. 5”),
+# numer CELEX nad aktem i nagłówek pierwotnego Dz.Urz. („30.4.2004  DZIENNIK URZĘDOWY UNII
+# EUROPEJSKIEJ  L 166/1”) — tylko na samej górze strony.
+_PDF_NAGLOWEK = re.compile(r"(?i)(?:Dziennik\s+Urzędowy|Official\s+Journal|Amtsblatt|Journal\s+officiel)\s+"
+                           r"(?:Unii|Wspólnot|of\s+the\s+European|der\s+Europäischen|de\s+l.Union|des\s+Communautés)")
+_PDF_CELEX = re.compile(r"^\s*\d{5}[A-Z]{1,2}\d{4}(?:R\(\d+\))?\s*$")   # także sprostowanie …R(06)
+_PDF_STOPKA = re.compile(r"^\s*\d{1,4}\s*$")
+# przypis z dołu łamu: „(1) Dz.U. L 387 z 31.12.1992, str. 1.” — od niego do końca łamu są przypisy
+_PDF_PRZYPIS = re.compile(r"^\(\d{1,3}\)\s+(?:Dz\.\s?U\.|OJ\b|ABl\.|JO\b)")
+_PDF_RYNNA_WOLNE = 0.5   # rynna: tyle niepustych wierszy strony ma w niej spację…
+_PDF_RYNNA_OBA = 0.15    # …a tyle ma tekst po obu jej stronach
+_PDF_MIN_LAM = 0.35      # wiersz tylko na lewo od rynny, zaczynający się dalej = wyśrodkowany (zostaje)
+_PDF_TABELA = 0.3        # tyle wierszy bloku z ≥2 przerwami ≥3 spacji = tabela, nie dwa łamy
+_PDF_WCIECIE_NAGLOWKA = 8    # wyśrodkowany nagłówek/tytuł: wcięty co najmniej tyle w łamie,
+_PDF_MAKS_NAGLOWEK = 70      # …nie dłuższy, z marginesami po obu stronach podobnymi, nie od małej litery
+_PDF_SRODEK = "\x1e"         # znacznik wiersza wyśrodkowanego (usuwany w _pdf_akapity)
+_PDF_KONIEC_ZDANIA = re.compile(r"[.;:!?)”\"]$")
+_PDF_ARTYKUL = re.compile(r"(?:Artykuł|Article|Artikel)\s+\d+[a-z]*")
+# początek nowego akapitu w łamie (inaczej wiersz to kontynuacja poprzedniego)
+_PDF_NOWY_AKAPIT = re.compile(
+    r"^(?:\(\d+[a-z]?\)\s|\d+[a-z]?\.(?:\s|$)|[a-z]{1,4}\)\s|[—–-]\s|(?:Artykuł|Article|Artikel)\s+\d"
+    r"|ROZDZIAŁ|TYTUŁ|SEKCJA|ZAŁĄCZNIK|CHAPTER|TITLE|ANNEX|uwzględniając\b|a także mając\b|stanowiąc\b"
+    r"|PRZYJMUJE\b|Sporządzono w\b|W imieniu\b|Having regard\b|Whereas\b|Done at\b|For the\b"
+    r"|[A-ZĄĆĘŁŃÓŚŹŻ][A-ZĄĆĘŁŃÓŚŹŻ ]{5,}[,:]?$)")   # wiersz wersalikami: „KOMISJA WSPÓLNOT EUROPEJSKICH,”
+
+
+def pdftotext_dostepny():
+    return shutil.which("pdftotext") is not None
+
+
+def _pdftotext_layout(pdf_bytes):
+    """`pdftotext -layout` na bajtach PDF → tekst (pusty napis przy awarii)."""
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+            f.write(pdf_bytes)
+            tmp = f.name
+        r = subprocess.run(["pdftotext", "-layout", "-enc", "UTF-8", tmp, "-"],
+                           capture_output=True, timeout=180)
+        return r.stdout.decode("utf-8", "replace") if r.returncode == 0 else ""
+    except Exception:  # noqa: BLE001
+        return ""
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def _pdf_bez_naglowka(lines):
+    """Usuwa nagłówki z góry strony (Dz.Urz. UE, wydanie specjalne, CELEX) i numer strony z dołu."""
+    out = list(lines)
+    for i, l in enumerate(out):
+        if not l.strip():
+            continue
+        if _PDF_NAGLOWEK.search(l) or _PDF_CELEX.match(l):
+            out[i] = ""
+            continue
+        break
+    while out and (not out[-1].strip() or _PDF_STOPKA.match(out[-1])):
+        out.pop()
+    return out
+
+
+def _pdf_przypisy(lam):
+    """Wiersze łamu → (treść, przypisy): przypisy to ogon łamu od pierwszego „(N) Dz.U. …”.
+    Przypisy w dwóch łamach w jednym wierszu („(1) Dz.U. …      (6) Dz.U. …”) — lewe, potem prawe."""
+    for i, l in enumerate(lam):
+        if _PDF_PRZYPIS.match(l.strip()):
+            ogon = lam[i:]
+            m = [re.search(r" {3,}(?=\(\d{1,3}\)\s)", l.strip()) for l in ogon]
+            if any(m):
+                lewe = [l.strip()[:x.start()] if x else l.strip() for l, x in zip(ogon, m)]
+                prawe = [l.strip()[x.end():] for l, x in zip(ogon, m) if x]
+                ogon = lewe + prawe
+            return lam[:i], ogon
+    return lam, []
+
+
+def _pdf_oznacz_srodek(ws, szer=None):
+    """Oznacza wiersze wyśrodkowane w łamie o szerokości `szer` (tytuły artykułów, „Definicje”).
+    Kontynuacja zagnieżdżonego punktu też bywa głęboko wcięta, ale sięga prawego marginesu — stąd
+    warunek podobnych marginesów. `szer=None`: wiersz na całą szerokość strony (tytuł aktu,
+    nagłówek nad łamami) — tu szerokości strony nie znamy pewnie (tabele), wystarczy wcięcie."""
+    out = []
+    for l in ws:
+        t = l.strip()
+        wc = len(l) - len(l.lstrip(" "))
+        prawy = (szer - len(l.rstrip())) if szer is not None else wc
+        srodek = (t and wc >= _PDF_WCIECIE_NAGLOWKA and len(t) <= _PDF_MAKS_NAGLOWEK
+                  and abs(wc - prawy) <= max(8, 0.35 * max(wc, prawy))
+                  and not t[0].islower() and not t.endswith((",", ";")))
+        out.append(_PDF_SRODEK + l if srodek else l)
+    return out
+
+
+def _pdf_lamy(lines):
+    """Wiersze strony z `-layout` → (wiersze w kolejności czytania, wiersze przypisów).
+
+    Rynna = kolumna znaków, w której (z sąsiednią) większość wierszy ma spację, a część ma tekst po
+    obu stronach. Wiersze przez nią przechodzące (tytuł aktu, akapit na całą szerokość, tabela)
+    zostają na miejscu i dzielą stronę na bloki; każdy blok to lewy łam, potem prawy, bez wcięcia.
+    Strona bez rynny wraca bez zmian. Uproszczona wersja `_pdf_lamy` ze skilla prawo-pl-eli."""
+    niepuste = [l for l in lines if l.strip()]
+    if len(niepuste) < 8:
+        return _pdf_przypisy(_pdf_oznacz_srodek(lines))
+    szer = max(len(l.rstrip()) for l in niepuste)
+
+    def wolne(l, x):
+        return all(x + k >= len(l) or l[x + k] == " " for k in (0, 1))
+    najl, rynna = 0, None
+    for x in range(int(szer * 0.35), int(szer * 0.65)):
+        w = sum(wolne(l, x) for l in niepuste)
+        oba = sum(wolne(l, x) and l[:x].strip() != "" and l[x:].strip() != "" for l in niepuste)
+        if oba >= _PDF_RYNNA_OBA * len(niepuste) and w > najl:
+            najl, rynna = w, x
+    if rynna is None or najl < _PDF_RYNNA_WOLNE * len(niepuste):
+        return _pdf_przypisy(_pdf_oznacz_srodek(lines))
+
+    def bez_wciecia(ws):
+        wc = min((len(l) - len(l.lstrip(" ")) for l in ws if l.strip()), default=0)
+        return [l[wc:].rstrip() for l in ws]
+    out, przypisy, blok = [], [], []
+
+    def zamknij():
+        # Wcięte wiersze tylko lewego łamu po ostatnim wierszu z prawym łamem, oddzielone ≥2 pustymi
+        # wierszami („PRZYJMUJE NINIEJSZE ROZPORZĄDZENIE:” pod motywami w dwóch łamach), stoją POD oboma
+        # łamami. Dalszy ciąg lewego łamu zaczyna się na marginesie, więc zostaje w łamie.
+        ostatni = max((i for i, l in enumerate(blok) if l[rynna:].strip()), default=None)
+        pod = []
+        if ostatni is not None:
+            k = ostatni + 1
+            while k < len(blok) and not blok[k].strip():
+                k += 1
+            if k - ostatni - 1 >= 2 and k < len(blok) and \
+                    len(blok[k]) - len(blok[k].lstrip(" ")) >= _PDF_WCIECIE_NAGLOWKA:
+                pod = blok[k:]
+                del blok[k:]
+        tresc = [l.strip() for l in blok if l.strip()]
+        tabela = sum(len(re.findall(r"\S {3,}(?=\S)", l)) >= 2 for l in tresc) >= _PDF_TABELA * len(tresc)
+        if not tresc or tabela:
+            out.extend(blok)
+        else:
+            for lam in (bez_wciecia([l[:rynna] for l in blok]), bez_wciecia([" " * rynna + l[rynna:] for l in blok])):
+                t, p = _pdf_przypisy(_pdf_oznacz_srodek(lam, max((len(l) for l in lam), default=0)))
+                out.extend(t)
+                przypisy.extend(p)
+        blok.clear()
+        out.extend(_pdf_oznacz_srodek(pod))
+    for l in lines:
+        dzieli = not l.strip() or wolne(l, rynna) and (
+            l[rynna:].strip() or len(l) - len(l.lstrip(" ")) < _PDF_MIN_LAM * szer)
+        if dzieli:
+            blok.append(l)
+        else:
+            zamknij()
+            out.extend(_pdf_oznacz_srodek([l]))
+    zamknij()
+    t, p = _pdf_przypisy(out)   # przypisy pod tekstem na całą szerokość strony
+    return t, przypisy + p
+
+
+def _doklej(a, b):
+    """Łączy wiersz zawinięty w PDF: „zabez-" + „pieczenia" → „zabezpieczenia" (dzielenie wyrazów),
+    inaczej przez spację. Heurystyka: myślnik na końcu + mała litera na początku następnego wiersza."""
+    if not a:
+        return b
+    if a.endswith(("-", "\xad")) and b[:1].islower():
+        return a[:-1] + b
+    return a + " " + b
+
+
+def _pdf_akapity(lines):
+    """Wiersze w kolejności czytania → akapity: zawinięte wiersze sklejone, nagłówki osobno.
+
+    Pusty wiersz w łamie bywa artefaktem -layout (wiersz, w którym tekst ma tylko DRUGI łam), więc
+    kończy akapit tylko wtedy, gdy ten kończy się jak zdanie, a następny wiersz nie zaczyna się małą
+    literą; zawsze — przed znacznikiem jednostki („a)”, „1.”, „(5)”, „Artykuł N”)."""
+    akapity, akapit, poprz_osobny, przerwa = [], None, False, False
+    for l in lines:
+        srodek = l.startswith(_PDF_SRODEK)
+        l = l.lstrip(_PDF_SRODEK)
+        t = l.strip()
+        if not t:
+            przerwa = True
+            continue
+        tabela = len(re.findall(r"\S {3,}(?=\S)", t)) >= 2
+        if not tabela:
+            t = re.sub(r" {2,}", " ", t)
+        osobny = srodek or tabela or bool(_PDF_ARTYKUL.fullmatch(t))
+        nowy = (akapit is None or osobny or poprz_osobny or _PDF_NOWY_AKAPIT.match(t)
+                or przerwa and _PDF_KONIEC_ZDANIA.search(akapit) and not t[0].islower())
+        if nowy:
+            if akapit is not None:
+                akapity.append(akapit)
+            akapit = t
+        else:
+            akapit = _doklej(akapit, t)
+        poprz_osobny, przerwa = osobny, False
+    if akapit is not None:
+        akapity.append(akapit)
+    return akapity
+
+
+def pdf_do_tekstu(raw):
+    """Tekst z `pdftotext -layout` (PDF Dz.Urz. UE) → (tekst, liczba stron bez warstwy tekstowej, stron).
+
+    Strony bez nagłówków i numerów, łamy rozdzielone, wiersze sklejone w akapity; „Artykuł N” stoi
+    w osobnej linii (jak w ścieżce XHTML — tego szuka --fragment). Przypisy z dołu łamów trafiają
+    na koniec, za znak GRANICA — fragment artykułu nie ciągnie ich ze sobą."""
+    strony = raw.split("\f")
+    if strony and not strony[-1].strip():
+        strony = strony[:-1]
+    wiersze, przypisy, puste = [], [], 0
+    for strona in strony:
+        lines = _pdf_bez_naglowka(strona.split("\n"))
+        if len(re.sub(r"[\W\d_]", "", "\n".join(lines))) < 20:
+            puste += 1
+        tresc, przyp = _pdf_lamy(lines)
+        wiersze.extend(tresc)
+        przypisy.extend(przyp)
+    out = []
+    for a in _pdf_akapity(wiersze):
+        if _PDF_ARTYKUL.fullmatch(a) or re.match(r"(?:ROZDZIAŁ|TYTUŁ|ZAŁĄCZNIK|CHAPTER|TITLE|ANNEX)\b", a):
+            out.append("")
+        out.append(a)
+    p = _pdf_akapity(przypisy)
+    if p:
+        out += ["", GRANICA, "Przypisy (z dołu stron PDF):"] + p
+    return "\n".join(out).strip(), puste, len(strony)
+
+
+def _tekst_z_pdf(celex, lang, lang3, brak_html):
+    """Tekst aktu z jego urzędowego PDF, gdy CELLAR nie ma HTML/XHTML w tym języku.
+
+    Zwraca (tekst, źródło PDF, pozostałe pliki manifestacji, linie ostrzeżeń). Bez pdftotext
+    kończy dotychczasowym komunikatem `brak_html` (odesłanie do --pdf) z podpowiedzią instalacji."""
+    if not pdftotext_dostepny():
+        sys.exit(f"{brak_html.code} Tekst z tego PDF silnik wyekstrahuje sam, gdy w PATH będzie pdftotext "
+                 "(poppler: brew install poppler / apt install poppler-utils).")
+    try:
+        data, zrodlo, inne = _pobierz_pdf(celex, lang, lang3)
+    except SystemExit as e:
+        sys.exit(f"{brak_html.code}\nNie udało się też pobrać tego PDF do ekstrakcji tekstu: {e.code}")
+    raw = _pdftotext_layout(data)
+    txt, puste, stron = pdf_do_tekstu(raw) if raw.strip() else ("", 0, 0)
+    if not _bez_granic(txt).strip():
+        sys.exit(f"BŁĄD: akt {celex} jest w CELLAR w języku {lang3} tylko jako PDF, a pdftotext nie zwrócił "
+                 f"z niego tekstu (PDF bez warstwy tekstowej — skan — albo błąd konwersji). Pobierz PDF: "
+                 f"tekst {celex} --jezyk {lang3} --pdf plik.pdf (źródło: {zrodlo})")
+    uwagi = [f"EURLEX_TEXT_SOURCE_PDF={zrodlo}",
+             f"UWAGA: CELLAR nie ma wersji HTML/XHTML aktu {celex} w języku {lang3} — poniżej tekst "
+             "WYEKSTRAHOWANY z urzędowego PDF (Dz.Urz. UE). Rozdzielenie łamów, sklejanie wierszy i dzielonych "
+             "wyrazów oraz usunięcie nagłówków stron są automatyczne (tabele bywają rozsypane); przypisy z dołu "
+             "stron są zebrane na końcu. "
+             f"Do dosłownego cytatu: tekst {celex} --jezyk {lang3} --pdf plik.pdf"]
+    if inne:
+        uwagi.append(f"UWAGA: PDF tego aktu ma kilka plików — tekst pochodzi z pierwszego; pozostałe: {', '.join(inne)}")
+    if puste:
+        uwagi.append(f"UWAGA: {puste} z {stron} stron tego PDF nie ma warstwy tekstowej (skan albo strona pusta) "
+                     f"— ich treści NIE MA poniżej. Sprawdź PDF: tekst {celex} --jezyk {lang3} --pdf plik.pdf")
+    return txt, zrodlo, inne, uwagi
+
+
 def _pobierz_tekst(celex, lang3):
     """Bajty XHTML/HTML aktu w danym języku.
 
@@ -703,9 +981,9 @@ def _pobierz_tekst(celex, lang3):
     w_jezyku = sorted({_v(b, "mtype") for b in rows if _v(b, "l") == lang and _v(b, "mtype")})
     z_tekstem = sorted({_v(b, "l").lower() for b in rows if _v(b, "mtype") in _TYPY_TEKSTU})
     if any(t.startswith("pdf") for t in w_jezyku):
-        sys.exit(f"BŁĄD: akt {celex} istnieje w CELLAR, ale w języku {lang3} nie ma wersji HTML/XHTML "
-                 f"(formaty: {', '.join(w_jezyku)}) — pobierz urzędowy PDF: tekst {celex} --jezyk {lang3} "
-                 "--pdf plik.pdf" + (f"; tekst HTML jest w: {', '.join(z_tekstem)}" if z_tekstem else "") + ".")
+        raise _TylkoPdf(f"BŁĄD: akt {celex} istnieje w CELLAR, ale w języku {lang3} nie ma wersji HTML/XHTML "
+                        f"(formaty: {', '.join(w_jezyku)}) — pobierz urzędowy PDF: tekst {celex} --jezyk {lang3} "
+                        "--pdf plik.pdf" + (f"; tekst HTML jest w: {', '.join(z_tekstem)}" if z_tekstem else "") + ".")
     if z_tekstem:
         sys.exit(f"BŁĄD: akt {celex} istnieje w CELLAR, ale nie ma tekstu w języku {lang3} — "
                  f"tekst HTML/XHTML jest w: {', '.join(z_tekstem)} (użyj --jezyk).")
@@ -906,17 +1184,28 @@ def cmd_tekst(a):
         for w in (ostrz if ostrz is not None else _kontrole_tresci(celex, lang)):
             print(w)
         return
+    uwagi_pdf = None
     try:
         raw = _pobierz_tekst(celex, lang3)
+    except _TylkoPdf as e:
+        # akt tylko w PDF: tekst z własnego urzędowego PDF aktu — --strict go przepuszcza (to jest
+        # tekst TEGO aktu), ale blokady _kontrole_tresci (sprostowania, konsolidacje) działają dalej
+        txt, _, _, uwagi_pdf = _tekst_z_pdf(celex, lang, lang3, e)
     except SystemExit as e:
         if "(404)" in str(e) and re.match(r"^0.*-\d{8}$", celex):
             _wyjasnij_404_konsolidacji(celex, lang3)
         raise
-    txt = html_to_text(raw.decode("utf-8", "replace"))
-    if not _bez_granic(txt).strip():
-        sys.exit(f"Pusty tekst XHTML/HTML dla {celex} (język {lang3}) — spróbuj --pdf albo inny --jezyk.")
+    if uwagi_pdf is None:
+        txt = html_to_text(raw.decode("utf-8", "replace"))
+        if not _bez_granic(txt).strip():
+            sys.exit(f"Pusty tekst XHTML/HTML dla {celex} (język {lang3}) — spróbuj --pdf albo inny --jezyk.")
     ostrz = _kontrole_tresci(celex, lang, strict, a.fragment)
-    print(f"# CELEX {celex} ({lang3}) — tekst z CELLAR (XHTML/HTML→tekst; do dosłownego cytatu zweryfikuj z PDF)\n")
+    if uwagi_pdf is not None:
+        print(f"# CELEX {celex} ({lang3}) — tekst z urzędowego PDF przez pdftotext -layout "
+              "(do dosłownego cytatu zweryfikuj z PDF)\n")
+        ostrz = uwagi_pdf + ostrz
+    else:
+        print(f"# CELEX {celex} ({lang3}) — tekst z CELLAR (XHTML/HTML→tekst; do dosłownego cytatu zweryfikuj z PDF)\n")
     for w in ostrz:
         print(w)
     if ostrz:

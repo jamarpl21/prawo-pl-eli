@@ -139,8 +139,10 @@ dowodzi braku wyroku.
    uchylona przez WSA II SA/Wa 1030/19, status nadal `final`). Pole `inforce` API jest `true` nawet
    dla decyzji uchylonych i nieprawomocnych — nie cytuj go jako „w obrocie" ani „prawomocna"
    (silnik dopisuje zastrzeżenie). Data walidacji może mieć zakres („w zakresie punktu 1)”) —
-   wtedy prawomocna jest tylko ta część decyzji. Brak wpisów kontroli sądowej w meta.json NIE
-   oznacza braku wyroku (DKN.5131.1.2025: WSA uchylił pkt 2, a meta.json tego nie miał). Zanim podasz karę z decyzji z blokiem
+   wtedy prawomocna jest tylko ta część decyzji. **Pusty (albo brak) blok „Kontrola sądowa" NIE
+   oznacza braku wyroku** — portal UODO może nie znać wyroku sądu administracyjnego w sprawie
+   decyzji (luka danych portalu; DKN.5131.1.2025: WSA uchylił pkt 2, a meta.json tego nie miał).
+   Wtedy użyj zapytań CBOSA, które drukuje `decyzja`. Zanim podasz karę z decyzji z blokiem
    „Kontrola sądowa", przeczytaj sentencję wyroku w CBOSA.
 3. **Zawsze podawaj sygnaturę + datę** (np. „decyzja Prezesa UODO z 7.08.2025, DKN.5131.9.2025")
    — sygnatura jest stabilnym identyfikatorem (URN w API).

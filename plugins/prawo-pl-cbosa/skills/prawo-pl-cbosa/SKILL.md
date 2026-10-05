@@ -141,8 +141,9 @@ sprawie).
 
 1. **To scraping, nie API.** CBOSA nie udostępnia API ani zrzutów danych; silnik parsuje publiczny
    HTML. Zmiana układu stron może zepsuć parsowanie — gdy wynik wygląda na obcięty/pusty, zajrzyj
-   pod podany link „Źródło" i zgłoś problem. Nie zrównoleglaj zapytań (wbudowany throttling ≥0,5 s;
-   serwer bywa przeciążony i ucina połączenia — silnik sam ponawia).
+   pod podany link „Źródło" i zgłoś problem. **Nie uruchamiaj równolegle wielu zapytań do CBOSA**
+   (np. z kilku agentów naraz) — serwer zrywa połączenia przy serii zapytań; wbudowany throttling
+   (≥0,5 s) działa tylko w obrębie jednego wywołania. Zapytania wykonuj po kolei.
 2. **Rozróżniaj trzy komunikaty — tylko jeden znaczy „awaria".**
    „Brak wyników (zweryfikowane zero)" = CBOSA wyszukało i nic nie ma → **zmień zapytanie**
    (krótsza fraza, bez `--sad`, szerszy zakres dat), nie ponawiaj tego samego.
@@ -153,7 +154,17 @@ sprawie).
    (skargi na Prezesa UODO rozpoznaje WSA w Warszawie; gotowe zapytania dla decyzji UODO podaje
    `prawo-pl-uodo decyzja <sygnatura>`).
    „CBOSA odrzuciło zapytanie: …" = błąd parametrów (np. formatu daty) → popraw i ponów.
-   „BŁĄD: … strona bez listy wyników" albo „BŁĄD sieci" = serwer → ponów za chwilę.
+   „BŁĄD: … strona bez listy wyników" = serwer → ponów za chwilę.
+   Błąd sieci silnik diagnozuje — **raportuj zgodnie z komunikatem, nie zgaduj**:
+   - „blokada środowiska, nie awaria CBOSA" (proxy/zapora piaskownicy, np. „Tunnel connection
+     failed: 403 Forbidden") → ponawianie nic nie da; zgłoś blokadę środowiska;
+   - „brak sieci w tym środowisku" (DNS, połączenie odrzucone) → problem łączności, nie CBOSA;
+   - „awaria po stronie serwera CBOSA" (połączenie zrywane zaraz po nawiązaniu albo HTTP 5xx mimo
+     ~26 s ponawiania) → ponów za kilka–kilkanaście minut;
+   - „przekroczony czas oczekiwania" → wolny serwer albo niestabilne łącze; ponów za kilka minut.
+   **Gdy helper zgłasza błąd, NIE obchodź go własnym pobieraniem stron (WebFetch/curl)** —
+   raportuj: „CBOSA niedostępne (sprawdzono o GG:MM)” albo „blokada środowiska”, zgodnie
+   z komunikatem helpera (podaje godzinę sprawdzenia). To nie jest błąd skilla.
 3. **Baza ma charakter informacyjno-edukacyjny** (nie jest urzędowym publikatorem, orzeczenia są
    zanonimizowane). Zawsze podawaj **sygnaturę + sąd + datę** (np. „wyrok NSA z 10.02.2021,
    II FSK 2870/18"); do dosłownego cytatu w piśmie podaj też link do strony orzeczenia.

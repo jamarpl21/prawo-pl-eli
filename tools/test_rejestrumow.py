@@ -134,10 +134,15 @@ class TestLiczba(unittest.TestCase):
 class TestKwota(unittest.TestCase):
     def test_format_polski(self):
         # separator tysięcy = spacja niełamliwa, przecinek dziesiętny
-        self.assertEqual(rejestrumow._kwota(2733508), "2 733 508,00 zł")
+        self.assertEqual(rejestrumow._kwota(2733508), "2 733 508,00")
 
     def test_grosze(self):
-        self.assertEqual(rejestrumow._kwota(1188.31), "1 188,31 zł")
+        self.assertEqual(rejestrumow._kwota(1188.31), "1 188,31")
+
+    def test_bez_waluty(self):
+        # rejestr nie podaje waluty ani netto/brutto — kwota nie może sugerować „zł”
+        self.assertNotIn("zł", rejestrumow._kwota(5015))
+        self.assertNotIn("PLN", rejestrumow._kwota(5015))
 
     def test_none(self):
         self.assertEqual(rejestrumow._kwota(None), "—")
@@ -434,6 +439,87 @@ class TestPrzekierowaniaHttps(unittest.TestCase):
         with mock.patch.object(rejestrumow._opener, "open", return_value=odp) as op:
             rejestrumow._req("/agreements/search", {"limit": 1}, {})
         self.assertEqual(op.call_count, 1)
+
+
+class TestLimit429(unittest.TestCase):
+    """API odpowiada 429 po ~10 szybkich zapytaniach — helper czeka (Retry-After) i ponawia."""
+
+    @staticmethod
+    def _429(retry_after=None):
+        naglowki = {"Retry-After": retry_after} if retry_after is not None else {}
+        return rejestrumow.urllib.error.HTTPError(
+            "https://rejestrumow.gov.pl/api-dp/v1/agreements/search", 429, "Too Many Requests",
+            naglowki, None)
+
+    @staticmethod
+    def _ok():
+        odp = mock.MagicMock()
+        odp.__enter__.return_value.read.return_value = b'{"content": []}'
+        return odp
+
+    def _uruchom(self, side_effect):
+        spanie = []
+        with mock.patch.object(rejestrumow._opener, "open", side_effect=side_effect) as op, \
+                mock.patch.object(rejestrumow.time, "sleep", side_effect=spanie.append):
+            wynik = rejestrumow._req("/agreements/search", {"limit": 1}, {})
+        return wynik, op.call_count, spanie
+
+    def test_ponawia_zgodnie_z_retry_after(self):
+        wynik, proby, spanie = self._uruchom([self._429("3"), self._429("5"), self._ok()])
+        self.assertEqual(wynik, {"content": []})
+        self.assertEqual(proby, 3)
+        self.assertEqual(spanie, [3.0, 5.0])
+
+    def test_bez_naglowka_rosnacy_odstep(self):
+        _, proby, spanie = self._uruchom([self._429(), self._429(), self._ok()])
+        self.assertEqual(proby, 3)
+        self.assertEqual(spanie, [2.0, 4.0])
+
+    def test_retry_after_jako_data_http(self):
+        teraz = 1_800_000_000.0
+        data = rejestrumow.email.utils.formatdate(teraz + 7, usegmt=True)
+        with mock.patch.object(rejestrumow.time, "time", return_value=teraz):
+            self.assertAlmostEqual(rejestrumow._retry_after({"Retry-After": data}, 2.0), 7.0, delta=1)
+        self.assertEqual(rejestrumow._retry_after({"Retry-After": "bzdura"}, 2.0), 2.0)
+        self.assertEqual(rejestrumow._retry_after({}, 2.0), 2.0)
+
+    def test_trwaly_429_konczy_czytelnym_bledem_w_limicie_czekania(self):
+        spanie = []
+        with mock.patch.object(rejestrumow._opener, "open", side_effect=[self._429("10")] * 20), \
+                mock.patch.object(rejestrumow.time, "sleep", side_effect=spanie.append):
+            with self.assertRaises(SystemExit) as caught:
+                rejestrumow._req("/agreements/search", {"limit": 1}, {})
+        msg = str(caught.exception.code)
+        self.assertIn("HTTP 429", msg)
+        self.assertIn("ogranicza liczbę zapytań", msg)
+        self.assertIn("nie uruchamiaj wielu zapytań naraz", msg)
+        self.assertLessEqual(sum(spanie), rejestrumow.LIMIT_CZEKANIA_429)
+        self.assertGreaterEqual(sum(spanie), 50)
+
+    def test_zbyt_dlugi_retry_after_bez_czekania(self):
+        spanie = []
+        with mock.patch.object(rejestrumow._opener, "open", side_effect=[self._429("3600")]), \
+                mock.patch.object(rejestrumow.time, "sleep", side_effect=spanie.append):
+            with self.assertRaisesRegex(SystemExit, "każe czekać jeszcze 3600 s"):
+                rejestrumow._req("/agreements/search", {"limit": 1}, {})
+        self.assertEqual(spanie, [])
+
+    def test_retry_after_zero_nie_zapetla(self):
+        spanie = []
+        with mock.patch.object(rejestrumow._opener, "open", side_effect=[self._429("0")] * 200), \
+                mock.patch.object(rejestrumow.time, "sleep", side_effect=spanie.append):
+            with self.assertRaises(SystemExit):
+                rejestrumow._req("/agreements/search", {"limit": 1}, {})
+        self.assertLessEqual(len(spanie), rejestrumow.LIMIT_CZEKANIA_429)
+
+    def test_5xx_nadal_jedno_ponowienie(self):
+        err = rejestrumow.urllib.error.HTTPError("https://rejestrumow.gov.pl/api-dp/v1/agreements/search",
+                                                 503, "Unavailable", {}, None)
+        with mock.patch.object(rejestrumow._opener, "open", side_effect=[err, err, err]) as op, \
+                mock.patch.object(rejestrumow.time, "sleep"):
+            with self.assertRaisesRegex(SystemExit, "HTTP 503"):
+                rejestrumow._req("/agreements/search", {"limit": 1}, {})
+        self.assertEqual(op.call_count, 2)
 
 
 if __name__ == "__main__":

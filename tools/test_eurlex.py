@@ -1082,11 +1082,14 @@ class TestStareAkty(unittest.TestCase):
         return str(caught.exception.code)
 
     def test_404_akt_istnieje_tylko_pdf_w_jezyku(self):
+        # bez pdftotext w PATH: dotychczasowy komunikat z odesłaniem do --pdf (+ podpowiedź instalacji)
         rows = [r for r in EPRIV_MANIF if not (r["l"]["value"] == "POL" and r["mtype"]["value"] == "html")]
-        msg = self._404("32002L0058", rows)
+        with mock.patch.object(eurlex.shutil, "which", return_value=None):
+            msg = self._404("32002L0058", rows)
         self.assertIn("akt 32002L0058 istnieje w CELLAR", msg)
         self.assertIn("--pdf", msg)
         self.assertIn("tekst HTML jest w: eng", msg)
+        self.assertIn("pdftotext", msg)
         self.assertNotIn("Sprawdź numer CELEX", msg)
 
     def test_404_akt_istnieje_brak_jezyka(self):
@@ -1169,6 +1172,222 @@ class TestStareAkty(unittest.TestCase):
                 with self.assertRaisesRegex(SystemExit, "nie zwrócił pliku PDF"):
                     eurlex.main()
             self.assertFalse(os.path.exists(sciezka))
+
+
+def _strona_pdf(naglowek, lewy, prawy, pod=(), szer=62):
+    """Strona jak z `pdftotext -layout` Dz.Urz. UE: nagłówek, dwa łamy obok siebie, wiersze pod nimi."""
+    wiersze = list(naglowek)
+    for i in range(max(len(lewy), len(prawy))):
+        l = lewy[i] if i < len(lewy) else ""
+        p = prawy[i] if i < len(prawy) else ""
+        wiersze.append((l.ljust(szer) + p).rstrip())
+    return "\n".join(wiersze + list(pod))
+
+
+# Wycinek układu PDF wydania specjalnego (32004R0883, pol): nagłówek wydania specjalnego, CELEX nad aktem,
+# nagłówek pierwotnego Dz.Urz., motywy i przypis w lewym łamie, artykuły w prawym; na stronie 2 — dalszy
+# ciąg art. 1 z przeniesieniem wyrazu, art. 2 w prawym łamie i przypisy w dwóch łamach w jednym wierszu.
+PDF_STRONA_1 = _strona_pdf(
+    ["72                   PL                     Dziennik Urzędowy Unii Europejskiej                05/t. 5",
+     "",
+     "32004R0883",
+     "",
+     "30.4.2004                       DZIENNIK URZĘDOWY UNII EUROPEJSKIEJ                       L 166/1",
+     "",
+     "                 ROZPORZĄDZENIE PARLAMENTU EUROPEJSKIEGO I RADY (WE) nr 883/2004",
+     "                              z dnia 29 kwietnia 2004 r.",
+     ""],
+    ["PARLAMENT EUROPEJSKI I RADA UNII EUROPEJSKIEJ,",
+     "",
+     "uwzględniając Traktat ustanawiający Wspólnotę",
+     "Europejską (1),",
+     "",
+     "(1)    Zasady mające na celu koordynację w zakresie",
+     "       zabezpieczenia społecznego wpisują się w ramy",
+     "       swobodnego przepływu osób.",
+     "",
+     "(2)    Traktat nie przewiduje podejmowania przez",
+     "       władze inne niż określone w art. 308 działań.",
+     "",
+     "(1) Dz.U. C 38 z 12.2.1999, str. 10."],
+    ["                    Artykuł 1",
+     "",
+     "                    Definicje",
+     "",
+     "Do celów stosowania niniejszego rozporządzenia:",
+     "",
+     "a) określenie „praca najemna” oznacza wszelką",
+     "   pracę lub sytuację równoważną, traktowaną jako",
+     "   taką do celów stosowania ustawodawstwa w za-"],
+    pod=["", "                                                                  73"])
+PDF_STRONA_2 = _strona_pdf(
+    ["05/t. 5            PL                    Dziennik Urzędowy Unii Europejskiej                    73",
+     ""],
+    ["   kresie zabezpieczenia społecznego;",
+     "",
+     "b) określenie „pobyt” oznacza pobyt czasowy (2);",
+     "",
+     "",
+     "c) określenie „zamieszkanie” oznacza miejsce,",
+     "   w którym osoba zwykle przebywa;",
+     "",
+     "",
+     "(2) Dz.U. L 149 z 5.7.1971, str. 2.      (3) Dz.U. L 1 z 1.1.2000, str. 1."],
+    ["                    Artykuł 2",
+     "",
+     "               Zakres podmiotowy",
+     "",
+     "1. Niniejsze rozporządzenie stosuje się do oby-",
+     "wateli Państwa Członkowskiego (3).",
+     "",
+     "2. Ponadto niniejsze rozporządzenie stosuje się do",
+     "osób pozostałych przy życiu."])
+PDF_LAYOUT = PDF_STRONA_1 + "\f" + PDF_STRONA_2 + "\f"
+
+
+class TestTekstZPdf(unittest.TestCase):
+    """Akt w CELLAR tylko jako PDF (bez HTML/XHTML w danym języku): tekst przez pdftotext -layout."""
+
+    def test_naglowki_stron_i_numer_celex_usuniete(self):
+        txt, puste, stron = eurlex.pdf_do_tekstu(PDF_LAYOUT)
+        self.assertEqual((puste, stron), (0, 2))
+        self.assertNotIn("Dziennik Urzędowy", txt)
+        self.assertNotIn("DZIENNIK URZĘDOWY", txt)
+        self.assertNotRegex(txt, r"(?m)^32004R0883$")
+        self.assertNotRegex(txt, r"(?m)^\s*73\s*$")
+
+    def test_naglowek_sprostowania_tez_usuniety(self):
+        linie = ["32004R0883R(06)", "", "L 166/1   DZIENNIK URZĘDOWY UNII EUROPEJSKIEJ   30.4.2004", "Treść"]
+        self.assertEqual([l for l in eurlex._pdf_bez_naglowka(linie) if l.strip()], ["Treść"])
+
+    def test_lamy_rozdzielone_lewy_przed_prawym(self):
+        txt, _, _ = eurlex.pdf_do_tekstu(PDF_LAYOUT)
+        self.assertLess(txt.index("(2) Traktat nie przewiduje"), txt.index("Artykuł 1"))
+        self.assertLess(txt.index("Artykuł 1"), txt.index("b) określenie „pobyt”"))
+        self.assertLess(txt.index("c) określenie „zamieszkanie”"), txt.index("Artykuł 2"))
+        # motyw nie miesza się z artykułem z prawego łamu w jednym wierszu
+        self.assertNotRegex(txt, r"koordynację.*Artykuł")
+
+    def test_sklejanie_wierszy_i_dzielonych_wyrazow(self):
+        txt, _, _ = eurlex.pdf_do_tekstu(PDF_LAYOUT)
+        self.assertIn("(1) Zasady mające na celu koordynację w zakresie zabezpieczenia społecznego wpisują "
+                      "się w ramy swobodnego przepływu osób.", txt)
+        # przeniesienie przez stronę: „w za-” (strona 1, prawy łam) + „kresie” (strona 2, lewy łam)
+        self.assertIn("taką do celów stosowania ustawodawstwa w zakresie zabezpieczenia społecznego;", txt)
+        self.assertIn("1. Niniejsze rozporządzenie stosuje się do obywateli Państwa Członkowskiego (3).", txt)
+        self.assertIn("uwzględniając Traktat ustanawiający Wspólnotę Europejską (1),", txt)
+
+    def test_naglowek_artykulu_i_tytul_w_osobnych_liniach(self):
+        txt, _, _ = eurlex.pdf_do_tekstu(PDF_LAYOUT)
+        self.assertRegex(txt, r"(?m)^Artykuł 1\nDefinicje\nDo celów stosowania")
+        self.assertRegex(txt, r"(?m)^Artykuł 2\nZakres podmiotowy\n1\. Niniejsze")
+
+    def test_przypisy_na_koncu_za_granica(self):
+        txt, _, _ = eurlex.pdf_do_tekstu(PDF_LAYOUT)
+        przypisy = txt.index(eurlex.GRANICA)
+        for nr in ("(1) Dz.U. C 38", "(2) Dz.U. L 149", "(3) Dz.U. L 1 z"):
+            self.assertGreater(txt.index(nr), przypisy, nr)
+        # przypisy w dwóch łamach jednego wiersza: najpierw lewy, potem prawy
+        self.assertLess(txt.index("(2) Dz.U. L 149"), txt.index("(3) Dz.U. L 1 z"))
+
+    def test_fragment_artykulu_bez_przypisow_i_sasiada(self):
+        txt, _, _ = eurlex.pdf_do_tekstu(PDF_LAYOUT)
+        spans = eurlex._fragmenty(txt, "art. 1")
+        self.assertEqual(len(spans), 1)
+        frag = txt[spans[0][0]:spans[0][1]]
+        self.assertIn("c) określenie „zamieszkanie”", frag)
+        self.assertNotIn("Dz.U.", frag)
+        self.assertNotIn("Zakres podmiotowy", frag)
+
+    def test_strona_jednolamowa_bez_zmian(self):
+        strona = ["Artykuł 3", "", "Niniejsze rozporządzenie wchodzi w życie dwudziestego dnia po jego "
+                  "opublikowaniu w Dzienniku Urzędowym Unii Europejskiej."] * 4
+        tresc, przypisy = eurlex._pdf_lamy(strona)
+        self.assertEqual([l.lstrip(eurlex._PDF_SRODEK) for l in tresc], strona)
+        self.assertEqual(przypisy, [])
+
+    def test_pdftotext_layout_wola_program_z_layout_i_sprzata(self):
+        sciezki = []
+
+        def fake_run(cmd, capture_output, timeout):
+            sciezki.append(cmd[-2])
+            self.assertEqual(cmd[:4], ["pdftotext", "-layout", "-enc", "UTF-8"])
+            self.assertTrue(os.path.exists(cmd[-2]))
+            return mock.Mock(returncode=0, stdout="tekst\f".encode())
+        with mock.patch.object(eurlex.subprocess, "run", side_effect=fake_run):
+            self.assertEqual(eurlex._pdftotext_layout(b"%PDF-1.4"), "tekst\f")
+        self.assertFalse(os.path.exists(sciezki[0]))
+        with mock.patch.object(eurlex.subprocess, "run", return_value=mock.Mock(returncode=1, stdout=b"")):
+            self.assertEqual(eurlex._pdftotext_layout(b"%PDF-1.4"), "")
+
+    ZRODLO = "https://publications.europa.eu/resource/cellar/21eb3af6.0018.01/DOC_2"
+
+    def _tekst(self, fragment=None, strict=False, kontrole=None, layout=PDF_LAYOUT, which="/usr/bin/pdftotext"):
+        args = argparse.Namespace(celex=["32004R0883"], jezyk="pol", json=False, strict=strict, pdf=None,
+                                  fragment=fragment)
+        brak = eurlex._TylkoPdf("BŁĄD: akt 32004R0883 istnieje w CELLAR, ale w języku pol nie ma wersji "
+                                "HTML/XHTML (formaty: pdf, print) — pobierz urzędowy PDF: tekst 32004R0883 "
+                                "--jezyk pol --pdf plik.pdf.")
+        out = io.StringIO()
+        pobierz_pdf = mock.Mock(return_value=(b"%PDF-1.4", self.ZRODLO, []))
+        kontrole = kontrole if kontrole is not None else mock.Mock(return_value=[])
+        with mock.patch.object(eurlex, "_pobierz_tekst", side_effect=brak), \
+                mock.patch.object(eurlex.shutil, "which", return_value=which), \
+                mock.patch.object(eurlex, "_pobierz_pdf", pobierz_pdf), \
+                mock.patch.object(eurlex, "_pdftotext_layout", return_value=layout), \
+                mock.patch.object(eurlex, "_kontrole_tresci", kontrole), \
+                contextlib.redirect_stdout(out):
+            try:
+                eurlex.cmd_tekst(args)
+            except SystemExit as e:
+                return out.getvalue(), e, pobierz_pdf, kontrole
+        return out.getvalue(), None, pobierz_pdf, kontrole
+
+    def test_cmd_tekst_akt_tylko_pdf_czyta_pdf(self):
+        out, blad, _, _ = self._tekst(fragment="art. 2")
+        self.assertIsNone(blad)
+        self.assertIn("tekst z urzędowego PDF przez pdftotext -layout", out.splitlines()[0])
+        self.assertIn(f"EURLEX_TEXT_SOURCE_PDF={self.ZRODLO}", out)
+        self.assertIn("WYEKSTRAHOWANY z urzędowego PDF", out)
+        self.assertIn("--pdf plik.pdf", out)
+        self.assertIn("Zakres podmiotowy", out)
+        self.assertNotIn("Definicje", out)
+        self.assertNotIn(eurlex.GRANICA, out)
+
+    def test_cmd_tekst_pelny_tekst_z_pdf_bez_znaku_granicy(self):
+        out, blad, _, _ = self._tekst()
+        self.assertIsNone(blad)
+        self.assertIn("Przypisy (z dołu stron PDF):", out)
+        self.assertNotIn(eurlex.GRANICA, out)
+
+    def test_strict_przepuszcza_tekst_z_wlasnego_pdf(self):
+        out, blad, _, kontrole = self._tekst(fragment="art. 1", strict=True)
+        self.assertIsNone(blad)
+        self.assertIn("Definicje", out)
+        self.assertTrue(kontrole.call_args.args[2])  # kontrole treści w trybie strict nadal działają
+
+    def test_strict_sprostowanie_nadal_blokuje_przed_wydrukiem(self):
+        blokada = mock.Mock(side_effect=SystemExit("BŁĄD: akt 32004R0883 ma sprostowania w języku pol"))
+        out, blad, _, _ = self._tekst(strict=True, kontrole=blokada)
+        self.assertIn("sprostowania", str(blad.code))
+        self.assertEqual(out, "")
+
+    def test_bez_pdftotext_dotychczasowy_komunikat(self):
+        out, blad, pobierz_pdf, _ = self._tekst(which=None)
+        self.assertIn("--pdf plik.pdf", str(blad.code))
+        self.assertIn("pdftotext", str(blad.code))
+        pobierz_pdf.assert_not_called()
+        self.assertEqual(out, "")
+
+    def test_pdf_bez_warstwy_tekstowej(self):
+        out, blad, _, _ = self._tekst(layout="")
+        self.assertIn("pdftotext nie zwrócił z niego tekstu", str(blad.code))
+        self.assertIn("--pdf plik.pdf", str(blad.code))
+        self.assertEqual(out, "")
+
+    def test_zakres_sprostowania_traktuje_tylko_pdf_jak_brak_tekstu(self):
+        with mock.patch.object(eurlex, "_pobierz_tekst", side_effect=eurlex._TylkoPdf("tylko PDF")):
+            self.assertIsNone(eurlex._zakres_sprostowania("32004R0883R(06)", "pol"))
 
 
 if __name__ == "__main__":

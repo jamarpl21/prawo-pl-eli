@@ -98,6 +98,11 @@ REGON 000001301 / NIP 8960005408; te same liczby dla `nazwa`, `regon` i `nip`):
 `dataZakonczeniaUmowy` (null = czas nieoznaczony LUB brak danych), `wartoscPrzedmiotuUmowy`,
 `przedmiotUmowy`, `statusUmowy`. Wykonawcy NIE ma w wierszu — jest w szczegółach.
 
+**Wartość (`wartoscPrzedmiotuUmowy` / `wartoscPrzedmiotu`) to sama liczba** — API NIE podaje
+waluty ani tego, czy kwota jest netto czy brutto (żadnego pola z tymi atrybutami w odpowiedzi).
+Silnik drukuje ją bez „zł”; nie zakładaj PLN ani brutto, a filtry `wartoscOd/Do` porównują tę
+samą liczbę.
+
 **Szczegóły (`/agreement/{id}`):** `idUmowy`, `podstawoweDane{statusUmowy numerUmowy
 brakNumeruUmowy dataZawarciaUmowy dataZakonczeniaUmowy}`, `okresObowiazywania{
 umowaNaCzasNieoznaczony okres}` („154 dni”), `szczegolyUmowy{przedmiotUmowy
@@ -142,6 +147,10 @@ pyta o tę stronę, pobiera realny total i kończy komunikatem „poza oknem API
 - Dane wpisują jednostki (kierownicy JSFP są ich administratorami) — jakość nierówna:
   skróty nazw, literówki, daty obchodzone aneksami („system uniemożliwił wprowadzenie
   daty wstecznej” w komentarzach zmian). Do identyfikacji podmiotów używaj NIP/REGON.
-- Bądź uprzejmy dla serwera: ≤2 zapytania/s (limitów nie udokumentowano).
+- **Limit zapytań (sprawdzone na żywo 2026-10-05):** po ~10 szybkich zapytaniach (zwłaszcza
+  równoległych) API odpowiada `HTTP 429` — bez nagłówka `Retry-After`; po kilku sekundach
+  znów przyjmuje zapytania. Silnik ponawia 429 sam: czeka tyle, ile każe `Retry-After`, a bez
+  nagłówka 2, 4, 8… s, łącznie najwyżej 60 s — potem kończy czytelnym błędem „HTTP 429: API
+  rejestru ogranicza liczbę zapytań”. Nie uruchamiaj wielu zapytań naraz (np. z kilku agentów).
 - Osobny portal `jsfp.rejestrumow.gov.pl` służy jednostkom do wprowadzania danych
   (wymaga logowania — poza zakresem skilla).

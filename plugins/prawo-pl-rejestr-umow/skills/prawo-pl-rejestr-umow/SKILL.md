@@ -107,7 +107,8 @@ jesteś w katalogu skilla.)
   cały rejestr (364 tys. umów) udający wynik; porównuj total z `najnowsze`.
 - **umowa** — pełne szczegóły po idUmowy (UUID z wyników szukania):
   `python3 scripts/rejestrumow.py umowa 958e7d59-057b-4eb4-8f55-e664638f393a`
-  Pokazuje numer, status, okres, wartość (liczbą; obok ewentualny „opis wartości" — dowolny
+  Pokazuje numer, status, okres, wartość (liczbą, bez waluty — rejestr jej nie podaje; obok
+  ewentualny „opis wartości" — dowolny
   tekst jednostki, NIE gwarantowana kwota słownie), strony z NIP/REGON i pełnym adresem
   (ulica, kod, miejscowość, gmina/dzielnica, powiat, województwo), finansowanie ze środków
   UE/zagranicznych, aneksy i zmiany, wyłączenia jawności (zakres, podstawa, wyłączający).
@@ -145,7 +146,15 @@ kwoty, aneksy do odpowiedzi.
 5. **Wartość może być niejawna albo opisowa** — sprawdzaj w szczegółach pola wyłączenia
    jawności (podstawę prawną wyłączenia wskazuje jednostka) i „opis wartości" (wolny tekst;
    bywa kwotą słownie, bywa powtórzeniem przedmiotu, często pusty).
-6. Pełna lista endpointów, sekcji filtrów i pułapek: `references/api.md`.
+6. **Rejestr NIE podaje waluty ani informacji netto/brutto.** „Wartość” to kwota z rejestru bez
+   tych atrybutów — silnik drukuje ją bez „zł”. Nie zakładaj PLN ani brutto; w odpowiedzi pisz
+   „wartość wpisana do rejestru: 1 234 567,00 (rejestr nie podaje waluty ani czy to netto/brutto)”,
+   chyba że walutę/VAT podaje sam „opis wartości” — wtedy zacytuj go jako wpis jednostki.
+7. **Limit zapytań (HTTP 429).** Po ~10 szybkich zapytaniach API odpowiada 429. Silnik czeka
+   (wg `Retry-After`, bez niego 2, 4, 8… s; łącznie ≤60 s) i ponawia; dopiero potem kończy
+   błędem „HTTP 429: API rejestru ogranicza liczbę zapytań”. Nie uruchamiaj wielu zapytań
+   naraz (np. z kilku agentów) — zamiast serii wywołań zawęź filtry jednego zapytania.
+8. Pełna lista endpointów, sekcji filtrów i pułapek: `references/api.md`.
 
 ## Czego ten skill NIE obejmuje
 

@@ -31,7 +31,7 @@ Sekcje body wyszukiwania (API ignoruje nieznane pola PO CICHU — zła nazwa = c
   menuGlowne.*      nazwa/regon/nip DOWOLNEJ strony + przedmiot, status, daty, wartość
   zmianyUmowy.*     rodzajZmiany (kod TSU02…), dataZmianyOd/Do, czyZmianyDanychUmowy
 """
-import sys, json, re, time, argparse, urllib.request, urllib.parse, urllib.error
+import sys, json, re, time, argparse, email.utils, urllib.request, urllib.parse, urllib.error
 
 __version__ = "2.1.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://rejestrumow.gov.pl/api-dp/v1"
@@ -76,8 +76,28 @@ KOD_ZMIANY = re.compile(r"TSU\d{2}|inne", re.I)  # kody słownika rodzaje_zmian_
 ZAWEZ = "zawęź filtry (daty: --od/--do, --pub-od/--pub-do; --woj; --wartosc-od/--wartosc-do)"
 
 
+LIMIT_CZEKANIA_429 = 60  # s — łączne czekanie na limit zapytań API (HTTP 429), potem błąd
+
+
+def _retry_after(naglowki, domyslnie):
+    """Nagłówek Retry-After (sekundy albo data HTTP) → sekundy; bez nagłówka — `domyslnie`."""
+    v = (naglowki.get("Retry-After") if naglowki is not None else None) or ""
+    v = str(v).strip()
+    if re.fullmatch(r"\d+(?:\.\d+)?", v):
+        return float(v)
+    if v:
+        try:
+            return max(0.0, email.utils.parsedate_to_datetime(v).timestamp() - time.time())
+        except (TypeError, ValueError, IndexError, OverflowError):
+            pass
+    return domyslnie
+
+
 def _req(path, params=None, body=None):
-    """GET (body=None) albo POST JSON, z jednym ponowieniem na błąd przejściowy."""
+    """GET (body=None) albo POST JSON, z jednym ponowieniem na błąd przejściowy.
+
+    HTTP 429 (limit zapytań — API odcina po ~10 szybkich zapytaniach): czekamy tyle, ile każe
+    Retry-After (bez nagłówka: 2, 4, 8… s) i ponawiamy, łącznie najwyżej LIMIT_CZEKANIA_429 s."""
     url = BASE + path
     if params:
         q = urllib.parse.urlencode({k: v for k, v in params.items() if v not in (None, "")})
@@ -88,12 +108,25 @@ def _req(path, params=None, body=None):
         "User-Agent": f"prawo-pl-rejestr-umow/{__version__} (+https://github.com/jamarpl21/prawo-pl-eli)",
         "Accept": "application/json",
         **({"Content-Type": "application/json"} if dane is not None else {})})
-    for attempt in (1, 2):
+    attempt, czekano, odstep = 1, 0.0, 2.0
+    while True:
         try:
             with _opener.open(req, timeout=40) as r:
                 tresc = r.read().decode("utf-8", "replace")
             break
         except urllib.error.HTTPError as e:
+            if e.code == 429:
+                pauza = max(1.0, _retry_after(e.headers, odstep))  # „Retry-After: 0” nie może zapętlić
+                odstep = min(odstep * 2, 30)
+                if czekano + pauza > LIMIT_CZEKANIA_429:
+                    sys.exit(f"BŁĄD HTTP 429: API rejestru ogranicza liczbę zapytań (limit), a po "
+                             f"{czekano:.0f} s czekania nadal odmawia: {url}\n"
+                             + (f"Serwer każe czekać jeszcze {pauza:.0f} s. " if pauza > 0 else "")
+                             + "Odczekaj minutę i ponów; nie uruchamiaj wielu zapytań naraz (np. z kilku "
+                             "agentów) — zamiast serii wywołań zawęź filtry jednego zapytania.")
+                time.sleep(pauza)
+                czekano += pauza
+                continue
             szcz = ""
             try:
                 blad = json.loads(e.read().decode("utf-8", "replace"))
@@ -106,6 +139,7 @@ def _req(path, params=None, body=None):
                          "Zwykle oznacza nieistniejące idUmowy — podaj UUID z wyników komendy "
                          "'szukaj' (np. 0002c775-2526-484f-9b93-5a60e2b934c4).")
             if e.code >= 500 and attempt == 1:
+                attempt += 1
                 time.sleep(2); continue
             if e.code in (401, 403):
                 sys.exit(f"BŁĄD HTTP {e.code}: {url}\n"
@@ -115,6 +149,7 @@ def _req(path, params=None, body=None):
             sys.exit(f"BŁĄD HTTP {e.code}: {url}" + (f"\nSzczegóły: {szcz}" if szcz else ""))
         except Exception as e:  # noqa: BLE001
             if attempt == 1:
+                attempt += 1
                 time.sleep(2); continue
             sys.exit(f"BŁĄD sieci: {url} ({e})")
     try:
@@ -138,7 +173,7 @@ def _data(s):
 
 
 def _liczba(s):
-    """'1 000 000,50' / '1000000.50' → float (kwoty w PLN)."""
+    """'1 000 000,50' / '1000000.50' → float (kwota jak w rejestrze — bez waluty)."""
     try:
         return float(str(s).replace(" ", "").replace(" ", "").replace(",", "."))
     except ValueError:
@@ -146,11 +181,14 @@ def _liczba(s):
 
 
 def _kwota(v):
-    """5015 → '5 015,00 zł' (separator tysięcy = spacja, przecinek dziesiętny)."""
+    """5015 → '5 015,00' (separator tysięcy = spacja, przecinek dziesiętny).
+
+    BEZ „zł": rejestr nie podaje waluty ani tego, czy kwota jest netto czy brutto — dopisanie
+    waluty sugerowałoby informację, której w danych nie ma."""
     if v is None:
         return "—"
     try:
-        return f"{float(v):,.2f}".replace(",", " ").replace(".", ",") + " zł"
+        return f"{float(v):,.2f}".replace(",", " ").replace(".", ",")
     except (TypeError, ValueError):
         return str(v)
 
@@ -435,6 +473,8 @@ def cmd_umowa(a):
           + (f"   (okres: {okres['okres']})" if okres.get("okres") else ""))
     print(f"  Wartość:     {_kwota(szcz.get('wartoscPrzedmiotu'))}"
           + (f"   ({szcz['opisWartosciPrzedmiotu']})" if szcz.get("opisWartosciPrzedmiotu") else ""))
+    if szcz.get("wartoscPrzedmiotu") is not None:
+        print("               (kwota z rejestru — rejestr NIE podaje waluty ani czy to netto/brutto)")
     print(f"  Publikacja:  {d.get('dataPublikacji') or '?'}   "
           f"ostatnia modyfikacja: {d.get('dataModyfikacji') or '—'}")
     if d.get("finansowanaZeSrodkow") is not None:
@@ -504,8 +544,8 @@ def main():
     s.add_argument("--do", help="data zawarcia do (RRRR-MM-DD)")
     s.add_argument("--pub-od", help="data publikacji od (RRRR-MM-DD)")
     s.add_argument("--pub-do", help="data publikacji do (RRRR-MM-DD)")
-    s.add_argument("--wartosc-od", help="wartość umowy od (PLN)")
-    s.add_argument("--wartosc-do", help="wartość umowy do (PLN)")
+    s.add_argument("--wartosc-od", help="wartość umowy od (kwota z rejestru, bez waluty)")
+    s.add_argument("--wartosc-do", help="wartość umowy do (kwota z rejestru, bez waluty)")
     s.add_argument("--zmiana-rodzaj", help="umowy ze zmianą danego rodzaju — KOD słownika "
                                            "rodzaje_zmian_umowy (TSU02 aneks, TSU05 rozwiązanie, TSU10 wygaśnięcie…)")
     s.add_argument("--zmiana-od", help="data zmiany umowy od (RRRR-MM-DD)")
