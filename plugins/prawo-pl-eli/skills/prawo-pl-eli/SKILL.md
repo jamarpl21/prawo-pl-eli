@@ -160,6 +160,10 @@ przy którego nagłówku stoi przypis/notka o wejściu w życie (k.wyb. „Rozdz
 tylko `< … >`); brzmienie z `< … >` cytuj wyłącznie jako przyszłe, z datą.** `--strict` tego nie blokuje
 (tekst jest oznaczony i sprawdzalny) — decyzja należy do Ciebie. Gdy część stron PDF nie ma warstwy
 tekstowej (skan), narzędzie pisze „N z M stron … nie ma warstwy tekstowej" — tej treści w wyniku nie ma.
+Gdy w systemie jest `tesseract` (z językiem `pol`) i `pdftoppm`, skany do 10 stron są odczytywane OCR
+samodzielnie, dłuższe — z `tekst … --ocr` (ok. 7 s/stronę; wynik zapamiętywany w `~/.cache/prawo-pl-eli/ocr`);
+`--bez-ocr` wyłącza OCR. Tekst z OCR ma nagłówek „UWAGA — OCR … NIEPEWNY" — liczby, daty i kwoty sprawdź w PDF
+przed cytatem; **`--strict` blokuje tekst z OCR.**
 Ogłoszony PDF Dz.U./M.P. z lat 1990–1999 ma warstwę tekstową z OCR skanu (nagłówek wyniku to mówi): litery
 i cyfry bywają przekłamane, a wyrazy rozbite spacją — **liczby, daty, kwoty i dosłowny cytat sprawdź w `--pdf`**.
 

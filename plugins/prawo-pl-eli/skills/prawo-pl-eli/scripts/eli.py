@@ -20,7 +20,8 @@ Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
                       kompletności: nowszy t.j., awaria kontroli, tekst ze STARSZEGO t.j. zamiast własnego
                       PDF, niepełna lista nowelizacji; NIE wykrywa zmian przepisu po stanie prawnym t.j.)
 """
-import sys, json, re, time, argparse, shutil, subprocess, tempfile, os, datetime
+import sys, json, re, time, argparse, shutil, subprocess, tempfile, os, datetime, hashlib
+import concurrent.futures
 import urllib.request, urllib.parse, urllib.error
 from html.parser import HTMLParser
 from html import unescape as _unescape
@@ -1899,11 +1900,83 @@ def cmd_meta(a):
         print(f"  → Akt ma tekst jednolity — ustal aktualny: python3 {sys.argv[0]} tj {label}")
 
 
-def _tekst_z_pdf(path, label, meta, info=None):
+# ---------------------------------------------------------------------------------------------
+# Opcjonalny OCR stron bez warstwy tekstowej (skany) — tesseract + pdftoppm, jeśli są w PATH
+# ---------------------------------------------------------------------------------------------
+_OCR_AUTO_MAKS = 10        # tyle stron-skanów odczytuje się samo; więcej (ok. 7 s/stronę) — tylko z --ocr
+_OCR_SEK_NA_STRONE = 7
+_OCR_DPI = 300
+
+
+def ocr_dostepny():
+    """tesseract i pdftoppm w PATH oraz polski model językowy („pol")."""
+    if not (shutil.which("tesseract") and shutil.which("pdftoppm")):
+        return False
+    try:
+        r = subprocess.run(["tesseract", "--list-langs"], capture_output=True, timeout=20)
+    except Exception:
+        return False
+    return "pol" in r.stdout.decode("utf-8", "replace").split()
+
+
+def _ocr_katalog():
+    baza = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
+    return os.path.join(baza, "prawo-pl-eli", "ocr")
+
+
+def _ocr_strona(pdf_path, nr, klucz):
+    """OCR jednej strony (nr od 1) → tekst; wynik zapamiętany na dysku (ten sam PDF = ten sam wynik)."""
+    plik = os.path.join(_ocr_katalog(), f"{klucz}-{nr}-{_OCR_DPI}.txt")
+    try:
+        with open(plik, encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        pass
+    with tempfile.TemporaryDirectory() as tmp:
+        obraz = os.path.join(tmp, "s")
+        subprocess.run(["pdftoppm", "-f", str(nr), "-l", str(nr), "-r", str(_OCR_DPI), "-gray", "-png",
+                        "-singlefile", pdf_path, obraz], capture_output=True, timeout=180, check=True)
+        r = subprocess.run(["tesseract", obraz + ".png", "-", "-l", "pol", "--psm", "1"],
+                           capture_output=True, timeout=300, check=True)
+    # tesseract czyta „§" jako „$" (aktów prawnych nie pisze się w dolarach): „$ 2", „$2." → „§ 2", „§2."
+    tekst = re.sub(r"\$(?=\s?\d)", "§", r.stdout.decode("utf-8", "replace"))
+    try:
+        os.makedirs(_ocr_katalog(), exist_ok=True)
+        with open(plik, "w", encoding="utf-8") as f:
+            f.write(tekst)
+    except OSError:
+        pass        # brak zapisu (piaskownica) nie przeszkadza — następnym razem OCR od nowa
+    return tekst
+
+
+def pdf_ocr_stron(pdf_bytes, numery):
+    """OCR stron o indeksach `numery` (od 0) → {indeks: tekst}; równolegle, z pamięcią na dysku.
+    Strona, której OCR się nie udał, zostaje pominięta (brak klucza)."""
+    klucz = hashlib.sha256(pdf_bytes).hexdigest()[:16]
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+        f.write(pdf_bytes)
+        sciezka = f.name
+
+    def jedna(i):
+        try:
+            return i, _ocr_strona(sciezka, i + 1, klucz)
+        except Exception:
+            return i, None
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, (os.cpu_count() or 2) - 1)) as ex:
+            return {i: t for i, t in ex.map(jedna, numery) if t}
+    finally:
+        os.unlink(sciezka)
+
+
+def _tekst_z_pdf(path, label, meta, info=None, ocr=None):
     """Tekst aktu z jego WŁASNEGO urzędowego PDF (pdftotext -layout). Zwraca (tekst, url, błąd).
 
     `info` (dict) dostaje „typ" wybranego PDF, a dla tekstu ujednoliconego także „podstawa" (notka
-    „Opracowano na podstawie…") i „data_wydruku"."""
+    „Opracowano na podstawie…") i „data_wydruku". Strony bez warstwy tekstowej (skany) są odczytywane
+    przez OCR (tesseract), gdy jest dostępny: same, jeśli jest ich najwyżej `_OCR_AUTO_MAKS`, a wszystkie
+    — z `ocr=True` (--ocr); `info` dostaje wtedy „ocr_strony" (odczytane, wszystkie) albo
+    „ocr_pominiete" (liczba stron, szacowany czas w s)."""
     info = {} if info is None else info
     pick = _wybierz_pdf(meta)
     if not pick:
@@ -1923,9 +1996,22 @@ def _tekst_z_pdf(path, label, meta, info=None):
     # strony bez warstwy tekstowej (skany: DU 2010 poz. 1 ma 564 z 566) — ich treści w wyniku nie będzie
     strony = [p for p in raw.split("\f")][:-1] if raw.endswith("\f") else raw.split("\f")
     # nagłówek strony nie jest treścią — także zniekształcony przez OCR skanu z lat 90. („Dzienn ik Ustaw Nr 98 ~ 3089 ~ Poz. 602")
-    puste = sum(1 for p in strony if len(re.sub(r"[\W\d_]", "", "\n".join(
+    puste_idx = [i for i, p in enumerate(strony) if len(re.sub(r"[\W\d_]", "", "\n".join(
         l for l in p.split("\n") if not _PDF_NAGLOWEK.match(l)
-        and not _PDF_NAGLOWEK_OCR.match(re.sub(r"\s", "", l))))) < 20)
+        and not _PDF_NAGLOWEK_OCR.match(re.sub(r"\s", "", l))))) < 20]
+    if raw and puste_idx and ocr is not False and ocr_dostepny():
+        if ocr or len(puste_idx) <= _OCR_AUTO_MAKS:
+            odczytane = pdf_ocr_stron(data, puste_idx)
+            if odczytane:
+                kawalki = raw.split("\f")
+                for i, t in odczytane.items():
+                    kawalki[i] = t.replace("\f", "")
+                raw = "\f".join(kawalki)
+                info["ocr_strony"] = (len(odczytane), len(strony))
+                puste_idx = [i for i in puste_idx if i not in odczytane]
+        else:
+            info["ocr_pominiete"] = (len(puste_idx), len(puste_idx) * _OCR_SEK_NA_STRONE)
+    puste = len(puste_idx)
     if raw and puste:
         info["puste_strony"] = (puste, len(strony))
     if raw and zeszyt:
@@ -1934,7 +2020,9 @@ def _tekst_z_pdf(path, label, meta, info=None):
             info["ocr"] = True      # warstwa tekstowa zeszytów z lat 90. to OCR skanu
     txt = pdf_layout_do_tekstu(raw, info, notki) if raw else ""
     if not txt:
-        return "", url, "pdftotext nie zwrócił tekstu (PDF bez warstwy tekstowej albo błąd konwersji)"
+        rada = (f"; odczyt OCR: tekst {label} --ocr (ok. {info['ocr_pominiete'][1] // 60 + 1} min)"
+                if info.get("ocr_pominiete") else "")
+        return "", url, "pdftotext nie zwrócił tekstu (PDF bez warstwy tekstowej albo błąd konwersji)" + rada
     return txt, url, ""
 
 
@@ -2007,7 +2095,13 @@ def cmd_tekst(a):
         # WŁASNY urzędowy PDF tego aktu — to jest jego tekst, więc --strict go przepuszcza
         meta = _expect_dict(_get(path), "metadane aktu")
         info_pdf = {}
-        txt, url, pdf_blad = _tekst_z_pdf(path, label, meta, info_pdf)
+        txt, url, pdf_blad = _tekst_z_pdf(path, label, meta, info_pdf,
+                                          ocr=False if getattr(a, "bez_ocr", False) else (True if getattr(a, "ocr", False) else None))
+        if txt and info_pdf.get("ocr_strony") and strict:
+            n, m = info_pdf["ocr_strony"]
+            sys.exit(f"BŁĄD (strict): {n} z {m} stron PDF dla {label} to skany odczytane przez OCR (tesseract) — tekst "
+                     "niepewny (cyfry, daty, kwoty). Tryb strict blokuje tekst z OCR; bez --strict zostanie wypisany "
+                     f"z ostrzeżeniem, a wiążący jest PDF: tekst {label} --pdf plik.pdf")
         if txt:
             zrodlo = "z urzędowego PDF przez pdftotext -layout"
             if info_pdf.get("podstawa"):
@@ -2028,8 +2122,16 @@ def cmd_tekst(a):
                              "oraz rozbite wyrazy („sk ładu”), a liczby, daty i kwoty sprawdź w PDF")
             if info_pdf.get("puste_strony"):
                 n, m = info_pdf["puste_strony"]
+                rada = (f" Odczyt OCR wszystkich stron: tekst {label} --ocr (ok. {info_pdf['ocr_pominiete'][1] // 60 + 1} min)."
+                        if info_pdf.get("ocr_pominiete") else
+                        " OCR niedostępny (zainstaluj tesseract z językiem polskim i poppler)." if not ocr_dostepny() else "")
                 ostrz.insert(0, f"UWAGA: {n} z {m} stron tego PDF nie ma warstwy tekstowej (skan albo strona pusta) — "
-                                "ich treści NIE MA poniżej. Sprawdź PDF: tekst " + label + " --pdf plik.pdf")
+                                "ich treści NIE MA poniżej. Sprawdź PDF: tekst " + label + " --pdf plik.pdf." + rada)
+            if info_pdf.get("ocr_strony"):
+                n, m = info_pdf["ocr_strony"]
+                ostrz.insert(0, f"UWAGA — OCR: {n} z {m} stron tego PDF to skany odczytane przez OCR (tesseract). Tekst "
+                                "z tych stron jest NIEPEWNY: litery, cyfry, daty i kwoty mogą być przekłamane, a układ "
+                                "(akapity, tabele) zniekształcony. Przed cytatem sprawdź w PDF: tekst " + label + " --pdf plik.pdf")
             ostrz = [f"ELI_TEXT_SOURCE_PDF={url}",
                      f"UWAGA: text.html dla {label} jest PUSTE w API (textHTML=false) — poniżej tekst "
                      f"WYEKSTRAHOWANY z urzędowego PDF tego aktu ({opis}). "
@@ -2276,6 +2378,10 @@ def main():
 
     t = sub.add_parser("tekst"); t.add_argument("sygnatura", nargs="+"); t.add_argument("--pdf")
     t.add_argument("--fragment", help='wytnij tylko jednostki z frazą, np. "art. 299" albo "przedawnienie"')
+    o = t.add_mutually_exclusive_group()
+    o.add_argument("--ocr", action="store_true",
+                   help=f"odczytaj OCR (tesseract) WSZYSTKIE strony-skany PDF (domyślnie tylko do {_OCR_AUTO_MAKS} stron)")
+    o.add_argument("--bez-ocr", action="store_true", help="nie używaj OCR nawet dla krótkich skanów")
     t.set_defaults(func=cmd_tekst)
 
     st = sub.add_parser("struktura"); st.add_argument("sygnatura", nargs="+")

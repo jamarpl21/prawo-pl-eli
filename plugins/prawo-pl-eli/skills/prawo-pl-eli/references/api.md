@@ -69,7 +69,10 @@ treści strony, nie po roku: DU 2010 poz. 1 też je ma); tabele zostają w cało
 łamu („———————" + „1) Minister Kultury kieruje…") wychodzą jako `[przypis 1)] …` pod akapitem z odsyłaczem, a nie
 między łamami; podpis dosunięty do prawej krawędzi lewego łamu nie przestawia kolejności łamów (blok zamyka tylko
 wiersz wyśrodkowany na stronie: numer pozycji, tytuł). Strony bez warstwy tekstowej (skany) są zgłaszane
-(„N z M stron…").
+(„N z M stron…"), a gdy jest `tesseract` (język `pol`) i `pdftoppm` — odczytywane OCR: do 10 stron same, więcej
+z `--ocr` (300 dpi, `--psm 1`, ok. 7 s/stronę, równolegle; „$" przed cyfrą → „§"; wynik w
+`$XDG_CACHE_HOME/prawo-pl-eli/ocr` lub `~/.cache/prawo-pl-eli/ocr`). Tekst z OCR jest oznaczony jako niepewny,
+`--strict` go blokuje.
 
 **Lata 1990–1999.** PDF zeszytu to skan z warstwą tekstową z OCR (`tekst` dopisuje to do nagłówka wyniku).
 Helper rozpoznaje nagłówki stron zniekształcone przez OCR, z myślnikami ASCII albo bez nich („Dziennik Ustaw Nr 55
@@ -82,7 +85,7 @@ nie są w całości skanem, odsetek słów HTML we właściwej kolejności 0,58 
 25 aktów z 2000–2011 żaden nie wypadł gorzej. NIE naprawia: przekłamań OCR
 w literach i cyfrach („TRYBUNAtU", „1O") ani wyrazów rozbitych spacją („sk ładu", „zm ieniaj ące") — liczby,
 daty i kwoty sprawdzaj w PDF; ok. 7% stron to skany bez warstwy tekstowej (5% aktów w całości — wtedy `tekst`
-nie ma czego wypisać, zostaje `--pdf`); część PDF-ów obejmuje tylko pierwsze strony zeszytu z aktem, więc koniec
+nie ma czego wypisać bez OCR — patrz wyżej `--ocr`, albo `--pdf`); część PDF-ów obejmuje tylko pierwsze strony zeszytu z aktem, więc koniec
 aktu bywa poza plikiem; gdy numer pozycji SAMEGO aktu jest źle odczytany, wynik obejmuje cały PDF (z sąsiednimi
 aktami), jak przed zmianą. PDF-y typu U i T (wybierane przed O) nie przechodzą przez tę ścieżkę.
 

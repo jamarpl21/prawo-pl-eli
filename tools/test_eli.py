@@ -2072,6 +2072,68 @@ class TestPdfZeszytLata90(unittest.TestCase):
         self.assertNotIn("puste_strony", info)
 
 
+class TestOcrSkanow(unittest.TestCase):
+    """Punkt 6 (2026-10): strony bez warstwy tekstowej — OCR (tesseract), gdy jest; tekst oznaczony jako
+    niepewny, --strict go blokuje; długie skany tylko z --ocr."""
+
+    META = {"ELI": "DU/1992/413", "year": 1992, "pos": 413, "publisher": "DU", "textHTML": False,
+            "displayAddress": "Dz.U. 1992 nr 80 poz. 413", "texts": [{"fileName": "D19920413.pdf", "type": "O"}]}
+    OCR = ("413\nROZPORZĄDZENIE MINISTRA SPRAWIEDLIWOŚCI\nz dnia 23 października 1992 r.\n"
+           "§ 1. W rozporządzeniu wprowadza się zmiany.\n§ 2. Rozporządzenie wchodzi w życie z dniem ogłoszenia.\n")
+
+    def _tekst(self, argv, stron=1):
+        def fake_get(path, params=None, soft=False):
+            if path.endswith("/references"):
+                return {}
+            if path.endswith("/text.html"):
+                return ""
+            return self.META
+        out = io.StringIO()
+        with mock.patch.object(eli, "_get", side_effect=fake_get), \
+                mock.patch.object(eli, "_get_bytes", return_value=b"%PDF"), \
+                mock.patch.object(eli, "pdftotext_dostepny", return_value=True), \
+                mock.patch.object(eli, "pdf_do_tekstu_z_notkami", return_value=("\f" * stron, {}, {})), \
+                mock.patch.object(eli, "ocr_dostepny", return_value=True), \
+                mock.patch.object(eli, "pdf_ocr_stron", side_effect=lambda data, nr: {i: self.OCR for i in nr}) as ocr, \
+                mock.patch.object(sys, "argv", ["eli.py"] + argv), contextlib.redirect_stdout(out):
+            try:
+                eli.main()
+            except SystemExit as e:
+                return out.getvalue(), str(e), ocr
+        return out.getvalue(), "", ocr
+
+    def test_krotki_skan_odczytany_i_oznaczony(self):
+        out, err, ocr = self._tekst(["tekst", "DU", "1992", "413"])
+        self.assertEqual(err, "")
+        self.assertIn("UWAGA — OCR: 1 z 1 stron", out)
+        self.assertIn("§ 2. Rozporządzenie wchodzi w życie z dniem ogłoszenia.", out)
+
+    def test_strict_blokuje_tekst_z_ocr(self):
+        out, err, _ = self._tekst(["--strict", "tekst", "DU", "1992", "413"])
+        self.assertIn("BŁĄD (strict)", err)
+        self.assertNotIn("ROZPORZĄDZENIE", out)
+
+    def test_dlugi_skan_tylko_z_flaga_ocr(self):
+        out, err, ocr = self._tekst(["tekst", "DU", "1992", "413"], stron=eli._OCR_AUTO_MAKS + 5)
+        ocr.assert_not_called()
+        self.assertIn("--ocr (ok.", err + out)
+        out, err, ocr = self._tekst(["tekst", "DU", "1992", "413", "--ocr"], stron=eli._OCR_AUTO_MAKS + 5)
+        ocr.assert_called_once()
+        self.assertIn(f"UWAGA — OCR: {eli._OCR_AUTO_MAKS + 5} z {eli._OCR_AUTO_MAKS + 5} stron", out)
+
+    def test_bez_ocr(self):
+        _, err, ocr = self._tekst(["tekst", "DU", "1992", "413", "--bez-ocr"])
+        ocr.assert_not_called()
+        self.assertIn("nie zwrócił tekstu", err)
+
+    def test_paragraf_zamiast_dolara(self):
+        with mock.patch.object(eli.subprocess, "run", side_effect=[
+                mock.Mock(), mock.Mock(stdout="1) $ 2 otrzymuje brzmienie: „$2. 1. Sąd”".encode())]), \
+                mock.patch.object(eli, "_ocr_katalog", return_value="/nonexistent/x"), \
+                mock.patch("builtins.open", side_effect=OSError), mock.patch.object(eli.os, "makedirs", side_effect=OSError):
+            self.assertEqual(eli._ocr_strona("/tmp/x.pdf", 1, "k"), "1) § 2 otrzymuje brzmienie: „§2. 1. Sąd”")
+
+
 class TestAudyt2026Cache(unittest.TestCase):
     def test_get_bez_parametrow_jest_cache_owany_a_z_parametrami_nie(self):
         eli._CACHE.clear()
