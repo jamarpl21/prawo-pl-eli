@@ -162,6 +162,11 @@ def _v(b, key):
 # p.footnote. Znak jest usuwany przed wydrukiem (_bez_granic), nigdy nie trafia do cytatu.
 GRANICA = "\x1f"
 _KLASY_GRANIC = frozenset(("oj-signatory", "oj-note", "footnote"))
+# Znak początku KOLEJNEGO DOKUMENTU w tym samym wydaniu Dz.U. (ASCII record separator): XHTML CELLAR
+# oddziela akt od dokumentu dołączonego (umowa, protokół do decyzji o podpisaniu/zawarciu) przez
+# <hr class="oj-doc-sep"/>. Bez niego „art. 2" decyzji 2006/370/WE i „Artykuł 2" załączonej Umowy
+# wychodziły jako dwa wystąpienia tego samego aktu. Też usuwany przed wydrukiem (_bez_granic).
+DOKUMENT = "\x1e"
 
 
 class _Stripper(HTMLParser):
@@ -174,6 +179,8 @@ class _Stripper(HTMLParser):
             self.skip += 1
         if tag in ("p", "div", "hr"):
             klasy = (dict(attrs).get("class") or "").split()
+            if tag == "hr" and "oj-doc-sep" in klasy:
+                self.out.append("\n" + DOKUMENT + "\n")
             if _KLASY_GRANIC.intersection(klasy):
                 self.out.append("\n" + GRANICA + "\n")
         if tag in ("p", "br", "div", "tr", "li", "h1", "h2", "h3", "h4", "table"):
@@ -202,7 +209,9 @@ def html_to_text(html):
 
 def _bez_granic(t):
     """Usuwa znaki granicy strukturalnej przed wydrukiem."""
-    return t.replace(GRANICA + "\n", "").replace(GRANICA, "")
+    for znak in (GRANICA, DOKUMENT):
+        t = t.replace(znak + "\n", "").replace(znak, "")
+    return t
 
 
 # Granice jednostek redakcyjnych w aktach UE (nagłówki na początku linii; PL/EN/DE/FR) oraz
@@ -215,7 +224,7 @@ def _bez_granic(t):
 # kotwicy końca linii ucinała fragment art. 113 AI Act (EN) w połowie lit. c).
 _GRANICE = (r"(?m)^((?:Artykuł|Article|Artikel)\s+\d+[a-z]*\s*$|ROZDZIAŁ\s|CHAPTER\s|KAPITEL\s|"
             r"SEKCJA\s|Sekcja\s|SECTION\s|TYTUŁ\s|TITLE\s|ZAŁĄCZNIK|ANNEX|ANHANG|PREAMBUŁA|"
-            + GRANICA + r"|Sporządzono w\b|Done at\b|Geschehen zu\b|Fait à\b|"
+            + GRANICA + "|" + DOKUMENT + r"|Sporządzono w\b|Done at\b|Geschehen zu\b|Fait à\b|"
             r"W imieniu (?:Parlamentu|Rady|Komisji)|For the (?:European Parliament|Council|Commission)|"
             r"Im Namen (?:des|der)\b|Par le (?:Parlement|Conseil)|\(1\)\s+(?:Dz\.U\.|OJ\s|ABl\.|JO\s))")
 
@@ -249,6 +258,41 @@ def _fragmenty(txt, fraza, maks=8):
         else:
             spans.append((start, end))
     return spans
+
+
+_RE_ZALACZNIK = re.compile(r"(?m)^(?:ZAŁĄCZNIK|ANNEX|ANHANG|ANNEXE)\b[^\n]*")
+
+
+def _naglowek_po(txt, poz, maks=160):
+    """Pierwsze 1–2 niepuste linie tekstu od pozycji poz (tytuł dokumentu/załącznika), bez znaków granic."""
+    linie = []
+    for l in txt[poz:poz + 2000].split("\n"):
+        l = l.strip().strip(GRANICA + DOKUMENT).strip()
+        if l:
+            linie.append(l)
+        if len(linie) == 2:
+            break
+    t = " ".join(linie)
+    return t if len(t) <= maks else t[:maks - 1].rstrip() + "…"
+
+
+def _poza_aktem(txt, start):
+    """Fragment spoza części normatywnej aktu → opis miejsca (do nagłówka „[w …]"), inaczej None.
+
+    Dokument dołączony (znak DOKUMENT z <hr class="oj-doc-sep"/>: umowa, protokół) i załącznik
+    (nagłówek „ZAŁĄCZNIK…" na początku linii) — liczy się NAJBLIŻSZY poprzedzający. Bez tego drugie
+    trafienie „art. 2" w decyzji o podpisaniu umowy wyglądało jak kolejny przepis decyzji."""
+    dok = txt.rfind(DOKUMENT, 0, start + 1)
+    zal = None
+    for m in _RE_ZALACZNIK.finditer(txt):
+        if m.start() > start:
+            break
+        zal = m
+    if zal is not None and zal.start() > dok:
+        return "w załączniku: " + _naglowek_po(txt, zal.start())
+    if dok != -1:
+        return "w dokumencie dołączonym do aktu (to NIE przepis samego aktu): " + _naglowek_po(txt, dok + 1)
+    return None
 
 
 def celex_norm(parts):
@@ -367,20 +411,25 @@ SELECT DISTINCT ?celex ?date ?title ?inf WHERE {{
         print()
 
 
-_META_POLA = ("type", "date", "inf", "eli", "eiv", "eov", "trans", "kons_data", "baza", "sklad", "title")
+_META_POLA = ("type", "date", "inf", "eli", "eiv", "eov", "trans", "deadline", "kons_data", "baza", "sklad",
+              "title")
 
 
 def _meta_wiersze(celex, lang):
     """Metadane pracy (work) o danym CELEX — surowe wiersze SPARQL.
 
     Daty: cdm:resource_legal_date_entry-into-force trzyma ZARÓWNO wejście w życie, jak i daty
-    rozpoczęcia stosowania (CELLAR ich nie rozróżnia — osobnej właściwości „data stosowania"
-    w CDM nie ma); cdm:directive_date_transposition — termin(y) transpozycji dyrektywy.
+    rozpoczęcia stosowania (osobnej właściwości „data stosowania" w CDM nie ma — rodzaj daty jest
+    tylko w adnotacji, zob. _adnotacje_dat); cdm:directive_date_transposition — termin(y)
+    transpozycji dyrektywy; cdm:resource_legal_date_deadline — inne terminy z aktu (w starszych
+    dyrektywach także termin transpozycji, gdy brak directive_date_transposition: 32002L0012);
+    cdm:resource_legal_date_end-of-validity — bywa KILKA wartości: 9999-12-31 (akt bez daty końca)
+    obok dat CZĘŚCIOWEGO upływu ważności (32009R0470: 2022-01-27 = art. 30).
     Wersja skonsolidowana (sektor 0): cdm:act_consolidated_date = „stan na",
     cdm:act_consolidated_based_on_resource_legal = akt bazowy,
     cdm:act_consolidated_consolidates_resource_legal = akty ujęte w konsolidacji."""
     return _sparql(f"""PREFIX cdm: <{CDM}>
-SELECT ?type ?date ?inf ?eli ?eiv ?eov ?trans ?kons_data ?baza ?sklad ?title WHERE {{
+SELECT ?type ?date ?inf ?eli ?eiv ?eov ?trans ?deadline ?kons_data ?baza ?sklad ?title WHERE {{
   ?w cdm:resource_legal_id_celex "{celex}"^^<{XSD_STR}> .
   OPTIONAL {{ ?w cdm:work_has_resource-type ?type }}
   OPTIONAL {{ ?w cdm:work_date_document ?date }}
@@ -389,6 +438,7 @@ SELECT ?type ?date ?inf ?eli ?eiv ?eov ?trans ?kons_data ?baza ?sklad ?title WHE
   OPTIONAL {{ ?w cdm:resource_legal_date_entry-into-force ?eiv }}
   OPTIONAL {{ ?w cdm:resource_legal_date_end-of-validity ?eov }}
   OPTIONAL {{ ?w cdm:directive_date_transposition ?trans }}
+  OPTIONAL {{ ?w cdm:resource_legal_date_deadline ?deadline }}
   OPTIONAL {{ ?w cdm:act_consolidated_date ?kons_data }}
   OPTIONAL {{ ?w cdm:act_consolidated_based_on_resource_legal ?b . ?b cdm:resource_legal_id_celex ?baza }}
   OPTIONAL {{ ?w cdm:act_consolidated_consolidates_resource_legal ?s . ?s cdm:resource_legal_id_celex ?sklad }}
@@ -400,6 +450,116 @@ SELECT ?type ?date ?inf ?eli ?eiv ?eov ?trans ?kons_data ?baza ?sklad ?title WHE
 
 def _zbierz(rows, pola=_META_POLA):
     return {k: sorted({_v(b, k) for b in rows if _v(b, k)}) for k in pola}
+
+
+ANNOT = "http://publications.europa.eu/ontology/annotation#"
+_WLASCIWOSCI_DAT = {"eiv": "resource_legal_date_entry-into-force",
+                    "eov": "resource_legal_date_end-of-validity",
+                    "trans": "directive_date_transposition",
+                    "deadline": "resource_legal_date_deadline"}
+# Kody tabel autorytatywnych Urzędu Publikacji (fd_330 koniec ważności, fd_335 daty, fd_361
+# transpozycja) używane w annot:comment_on_date / annot:type_of_date — etykiety PL z tych tabel
+# (skos:prefLabel), część skrócona. Nieznany kod zostaje wypisany dosłownie.
+_KODY_DAT = {
+    "FIN/VAL/PART": "częściowy upływ terminu ważności", "FIN/VAL": "upływ terminu ważności",
+    "AI/PAR": "uchylony w sposób dorozumiany przez", "A/PAR": "uchylony przez",
+    "AR/PAR": "uchylony i zastąpiony przez", "R/PAR": "zastąpiony przez", "REMPLPART": "częściowe zastąpienie",
+    "P/PAR": "przedłużenie ważności do", "PI/PAR": "przedłużony w sposób dorozumiany do",
+    "VOID": "uznany za nieważny na mocy", "CADUC": "nieaktualny",
+    "EV": "wejście w życie", "DATEFF": "data wejścia w życie", "MA": "stosowanie",
+    "MA/PART": "częściowe stosowanie", "MA/PROV": "tymczasowe stosowanie", "APPLICATION": "stosowanie",
+    "PE": "staje się skuteczny", "PE/PART": "staje się częściowo skuteczny",
+    "ADOPTION": "przyjęcie", "NOTIF": "notyfikacja", "B-19.12": "przegląd",
+    "DATPUB": "data publikacji", "DATNOT": "data notyfikacji", "DATSIG": "data podpisania",
+    "DATDOC": "data dokumentu", "DATRAT": "data ratyfikacji",
+    "AU+TARD": "najpóźniej", "AU+TOT": "najwcześniej", "V": "patrz", "ET": "i", "SAUF": "za wyjątkiem",
+    "AP": "po", "APRES": "po", "ART": "art.", "ARTUNIQUE": "artykuł", "ANN": "załącznik",
+    "CONSID": "motyw", "PT": "część", "ECHEL": "różne daty", "DATE": "data", "TEXTE": "tekst",
+    "TIT": "tytuł", "TITRE": "tytuł", "JO": "Dz.U.", "P": "str.", "AN": "rok", "ANNEE": "rok", "ANS": "lata",
+    "ANNEES": "lata", "MOIS": "miesiąc", "MOISS": "miesiące", "DM": "miesiąca", "EXERC": "rok budżetowy",
+    "EXERCICE": "rok budżetowy", "DEB/PER/REF": "początek okresu odniesienia",
+    "FIN/PER/REF": "koniec okresu odniesienia", "PER/REF": "okres odniesienia",
+    "FIN/PER/TRANSIT": "koniec okresu przejściowego", "FIN/PROGRAMME": "koniec programu",
+    "FIN/MANDAT": "wygaśnięcie mandatu", "FIN/ACTU": "nie dotyczy", "ACT/DEF": "do czasu przyjęcia "
+    "ostatecznych środków", "YD": "przyjęty przez", "YDP": "częściowo przyjęty przez", "RT": "wycofany",
+    "RJ": "odrzucony", "DE/PAR": "wypowiedziany w drodze", "TAC/REC/PER": "odnowienie za milczącą zgodą na",
+}
+# kody o różnym znaczeniu w różnych tabelach: (tabela, kod) → etykieta
+_KODY_DAT_TABELA = {("fd_330", "L"): "związany z"}
+_RE_KOD_DATY = re.compile(r"\{([^|{}]+)\|([^{}]*)\}")
+
+
+def _opis_daty(surowy):
+    """Komentarz CELLAR do daty („{FIN/VAL/PART|…fd_330/…} {ART|…} 30 {AI/PAR|…} 32019R0006") →
+    „częściowy upływ terminu ważności art. 30 uchylony w sposób dorozumiany przez 32019R0006"."""
+    def kod(m):
+        k, uri = m.group(1).strip(), m.group(2)
+        if "/celex/" in uri:
+            return k
+        tabela = re.search(r"/authority/(fd_\d+)/", uri)
+        return _KODY_DAT_TABELA.get((tabela.group(1) if tabela else "", k)) or _KODY_DAT.get(k, k)
+    return re.sub(r"\s+", " ", _RE_KOD_DATY.sub(kod, surowy)).strip()
+
+
+def _adnotacje_dat(celex):
+    """Adnotacje OWL do dat aktu (owl:Axiom: annot:comment_on_date, annot:type_of_date) →
+    {(pole, data): {"komentarz": [opis…], "typ": [opis…], "surowe": [literał…]}}; pole ∈ eiv/eov/
+    trans/deadline. To z nich EUR-Lex buduje „Częściowy upływ terminu ważności Art. 30" i „Wejście
+    w życie"/„Stosowanie". Awaria → VerificationUnknown (adnotacje są opisem, nie podstawą statusu)."""
+    wart = " ".join(f"cdm:{w}" for w in _WLASCIWOSCI_DAT.values())
+    rows = _sparql(f"""PREFIX cdm: <{CDM}>
+PREFIX owl: <http://www.w3.org/2002/07/owl#>
+PREFIX annot: <{ANNOT}>
+SELECT DISTINCT ?p ?d ?ap ?ao WHERE {{
+  ?w cdm:resource_legal_id_celex "{celex}"^^<{XSD_STR}> .
+  VALUES ?p {{ {wart} }}
+  ?w ?p ?d .
+  ?ax owl:annotatedSource ?w ; owl:annotatedProperty ?p ; owl:annotatedTarget ?d ; ?ap ?ao .
+  FILTER(?ap IN (annot:comment_on_date, annot:type_of_date))
+}} LIMIT 500""", soft=True)
+    pola = {CDM + w: k for k, w in _WLASCIWOSCI_DAT.items()}
+    out = {}
+    for b in rows:
+        pole, d, ap, ao = pola.get(_v(b, "p")), _v(b, "d"), _v(b, "ap"), _v(b, "ao")
+        if not (pole and d and ao) or not ap.startswith(ANNOT):
+            continue  # obce wiersze (np. podmiana _sparql w testach) — ignoruj
+        wpis = out.setdefault((pole, d), {"komentarz": [], "typ": [], "surowe": []})
+        klucz = "typ" if ap.endswith("type_of_date") else "komentarz"
+        if _opis_daty(ao) not in wpis[klucz]:
+            wpis[klucz].append(_opis_daty(ao))
+            wpis["surowe"].append(ao)
+    return out
+
+
+def _koniec_obowiazywania(eov, adnot=None):
+    """Daty końca obowiązywania (cdm:resource_legal_date_end-of-validity, bywa KILKA) →
+    (koniec, częściowe): koniec = data końca obowiązywania AKTU („9999-12-31" = bez daty końca,
+    None = brak danych), częściowe = daty częściowego upływu ważności (wybrane przepisy).
+
+    CELLAR trzyma obie rzeczy w jednej właściwości: 32009R0470 ma 2022-01-27 (częściowy upływ:
+    art. 30) i 9999-12-31 — EUR-Lex: „Date of end of validity: No end date". Reguła: jest
+    9999-12-31 → akt bez daty końca, pozostałe daty = częściowe; inaczej daty z adnotacją
+    FIN/VAL/PART = częściowe, a z pozostałych najpóźniejsza = koniec aktu."""
+    daty = sorted(set(d for d in eov if d))
+    if not daty:
+        return None, []
+    if "9999-12-31" in daty:
+        return "9999-12-31", [d for d in daty if d != "9999-12-31"]
+    adnot = adnot or {}
+    czesc = [d for d in daty if any("FIN/VAL/PART" in x for x in adnot.get(("eov", d), {}).get("surowe", []))]
+    reszta = [d for d in daty if d not in czesc]
+    if not reszta:
+        return None, czesc
+    return reszta[-1], sorted(czesc + reszta[:-1])
+
+
+def _opis_z_adnotacji(adnot, pole, d):
+    """Opis daty z adnotacji („stosowanie (patrz art. 99)") albo ''."""
+    w = (adnot or {}).get((pole, d))
+    if not w:
+        return ""
+    typ, kom = "; ".join(w["typ"]), "; ".join(w["komentarz"])
+    return f"{typ} ({kom})" if typ and kom else (typ or kom)
 
 
 def _zmieniajace(celex):
@@ -420,29 +580,70 @@ def _status(zb):
     return "OBOWIĄZUJE" if inf in ("1", "true") else ("NIE OBOWIĄZUJE" if inf in ("0", "false") else "—")
 
 
-def _drukuj_daty(zb, wc="  "):
+def _drukuj_daty(zb, wc="  ", adnot=None, celex=""):
     """Daty aktu (bazowego) z uczciwymi etykietami: jedna data = wejście w życie; kilka dat =
-    wejście w życie + daty stosowania, których CELLAR nie rozróżnia; dyrektywa = termin transpozycji."""
+    wejście w życie + daty stosowania (rodzaj każdej — z adnotacji CELLAR, gdy są); dyrektywa =
+    termin transpozycji; koniec obowiązywania AKTU oddzielony od częściowego upływu ważności.
+    adnot = _adnotacje_dat() aktu albo None (niepobrane — wtedy bez opisów dat)."""
     typy = {t.rsplit("/", 1)[-1] for t in zb["type"]}
+    wc2 = wc + "  "
+
+    def opisy(pole, daty):
+        for d in daty:
+            o = _opis_z_adnotacji(adnot, pole, d)
+            if o:
+                print(f"{wc2}{d}: {o}")
+
     if zb["date"]:
         print(f"{wc}Data aktu: {zb['date'][0]}")
     eiv = zb["eiv"]
     if len(eiv) == 1:
-        print(f"{wc}Wejście w życie: {eiv[0]}")
+        o = _opis_z_adnotacji(adnot, "eiv", eiv[0])
+        o = re.sub(r"^wejście w życie(?: \((.*)\))?$", lambda m: m.group(1) or "", o)
+        print(f"{wc}Wejście w życie: {eiv[0]}" + (f"  ({o})" if o else ""))
     elif eiv:
         print(f"{wc}Wejście w życie / stosowanie: {', '.join(eiv)}")
-        print(f"{wc}  (kilka dat — CELLAR nie opisuje, która to wejście w życie, a która rozpoczęcie "
-              "stosowania; najwcześniejsza to z reguły wejście w życie — sprawdź przepisy końcowe aktu!)")
+        opisy("eiv", eiv)
+        if not all((adnot or {}).get(("eiv", d), {}).get("typ") for d in eiv):
+            print(f"{wc}  (kilka dat — CELLAR nie opisuje, która to wejście w życie, a która rozpoczęcie "
+                  "stosowania; najwcześniejsza to z reguły wejście w życie — sprawdź przepisy końcowe aktu!)")
+        else:
+            print(f"{wc}  (rodzaj dat wg adnotacji CELLAR — zakres każdej sprawdź w przepisach końcowych aktu)")
+    dl = zb.get("deadline") or []
     if zb["trans"]:
         print(f"{wc}Termin transpozycji: {', '.join(zb['trans'])}"
               + ("   (kilka terminów — różne zakresy; sprawdź przepis o transpozycji)"
                  if len(zb["trans"]) > 1 else ""))
+        opisy("trans", zb["trans"])
         print(f"{wc}  (dyrektywa działa przez transpozycję — polską ustawę wdrażającą sprawdź "
               "skillem prawo-pl-eli)")
+    elif "DIR" in typy and dl:
+        # starsze dyrektywy (32002L0012): termin transpozycji tylko jako ogólny „deadline" — EUR-Lex
+        # pokazuje go jako „Deadline: 20/09/2003; Najpóźniej Patrz Art. 3.1", nie jako transpozycję
+        print(f"{wc}Termin transpozycji: CELLAR nie ma osobnego pola; podaje TERMIN (deadline): {', '.join(dl)}"
+              " — potwierdź w przepisie wskazanym niżej, czy to termin transpozycji")
+        opisy("deadline", dl)
+        print(f"{wc}  (dyrektywa działa przez transpozycję — polską ustawę wdrażającą sprawdź "
+              "skillem prawo-pl-eli)")
+        dl = []
     elif "DIR" in typy:
         print(f"{wc}Termin transpozycji: brak w CELLAR — sprawdź przepis o transpozycji w tekście dyrektywy")
-    if zb["eov"] and zb["eov"][0] != "9999-12-31":
-        print(f"{wc}Koniec obowiązywania: {zb['eov'][0]}")
+    if dl:
+        print(f"{wc}Inne terminy z aktu (deadline — przeglądy, sprawozdania, okresy przejściowe): {', '.join(dl)}")
+        opisy("deadline", dl)
+    koniec, czesc = _koniec_obowiazywania(zb["eov"], adnot)
+    if koniec and koniec != "9999-12-31":
+        o = _opis_z_adnotacji(adnot, "eov", koniec)
+        print(f"{wc}Koniec obowiązywania: {koniec}" + (f"  ({o})" if o else ""))
+    elif czesc:
+        print(f"{wc}Koniec obowiązywania aktu: " + ("brak daty końca (CELLAR: 9999-12-31)" if koniec
+                                                    else "brak w CELLAR"))
+    for d in czesc:
+        o = re.sub(r"^częściowy upływ terminu ważności\s*", "", _opis_z_adnotacji(adnot, "eov", d))
+        if not re.search(r"\b(art\.|artykuł|załącznik|motyw|część)", o):
+            o = (o + "; " if o else "") + ("CELLAR nie podaje, których przepisów dotyczy — sprawdź"
+                                          + (f" odniesienia {celex} i" if celex else "") + " stronę aktu w EUR-Lex")
+        print(f"{wc}Częściowy upływ ważności: {d} — {o}")
     print(f"{wc}Status:  {_status(zb)}")
 
 
@@ -488,6 +689,13 @@ def cmd_meta(a):
             raise
         sprost, sprost_uwaga = [], (f"UWAGA: nie udało się zweryfikować, czy akt {akt} ma sprostowania "
                                     f"w języku {lang.lower()} ({e}) — sprawdź: odniesienia {akt}.")
+    try:
+        # opisy dat (rodzaj daty, częściowy upływ ważności i jego zakres) — tylko opis: awaria nie
+        # blokuje także w --strict (rozdział „koniec aktu / częściowy upływ" działa bez adnotacji)
+        adnot, adnot_uwaga = _adnotacje_dat(akt), None
+    except VerificationUnknown as e:
+        adnot, adnot_uwaga = None, (f"UWAGA: nie udało się pobrać opisów dat z CELLAR ({e}) — daty bez "
+                                    "rodzaju i zakresu (np. którego przepisu dotyczy częściowy upływ ważności).")
     najnowsza = kons[0] if kons else None
     if strict and zmiany and not kons_wersja:
         # Daty aktu bazowego po nowelizacji mogą być nieaktualne (AI Act art. 113 po 32026R1744),
@@ -509,6 +717,8 @@ def cmd_meta(a):
         ostrz.append(zmiany_uwaga)
     if sprost_uwaga:
         ostrz.append(sprost_uwaga)
+    if adnot_uwaga:
+        ostrz.append(adnot_uwaga)
     if sprost and kons_wersja:
         ostrz.extend(_ostrzezenia_sprostowan(celex, lang, sprost, kons=kons))
     elif sprost:
@@ -525,8 +735,13 @@ def cmd_meta(a):
         # "meta" = surowe wiersze SPARQL tej pracy (na wersji skonsolidowanej: eiv/date = „stan na");
         # "akt_bazowy" = zebrane metadane aktu bazowego; "zmieniajace" = CELEX-y nowelizacji;
         # "ostrzezenia" = te same linie, które widzi człowiek
+        koniec, czesc = _koniec_obowiazywania((zb_baza if kons_wersja else zb)["eov"], adnot)
         out = {"celex": celex, "wersja_skonsolidowana": kons_wersja, "meta": rows,
                "zmieniajace": zmiany, "sprostowania": sprost, "wersje_skonsolidowane": kons,
+               "koniec_obowiazywania": {"akt": koniec, "czesciowy_uplyw": czesc},
+               "opisy_dat": None if adnot is None else [
+                   {"pole": k[0], "data": k[1], "typ": v["typ"], "komentarz": v["komentarz"],
+                    "surowe": v["surowe"]} for k, v in sorted(adnot.items())],
                "ostrzezenia": ostrz}
         if kons_wersja:
             out["akt_bazowy"] = {"celex": baza, "meta": zb_baza}
@@ -546,11 +761,11 @@ def cmd_meta(a):
         if zb["eli"]:
             print(f"  ELI:     {zb['eli'][0]}")
         print(f"  Akt bazowy: CELEX {baza}" + ("" if zb_baza["type"] or zb_baza["date"] else "  (brak w CELLAR)"))
-        _drukuj_daty(zb_baza, wc="    ")
+        _drukuj_daty(zb_baza, wc="    ", adnot=adnot, celex=baza)
         if zb_baza["eli"]:
             print(f"    ELI:     {zb_baza['eli'][0]}")
     else:
-        _drukuj_daty(zb)
+        _drukuj_daty(zb, adnot=adnot, celex=celex)
         if zb["eli"]:
             print(f"  ELI:     {zb['eli'][0]}")
     print(f"  Tekst:   python3 {sys.argv[0]} tekst {celex} --jezyk pol --fragment \"art. N\"")
@@ -1215,12 +1430,18 @@ def cmd_tekst(a):
         if not spans:
             sys.exit(f"Nie znaleziono frazy {a.fragment!r} w tekście aktu ({len(txt)} znaków). "
                      "Spróbuj inną frazą, w innym języku, albo bez --fragment.")
+        poza = 0
         for i, (s, e) in enumerate(spans):
             if i:
                 print("\n[...]\n")
+            gdzie = _poza_aktem(txt, s)
+            if gdzie:
+                poza += 1
+                print(f"[{gdzie}]\n")
             print(_bez_granic(txt[s:e]).strip())
-        print(f"\n(fragmenty: {len(spans)} — pominięto resztę aktu (w tym podpisy i przypisy końcowe); "
-              "pełny tekst: bez --fragment)")
+        print(f"\n(fragmenty: {len(spans)}"
+              + (f", w tym {poza} z załącznika / dokumentu dołączonego (oznaczone „[w …]”)" if poza else "")
+              + " — pominięto resztę aktu (w tym podpisy i przypisy końcowe); pełny tekst: bez --fragment)")
         return
     txt = _bez_granic(txt)
     if len(txt) > 60000:
@@ -1264,11 +1485,12 @@ _KIERUNKI = ("UCHYLONY PRZEZ (akt uchylający ten akt)",
 
 def cmd_odniesienia(a):
     celex = celex_norm(a.celex)
+    # Relacje BEZ statusu aktu: z ?inf/?eov w tym samym zapytaniu akt z kilkoma datami końca
+    # (32009R0470: 2022-01-27 + 9999-12-31) dawał iloczyn kartezjański — każda relacja 2× („Sprostowania
+    # (4)" zamiast 2, 268 uchyleń dorozumianych zamiast 134), a LIMIT mieścił połowę relacji.
     rows = _sparql(f"""PREFIX cdm: <{CDM}>
-SELECT DISTINCT ?kier ?c2 ?inf ?eov WHERE {{
+SELECT DISTINCT ?kier ?c2 WHERE {{
   ?w cdm:resource_legal_id_celex "{celex}"^^<{XSD_STR}> .
-  OPTIONAL {{ ?w cdm:resource_legal_in-force ?inf }}
-  OPTIONAL {{ ?w cdm:resource_legal_date_end-of-validity ?eov }}
   {{ ?x cdm:resource_legal_repeals_resource_legal ?w . ?x cdm:resource_legal_id_celex ?c2 .
      BIND("{_KIERUNKI[0]}" AS ?kier) }}
   UNION
@@ -1292,7 +1514,17 @@ SELECT DISTINCT ?kier ?c2 ?inf ?eov WHERE {{
   UNION
   {{ ?w cdm:resource_legal_based_on_resource_legal ?o . ?o cdm:resource_legal_id_celex ?c2 .
      BIND("{_KIERUNKI[7]}" AS ?kier) }}
-}} ORDER BY ?kier DESC(?c2) LIMIT 400""")
+}} ORDER BY ?kier DESC(?c2) LIMIT 1000""")
+    widziane, relacje = set(), []
+    for b in rows:  # obrona przed duplikatami także przy innym kształcie odpowiedzi
+        k = (_v(b, "kier"), _v(b, "c2"))
+        if k[1] and k not in widziane:
+            widziane.add(k)
+            relacje.append(b)
+    if len(rows) >= 1000:
+        print("UWAGA: CELLAR zwrócił limit 1000 relacji — lista może być niepełna (EUR-Lex: strona aktu).",
+              file=sys.stderr)
+    rows = relacje
     if a.json:
         print(json.dumps(rows, ensure_ascii=False, indent=2)); return
     print(f"Odniesienia dla: CELEX {celex}\n")
@@ -1302,9 +1534,19 @@ SELECT DISTINCT ?kier ?c2 ?inf ?eov WHERE {{
     grupy = {}
     for b in rows:
         grupy.setdefault(_v(b, "kier"), []).append(_v(b, "c2"))
-    zb = _zbierz(rows, ("inf", "eov"))
+    try:
+        zb = _zbierz(_sparql(f"""PREFIX cdm: <{CDM}>
+SELECT DISTINCT ?inf ?eov WHERE {{
+  ?w cdm:resource_legal_id_celex "{celex}"^^<{XSD_STR}> .
+  OPTIONAL {{ ?w cdm:resource_legal_in-force ?inf }}
+  OPTIONAL {{ ?w cdm:resource_legal_date_end-of-validity ?eov }}
+}}""", soft=True), ("inf", "eov"))
+    except VerificationUnknown as e:
+        zb = {"inf": [], "eov": []}
+        print(f"UWAGA: nie udało się pobrać statusu aktu ({e}) — status i daty: meta {celex}.\n")
     uchylony = grupy.get(_KIERUNKI[0], [])
-    eov = zb["eov"][0] if zb["eov"] and zb["eov"][0] != "9999-12-31" else ""
+    koniec, czesc = _koniec_obowiazywania(zb["eov"])
+    eov = koniec if koniec and koniec != "9999-12-31" else ""
     if uchylony:
         print(f"AKT UCHYLONY przez {', '.join(uchylony)}"
               + (f" (koniec obowiązywania: {eov})" if eov else "")
@@ -1312,6 +1554,9 @@ SELECT DISTINCT ?kier ?c2 ?inf ?eov WHERE {{
     elif _status(zb) == "NIE OBOWIĄZUJE":
         print("AKT NIE OBOWIĄZUJE" + (f" (koniec obowiązywania: {eov})" if eov else "")
               + " — w CELLAR brak relacji „uchylony przez\"; sprawdź: meta.\n")
+    if czesc:
+        print(f"Częściowy upływ ważności (wybrane przepisy): {', '.join(czesc)} — zakres: meta {celex}; "
+              "to NIE koniec obowiązywania aktu.\n")
     for kier in sorted(grupy, key=lambda k: _KIERUNKI.index(k) if k in _KIERUNKI else 99):
         lst = grupy[kier]
         print(f"## {kier}  ({len(lst)})")

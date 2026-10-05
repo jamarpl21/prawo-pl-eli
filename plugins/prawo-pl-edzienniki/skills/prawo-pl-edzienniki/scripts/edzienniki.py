@@ -738,6 +738,26 @@ def _ocena_tekstu(txt, zrodlo):
     return ostrz, blok
 
 
+# Reszta linii po „§ 1." złożona z samych numerów („2.  3.  4.") — wiersz numeracji kolumn tabeli.
+# Co najmniej DWA numery: „§ 1. 1." (pierwszy ustęp w osobnej linii) to prawdziwy paragraf.
+_RE_NAGLOWEK_KOLUMN = re.compile(r"(?:[ \t]+\d+\.){2,}[ \t]*$", re.M)
+_RE_ZALACZNIK_EDZ = re.compile(r"(?m)^[ \t]*(?:Załącznik|ZAŁĄCZNIK)\b[^\n]*")
+
+
+def _w_zalaczniku(txt, start, maks=120):
+    """Fragment leży w załączniku (po linii „Załącznik…" na początku linii) → jej treść, inaczej None.
+    Uchwała i jej załącznik (statut, regulamin, tabela) mają własne „§ 1" — trafienia trzeba odróżnić."""
+    ost = None
+    for m in _RE_ZALACZNIK_EDZ.finditer(txt):
+        if m.start() > start:
+            break
+        ost = m
+    if ost is None:
+        return None
+    t = ost.group(0).strip()
+    return t if len(t) <= maks else t[:maks - 1].rstrip() + "…"
+
+
 def _fragmenty(txt, fraza, maks=6, okno=600):
     """Fragmenty wokół frazy → lista (start, end).
     • fraza = oznaczenie jednostki („§ 4", „§ 4.", „art. 7") → CAŁA jednostka: od jej nagłówka na
@@ -750,15 +770,21 @@ def _fragmenty(txt, fraza, maks=6, okno=600):
     m = re.fullmatch(r"(§|art\.?)\s*(\d+[a-z]?)\.?", f, re.I)
     if m:
         nr = re.escape(m.group(2))
+        # [ \t]*, nie \s*: \s przechodził przez koniec linii, więc samotny „§" (nagłówek kolumny
+        # „§" w tabeli klasyfikacji budżetowej) + następna linia „1.  2.  3.  4." udawały „§ 1."
         if m.group(1) == "§":
-            naglowek = re.compile(rf"(?m)^[ \t]*§\s*{nr}\.(?![0-9])")
-            nastepna = re.compile(r"(?m)^[ \t]*(§\s*\d+[a-z]?\.(?![0-9])|Załącznik\b|ZAŁĄCZNIK\b)")
+            naglowek = re.compile(rf"(?m)^[ \t]*§[ \t]*{nr}\.(?![0-9])")
+            nastepna = re.compile(r"(?m)^[ \t]*(§[ \t]*\d+[a-z]?\.(?![0-9])|Załącznik\b|ZAŁĄCZNIK\b)")
         else:
-            naglowek = re.compile(rf"(?mi)^[ \t]*art\.\s*{nr}\.(?![0-9])")
-            nastepna = re.compile(r"(?mi)^[ \t]*(art\.\s*\d+[a-z]?\.(?![0-9])|Załącznik\b)")
+            naglowek = re.compile(rf"(?mi)^[ \t]*art\.[ \t]*{nr}\.(?![0-9])")
+            nastepna = re.compile(r"(?mi)^[ \t]*(art\.[ \t]*\d+[a-z]?\.(?![0-9])|Załącznik\b)")
         spans = []
         for mm in naglowek.finditer(txt):
+            if _RE_NAGLOWEK_KOLUMN.match(txt, mm.end()):
+                continue  # „§ 1.  2.  3.  4." — numery kolumn tabeli, nie paragraf
             n = nastepna.search(txt, mm.end())
+            while n and _RE_NAGLOWEK_KOLUMN.match(txt, n.end()):
+                n = nastepna.search(txt, n.end())
             spans.append((mm.start(), n.start() if n else len(txt)))
             if len(spans) >= maks:
                 break
@@ -1191,6 +1217,9 @@ def cmd_tekst(a):
         for i, (s, e) in enumerate(spans):
             if i:
                 print("\n[...]\n")
+            zal = _w_zalaczniku(txt, s)
+            if zal:
+                print(f"[w załączniku: {zal}]\n")
             print(txt[s:e].strip())
         jednostka = re.fullmatch(r"(§|art\.?)\s*\d+[a-z]?\.?", a.fragment.strip(), re.I)
         if jednostka and spans and re.match(r"[ \t]*(§|[Aa]rt\.)", txt[spans[0][0]:spans[0][0] + 6]):

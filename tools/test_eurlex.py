@@ -453,15 +453,20 @@ class _FakeCellar:
     meta: {celex: [wiersze]}; zmiany: {celex: [celexy aktów zmieniających]};
     sprost: {celex: [wiersze sprostowań]} — brak klucza = []."""
 
-    def __init__(self, meta, zmiany=None, awaria_zmian=False, sprost=None):
+    def __init__(self, meta, zmiany=None, awaria_zmian=False, sprost=None, adnot=None, awaria_adnot=False):
         self.meta, self.zmiany, self.awaria_zmian = meta, zmiany or {}, awaria_zmian
         self.sprost = sprost or {}
+        self.adnot, self.awaria_adnot = adnot or {}, awaria_adnot
         self.zapytania = []
 
     def __call__(self, q, soft=False):
         self.zapytania.append(q)
         m = re.search(r'resource_legal_id_celex "([^"]+)"', q)
         celex = m.group(1) if m else None
+        if "owl:annotatedSource" in q:
+            if self.awaria_adnot:
+                raise eurlex.VerificationUnknown("timeout")
+            return self.adnot.get(celex, [])
         if "resource_legal_amends_resource_legal ?w" in q and "BIND" not in q:
             if self.awaria_zmian:
                 raise eurlex.VerificationUnknown("timeout")
@@ -1388,6 +1393,251 @@ class TestTekstZPdf(unittest.TestCase):
     def test_zakres_sprostowania_traktuje_tylko_pdf_jak_brak_tekstu(self):
         with mock.patch.object(eurlex, "_pobierz_tekst", side_effect=eurlex._TylkoPdf("tylko PDF")):
             self.assertIsNone(eurlex._zakres_sprostowania("32004R0883R(06)", "pol"))
+
+
+# --- pomiar na losowej próbie (2026-10-05): E1–E5 -------------------------------------------------
+# Wiersze odtworzone z prawdziwych odpowiedzi CELLAR SPARQL (publications.europa.eu/webapi/rdf/sparql).
+CDM_ = "http://publications.europa.eu/ontology/cdm#"
+ANN_ = "http://publications.europa.eu/ontology/annotation#"
+FD = "http://publications.europa.eu/resource/authority/"
+
+
+WLASCIWOSCI_ = {"eiv": "resource_legal_date_entry-into-force", "eov": "resource_legal_date_end-of-validity",
+                "trans": "directive_date_transposition", "deadline": "resource_legal_date_deadline"}
+
+
+def _adn(pole, d, ao, typ=False):
+    return _wiersz(p=CDM_ + WLASCIWOSCI_[pole], d=d,
+                   ap=ANN_ + ("type_of_date" if typ else "comment_on_date"), ao=ao)
+
+
+# 32009R0470: end-of-validity = 2022-01-27 (częściowy upływ: art. 30) ORAZ 9999-12-31 (EUR-Lex: „No end date")
+R470_META = [_wiersz(type=TYP + "REG", date="2009-05-06", eiv="2009-07-06", eov=e, inf="1",
+                     eli="http://data.europa.eu/eli/reg/2009/470/oj", title="Rozporządzenie (WE) nr 470/2009")
+             for e in ("2022-01-27", "9999-12-31")]
+R470_ADNOT = [
+    _adn("eov", "2022-01-27", "{FIN/VAL/PART|" + FD + "fd_330/FIN%2FVAL%2FPART} {ART|" + FD + "fd_330/ART} 30 "
+         "{AI/PAR|" + FD + "fd_330/AI%2FPAR} 32019R0006"),
+    _adn("eiv", "2009-07-06", "{EV|" + FD + "fd_335/EV}", typ=True),
+]
+# 32011L0060: częściowy upływ BEZ wskazania przepisu
+L60_META = [_wiersz(type=TYP + "DIR_IMPL", date="2011-05-23", eiv="2011-06-01", eov=e, inf="1",
+                    trans="2011-11-30", title="Dyrektywa wykonawcza 2011/60/UE") for e in ("2011-06-13", "9999-12-31")]
+L60_ADNOT = [_adn("eov", "2011-06-13", "{FIN/VAL/PART|" + FD + "fd_330/FIN%2FVAL%2FPART} "
+                  "{AI/PAR|" + FD + "fd_330/AI%2FPAR} 32009R1107")]
+# 32002L0012: brak directive_date_transposition, jest resource_legal_date_deadline 2003-09-20 (art. 3.1)
+L12_META = [_wiersz(type=TYP + "DIR", date="2002-03-05", eiv="2002-03-20", eov="2002-12-18", inf="0",
+                    deadline="2003-09-20", eli="http://data.europa.eu/eli/dir/2002/12/oj")]
+L12_ADNOT = [
+    _adn("deadline", "2003-09-20", "{AU+TARD|" + FD + "fd_335/AU%2BTARD} {V|" + FD + "fd_335/V} "
+         "{ART|" + FD + "fd_335/ART} 3.1"),
+    _adn("eov", "2002-12-18", "{V|" + FD + "fd_330/V} {31979L0267|http://publications.europa.eu/resource/celex/31979L0267}"),
+]
+# RODO: dwie daty w entry-into-force, rodzaj każdej w annot:type_of_date (EV / MA)
+RODO_ADNOT = [
+    _adn("eiv", "2016-05-24", "{EV|" + FD + "fd_335/EV}", typ=True),
+    _adn("eiv", "2016-05-24", "{DATPUB|" + FD + "fd_335/DATPUB} +20 {V|" + FD + "fd_335/V} {ART|" + FD + "fd_335/ART} 99"),
+    _adn("eiv", "2018-05-25", "{MA|" + FD + "fd_335/MA}", typ=True),
+    _adn("eiv", "2018-05-25", "{V|" + FD + "fd_335/V} {ART|" + FD + "fd_335/ART} 99"),
+]
+
+
+def _meta_out(celex, meta, adnot=None, argv_extra=(), awaria_adnot=False):
+    out = io.StringIO()
+    fake = _FakeCellar(meta, adnot=adnot, awaria_adnot=awaria_adnot)
+    with mock.patch.object(eurlex, "_sparql", fake), \
+            mock.patch.object(eurlex, "_konsolidacje", return_value=[]), \
+            mock.patch.object(sys, "argv", ["eurlex.py", "meta", celex, *argv_extra]), \
+            contextlib.redirect_stdout(out):
+        eurlex.main()
+    return out.getvalue()
+
+
+class TestE1KoniecObowiazywaniaWielowartosciowy(unittest.TestCase):
+    """E1: dwie wartości end-of-validity (data + 9999-12-31) to częściowy upływ ważności, nie koniec aktu."""
+
+    def test_32009R0470_bez_konca_aktu_czesciowy_art_30(self):
+        out = _meta_out("32009R0470", {"32009R0470": R470_META}, {"32009R0470": R470_ADNOT})
+        self.assertNotIn("Koniec obowiązywania: 2022-01-27", out)
+        self.assertIn("Koniec obowiązywania aktu: brak daty końca", out)
+        self.assertIn("Częściowy upływ ważności: 2022-01-27 — art. 30 uchylony w sposób dorozumiany przez 32019R0006", out)
+        self.assertIn("Status:  OBOWIĄZUJE", out)
+        self.assertIn("Wejście w życie: 2009-07-06\n", out)  # typ EV nie dubluje etykiety
+
+    def test_bez_adnotacji_ogolny_czesciowy_upływ_i_uwaga(self):
+        out = _meta_out("32009R0470", {"32009R0470": R470_META}, awaria_adnot=True)
+        self.assertNotIn("Koniec obowiązywania: 2022-01-27", out)
+        self.assertIn("Częściowy upływ ważności: 2022-01-27 — CELLAR nie podaje, których przepisów dotyczy", out)
+        self.assertIn("nie udało się pobrać opisów dat", out)
+
+    def test_strict_nie_blokuje_na_awarii_adnotacji(self):
+        out = _meta_out("32009R0470", {"32009R0470": R470_META}, awaria_adnot=True, argv_extra=("--strict",))
+        self.assertIn("Status:  OBOWIĄZUJE", out)
+
+    def test_32011L0060_czesciowy_bez_jednostki(self):
+        out = _meta_out("32011L0060", {"32011L0060": L60_META}, {"32011L0060": L60_ADNOT})
+        self.assertNotIn("Koniec obowiązywania: 2011-06-13", out)
+        self.assertRegex(out, r"Częściowy upływ ważności: 2011-06-13 — uchylony w sposób dorozumiany przez "
+                              r"32009R1107; CELLAR nie podaje, których przepisów dotyczy")
+
+    def test_json_rozdziela_koniec_i_czesciowy(self):
+        d = json.loads(_meta_out("32009R0470", {"32009R0470": R470_META}, {"32009R0470": R470_ADNOT},
+                                 argv_extra=("--json",)))
+        self.assertEqual(d["koniec_obowiazywania"], {"akt": "9999-12-31", "czesciowy_uplyw": ["2022-01-27"]})
+        self.assertTrue(any(x["pole"] == "eov" and x["data"] == "2022-01-27" for x in d["opisy_dat"]))
+
+    def test_reguly_koniec_obowiazywania(self):
+        k = eurlex._koniec_obowiazywania
+        self.assertEqual(k([]), (None, []))
+        self.assertEqual(k(["9999-12-31"]), ("9999-12-31", []))
+        self.assertEqual(k(["2018-05-24"]), ("2018-05-24", []))
+        self.assertEqual(k(["2022-01-27", "9999-12-31"]), ("9999-12-31", ["2022-01-27"]))
+        # bez 9999: najpóźniejsza = koniec aktu, wcześniejsze = częściowe
+        self.assertEqual(k(["2020-01-01", "2024-01-01"]), ("2024-01-01", ["2020-01-01"]))
+        # adnotacja FIN/VAL/PART wskazuje częściowy upływ niezależnie od kolejności
+        adn = {("eov", "2024-01-01"): {"surowe": ["{FIN/VAL/PART|x}"], "typ": [], "komentarz": []}}
+        self.assertEqual(k(["2020-01-01", "2024-01-01"], adn), ("2020-01-01", ["2024-01-01"]))
+
+    def test_opis_daty_dekoduje_kody_i_celex(self):
+        self.assertEqual(eurlex._opis_daty(L12_ADNOT[1]["ao"]["value"]), "patrz 31979L0267")
+        self.assertEqual(eurlex._opis_daty("{NOWYKOD|" + FD + "fd_330/NOWYKOD} 5"), "NOWYKOD 5")
+        # 32024D0421: „L" w tabeli fd_330 = „związany z" (w fd_335 to seria Dz.U. „L")
+        self.assertEqual(eurlex._opis_daty("{L|" + FD + "fd_330/L} {32011D0072|http://publications.europa.eu/"
+                                           "resource/celex/32011D0072}"), "związany z 32011D0072")
+
+    def test_meta_wielodatowe_eiv_z_rodzajem_daty(self):
+        rows = [_wiersz(type=TYP + "REG", date="2016-04-27", eiv=d, inf="1", eov="9999-12-31")
+                for d in ("2016-05-24", "2018-05-25")]
+        out = _meta_out("32016R0679", {"32016R0679": rows}, {"32016R0679": RODO_ADNOT})
+        self.assertIn("Wejście w życie / stosowanie: 2016-05-24, 2018-05-25", out)
+        self.assertIn("2016-05-24: wejście w życie (data publikacji +20 patrz art. 99)", out)
+        self.assertIn("2018-05-25: stosowanie (patrz art. 99)", out)
+        self.assertNotIn("CELLAR nie opisuje", out)
+        self.assertNotIn("Koniec obowiązywania", out)
+
+
+class TestE2TerminDeadline(unittest.TestCase):
+    """E2: dyrektywa bez directive_date_transposition, ale z resource_legal_date_deadline."""
+
+    def test_32002L0012_deadline_zamiast_brak_w_cellar(self):
+        out = _meta_out("32002L0012", {"32002L0012": L12_META}, {"32002L0012": L12_ADNOT})
+        self.assertNotIn("brak w CELLAR", out)
+        self.assertIn("podaje TERMIN (deadline): 2003-09-20", out)
+        self.assertIn("2003-09-20: najpóźniej patrz art. 3.1", out)
+        self.assertIn("Koniec obowiązywania: 2002-12-18  (patrz 31979L0267)", out)
+        self.assertIn("Status:  NIE OBOWIĄZUJE", out)
+
+    def test_zapytanie_meta_pyta_o_deadline(self):
+        fake = _FakeCellar({"32002L0012": L12_META})
+        with mock.patch.object(eurlex, "_sparql", fake):
+            eurlex._meta_wiersze("32002L0012", "POL")
+        self.assertIn("cdm:resource_legal_date_deadline ?deadline", fake.zapytania[0])
+
+    def test_rozporzadzenie_deadline_jako_inne_terminy(self):
+        rows = [_wiersz(type=TYP + "REG", date="2016-04-27", eiv="2016-05-24", inf="1", deadline="2020-05-25")]
+        out = _meta_out("32016R0679", {"32016R0679": rows})
+        self.assertIn("Inne terminy z aktu (deadline", out)
+        self.assertIn("2020-05-25", out)
+
+
+class TestE5OdniesieniaBezDuplikatow(unittest.TestCase):
+    """E5: status (inf/eov) w zapytaniu o relacje dawał iloczyn kartezjański przy 2 datach końca."""
+
+    # kształt odpowiedzi sprzed poprawki (32009R0470): każda relacja × 2 wartości eov
+    PODWOJNE = [_wiersz(kier=k, c2=c, inf="1", eov=e)
+                for k, c in ((eurlex._KIERUNKI[3], "32009R0470R(02)"), (eurlex._KIERUNKI[3], "32009R0470R(01)"),
+                             (eurlex._KIERUNKI[4], "31990R2377"), (eurlex._KIERUNKI[5], "32009R0582"),
+                             (eurlex._KIERUNKI[5], "32009R0581"))
+                for e in ("2022-01-27", "9999-12-31")]
+
+    def _odn(self, rows, argv_extra=()):
+        out, zapytania = io.StringIO(), []
+
+        def fake(q, soft=False):
+            zapytania.append(q)
+            return rows
+        with mock.patch.object(eurlex, "_sparql", fake), \
+                mock.patch.object(sys, "argv", ["eurlex.py", "odniesienia", "32009R0470", *argv_extra]), \
+                contextlib.redirect_stdout(out):
+            eurlex.main()
+        return out.getvalue(), zapytania
+
+    def test_kazda_relacja_raz(self):
+        out, zapytania = self._odn(self.PODWOJNE)
+        self.assertIn("## Sprostowania  (2)\n  - 32009R0470R(02)\n  - 32009R0470R(01)\n\n", out)
+        self.assertIn("## Uchyla (akty uchylone przez ten akt)  (1)", out)
+        self.assertIn("(przepisy tracące moc przez ten akt)  (2)", out)
+        self.assertNotIn("end-of-validity", zapytania[0])  # relacje bez statusu aktu
+        self.assertIn("end-of-validity", zapytania[1])
+        self.assertIn("Częściowy upływ ważności (wybrane przepisy): 2022-01-27", out)
+        self.assertNotIn("NIE OBOWIĄZUJE", out)
+
+    def test_json_bez_duplikatow(self):
+        out, _ = self._odn(self.PODWOJNE, ("--json",))
+        d = json.loads(out)
+        self.assertEqual(len(d), 5)
+
+
+class TestE3FragmentWDokumencieDolaczonym(unittest.TestCase):
+    """E3: decyzja 2006/370/WE + załączona Umowa — „Artykuł 2" Umowy oznaczony jako z innego dokumentu.
+    XHTML skrócony z CELLAR (32006D0370, pol): <hr class="oj-doc-sep"/> rozdziela decyzję i Umowę."""
+
+    XHTML = (
+        '<div><p class="oj-doc-ti">DECYZJA RADY</p><p class="oj-doc-ti">z dnia 8 listopada 2005 r.</p>'
+        '<div class="eli-subdivision" id="art_2"><p class="oj-ti-art">Artykuł 2</p>'
+        '<p class="oj-normal">Przewodniczący Rady zostaje niniejszym upoważniony do wyznaczenia osoby lub '
+        'osób umocowanych do podpisania Umowy w imieniu Wspólnoty, z zastrzeżeniem jej zawarcia.</p></div>'
+        '<div class="eli-subdivision" id="art_3"><p class="oj-ti-art">Artykuł 3</p>'
+        '<p class="oj-normal">Umowa jest stosowana tymczasowo.</p></div>'
+        '<div class="oj-final"><p class="oj-normal">Sporządzono w Brukseli, dnia 8 listopada 2005 r.</p>'
+        '<div class="oj-signatory"><p class="oj-signatory"><span class="oj-italic">W imieniu Rady</span></p>'
+        '<p class="oj-signatory">G. BROWN</p></div></div></div>'
+        '<hr class="oj-doc-sep"/>'
+        '<div><div class="eli-main-title"><p class="oj-doc-ti">\n            UMOWA\n         </p>'
+        '<p class="oj-doc-ti">między Wspólnotą Europejską a Republiką Chorwacji dotycząca pewnych aspektów '
+        'usług lotniczych</p></div>'
+        '<p class="oj-normal">WSPÓLNOTA EUROPEJSKA,</p>'
+        '<p class="oj-ti-art">Artykuł 2</p><p class="oj-sti-art">Wyznaczenie przez państwo członkowskie</p>'
+        '<p class="oj-normal">1. Postanowienia ust. 2 i 3 niniejszego artykułu zastępują odpowiednie '
+        'postanowienia.</p>'
+        '<p class="oj-ti-art">Artykuł 3</p><p class="oj-normal">Bezpieczeństwo.</p></div>')
+
+    def _tekst(self, xhtml, fragment):
+        out = io.StringIO()
+        args = argparse.Namespace(celex=["32006D0370"], jezyk="pol", json=False, strict=False, pdf=None,
+                                  fragment=fragment)
+        with mock.patch.object(eurlex, "_http", return_value=(xhtml.encode(), "text/html")), \
+                mock.patch.object(eurlex, "_konsolidacje", return_value=[]), \
+                mock.patch.object(eurlex, "_sprostowania", return_value=[]), \
+                contextlib.redirect_stdout(out):
+            eurlex.cmd_tekst(args)
+        return out.getvalue()
+
+    def test_drugie_trafienie_oznaczone_jako_umowa(self):
+        out = self._tekst(self.XHTML, "art. 2")
+        akt, umowa = out.split("[...]")
+        self.assertIn("Przewodniczący Rady", akt)
+        self.assertNotIn("[w dokumencie", akt)
+        self.assertIn("[w dokumencie dołączonym do aktu (to NIE przepis samego aktu): UMOWA między Wspólnotą "
+                      "Europejską a Republiką Chorwacji", umowa)
+        self.assertLess(umowa.index("[w dokumencie"), umowa.index("Artykuł 2"))
+        self.assertIn("w tym 1 z załącznika / dokumentu dołączonego", out)
+        self.assertNotIn(eurlex.DOKUMENT, out)
+        self.assertNotIn("G. BROWN", out)
+
+    def test_pelny_tekst_bez_znaku_dokumentu(self):
+        out = self._tekst(self.XHTML, None)
+        self.assertNotIn(eurlex.DOKUMENT, out)
+        self.assertIn("UMOWA", out)
+
+    def test_zalacznik_oznaczony(self):
+        xhtml = ('<p class="oj-ti-art">Artykuł 1</p><p class="oj-normal">Przyjmuje się wykaz.</p>'
+                 '<p class="oj-doc-ti">ZAŁĄCZNIK I</p><p class="oj-doc-ti">WYKAZ SUBSTANCJI</p>'
+                 '<p class="oj-normal">Artykuł 1 rozporządzenia stosuje się do substancji z wykazu.</p>')
+        out = self._tekst(xhtml, "wykaz")
+        self.assertIn("[w załączniku: ZAŁĄCZNIK I WYKAZ SUBSTANCJI]", out)
+        self.assertEqual(out.count("[w załączniku"), 1)  # art. 1 aktu bez oznaczenia
+        self.assertTrue(out.split("[...]")[0].lstrip("#").split("\n", 2)[2].strip().startswith("Artykuł 1"))
 
 
 if __name__ == "__main__":

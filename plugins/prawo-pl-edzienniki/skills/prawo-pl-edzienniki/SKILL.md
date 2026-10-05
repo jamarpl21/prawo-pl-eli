@@ -106,8 +106,9 @@ Nie szukaj helpera przez `find` po katalogach użytkownika ani systemu i nie pob
   `python3 scripts/edzienniki.py akt DS 2026 3299`
 - **tekst** — treść aktu z **urzędowego PDF** (`pdftotext -layout`, nagłówki/stopki stron usunięte,
   zawinięte linie scalone); `--fragment "§ 2"` / `"art. 5"` zwraca **całą jednostkę** (do następnego §;
-  każde wystąpienie, np. § 2 uchwały i § 2 statutu w załączniku), inna fraza — okna rozszerzone do
-  granic akapitu; `--pdf` zapisuje urzędowy PDF:
+  każde wystąpienie, np. § 2 uchwały i § 2 statutu w załączniku — trafienie w załączniku poprzedza
+  linia `[w załączniku: Załącznik Nr …]`; kolumna „§" i numeracja kolumn tabeli „1. 2. 3. 4." nie są
+  paragrafem), inna fraza — okna rozszerzone do granic akapitu; `--pdf` zapisuje urzędowy PDF:
   `python3 scripts/edzienniki.py tekst DS 2026 3299 --fragment "§ 2"`
   Przed treścią `tekst` pokazuje te same powiązania co `akt` (linie `UWAGA:`): nieważność w całości
   lub w części (z tytułem rozstrzygnięcia i unieważnioną jednostką), sprostowanie, uchylenie, zmiany —

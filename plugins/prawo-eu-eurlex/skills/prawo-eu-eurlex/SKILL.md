@@ -93,11 +93,22 @@ wersje skonsolidowane `02016R0679-20160504`, sprostowania `32016R0679R(01)`, tra
   dowód, że aktu nie ma.
 - **meta** — metadane: pełny tytuł, typ, daty, status, ELI: `python3 scripts/eurlex.py meta 32016R0679`
   - **Daty pochodzą z metadanych AKTU BAZOWEGO.** CELLAR trzyma wejście w życie i daty rozpoczęcia
-    stosowania w JEDNEJ właściwości i ich nie rozróżnia: jedna data = „Wejście w życie"; kilka dat =
-    „Wejście w życie / stosowanie" (najwcześniejsza to z reguły wejście w życie) — którą datą objęty
-    jest dany przepis, ustal z przepisów końcowych (`tekst --fragment` na ostatnim artykule).
+    stosowania w JEDNEJ właściwości: jedna data = „Wejście w życie"; kilka dat = „Wejście w życie /
+    stosowanie" i pod nią rodzaj każdej daty z adnotacji CELLAR (np. RODO: `2016-05-24: wejście w
+    życie (data publikacji +20 patrz art. 99)`, `2018-05-25: stosowanie (patrz art. 99)`); bez
+    adnotacji — uwaga, że CELLAR ich nie opisuje. Zakres daty i tak ustal z przepisów końcowych
+    (`tekst --fragment` na wskazanym artykule).
   - **Dyrektywa:** osobno „Termin transpozycji" (bywa kilka — różne zakresy); polską ustawę
-    wdrażającą sprawdź skillem prawo-pl-eli.
+    wdrażającą sprawdź skillem prawo-pl-eli. Starsze dyrektywy nie mają pola transpozycji, tylko
+    ogólny termin (deadline) — `meta` pokazuje go z przepisem (32002L0012: 2003-09-20, „najpóźniej
+    patrz art. 3.1") i każe potwierdzić, że to termin transpozycji. Pozostałe terminy z aktu
+    (przeglądy, sprawozdania, okresy przejściowe) — linia „Inne terminy z aktu (deadline…)".
+  - **Koniec obowiązywania ≠ częściowy upływ ważności.** CELLAR podaje w jednej właściwości datę
+    końca AKTU i daty wygaśnięcia POJEDYNCZYCH przepisów. Gdy jest 9999-12-31, akt nie ma daty końca,
+    a pozostałe daty to „Częściowy upływ ważności: <data> — art. N …" (32009R0470: 2022-01-27, art. 30,
+    status OBOWIĄZUJE); gdy CELLAR nie wskazuje przepisu — tak wprost („CELLAR nie podaje, których
+    przepisów dotyczy"). Nie powołuj się na datę częściowego upływu jako na koniec obowiązywania aktu.
+    Opisy dat to osobne zapytanie: jego awaria daje `UWAGA` i nie blokuje wyniku (także w `--strict`).
   - **`meta` na CELEX-ie skonsolidowanym** (`0…-YYYYMMDD`) pokazuje „Stan na (konsolidacja)", listę
     aktów ujętych w konsolidacji oraz daty i status **aktu bazowego** — data w CELEX-ie konsolidacji
     NIE jest datą wejścia w życie ani stosowania aktu.
@@ -133,6 +144,9 @@ wersje skonsolidowane `02016R0679-20160504`, sprostowania `32016R0679R(01)`, tra
   RODO po polsku, art. 4 pkt 1 w akcie bazowym „informacje", po sprostowaniu `32016R0679R(02)`
   „wszelkie informacje" (też art. 10; art. 82 ust. 2 — `R(03)`) → cytuj z `02016R0679-20160504`
   albo z aktu bazowego RAZEM ze sprostowaniem.
+  **Załącznik i dokument dołączony.** Trafienie spoza samego aktu poprzedza linia `[w załączniku:
+  ZAŁĄCZNIK …]` albo `[w dokumencie dołączonym do aktu (to NIE przepis samego aktu): UMOWA …]`
+  (decyzja o podpisaniu umowy: „art. 2" = art. 2 decyzji i, oznaczony, art. 2 Umowy — 32006D0370).
   Fragment kończy się na granicy jednostki redakcyjnej (następny artykuł/rozdział/załącznik) oraz
   na końcu części normatywnej: formuła „Sporządzono w…", podpisy i blok przypisów końcowych
   (rozpoznawany po strukturze XHTML CELLAR) NIE wchodzą do fragmentu ostatniego artykułu; formuła
@@ -142,14 +156,17 @@ wersje skonsolidowane `02016R0679-20160504`, sprostowania `32016R0679R(01)`, tra
   oznacza, że CELLAR nie serwuje już tej ZASTĄPIONEJ wersji — narzędzie wskazuje najnowszą.
 - **odniesienia** — nowelizacje, sprostowania, **uchylenia w obie strony** („UCHYLONY PRZEZ" /
   „Uchyla", także dorozumiane), akty zmieniane, podstawa prawna; na akcie uchylonym pierwsza linia
-  mówi wprost „AKT UCHYLONY przez … — NIE OBOWIĄZUJE":
+  mówi wprost „AKT UCHYLONY przez … — NIE OBOWIĄZUJE"; daty częściowego upływu ważności są
+  oznaczone jako takie (szczegóły: `meta`). Każda relacja raz (`--json`: lista `{kier, c2}`;
+  status i daty aktu — `meta --json`):
   `python3 scripts/eurlex.py odniesienia 32016R0679` (→ uchyla 31995L0046)
 - każda komenda przyjmuje `--json` oraz `--strict`; obie flagi działają przed komendą i po niej.
   Zero trafień / nierozpoznana odpowiedź API kończą się komunikatem i kodem wyjścia ≠ 0 — także z `--json`
   (nie dostaniesz pustego JSON-a, który wyglądałby jak „sprawdzone, nic nie ma”; dotyczy też `szukaj`).
   `--json` dla `meta` zwraca obiekt: `meta` (surowe wiersze tej pracy), `akt_bazowy` (na wersji
   skonsolidowanej), `zmieniajace`, `sprostowania` (w języku `--jezyk`), `wersje_skonsolidowane`,
-  `ostrzezenia`.
+  `koniec_obowiazywania` (`akt`: data końca aktu, `9999-12-31` = brak; `czesciowy_uplyw`: lista dat),
+  `opisy_dat` (adnotacje CELLAR: pole, data, typ, komentarz, surowe; `null` = niepobrane), `ostrzezenia`.
 - **Co sprawdza `--strict`, a czego nie.** Każda kontrola wykonuje się PRZED emisją wyniku; awaria
   kontroli (SPARQL niedostępny) blokuje wynik zamiast udawać „brak". Blokuje: `tekst` (i `--pdf`)
   aktu bazowego, gdy istnieją wersje skonsolidowane albo SPROSTOWANIE w danym języku (tekst

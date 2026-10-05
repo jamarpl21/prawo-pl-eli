@@ -151,7 +151,9 @@ podaje zakres i N); z `--strict` status wyświetlanych wierszy (≤ 20) z `/acts
 `tekst W R P [--fragment F] [--pdf PLIK]`→`/api/legalact` (powiązania, pozycja techniczna) + `…/text.pdf`
 + `pdftotext -layout` (tekst; bez pdftotext:
 `…/text.html` z ostrzeżeniem) / `…/text.pdf` (plik). `--fragment "§ N"`/`"art. N"` = cała jednostka
-do następnej; inna fraza = okno ~600 znaków rozszerzone do granic akapitu.
+do następnej (nagłówek jednostki w JEDNEJ linii: samotny „§" kolumny tabeli + wiersz „1. 2. 3. 4." to
+nie § 1; trafienie po linii „Załącznik…" oznaczone `[w załączniku: …]`); inna fraza = okno ~600 znaków
+rozszerzone do granic akapitu.
 
 ## Wskazówki
 

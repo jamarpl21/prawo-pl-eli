@@ -33,7 +33,9 @@ Wszystko publiczne, bez klucza. Read-only.
   po `hr.oj-note` jako `p.oj-note`; wersja skonsolidowana — formuła w `div#fnp_1`, przypisy jako
   `p.footnote`, znaczniki zmian `p.modref` (▼B/▼M1), załączniki `div#anx_I` (`p.title-annex-1`).
   `eurlex.py` wstawia przed `oj-signatory`/`oj-note`/`footnote` znak granicy (U+001F), usuwany
-  przed wydrukiem.
+  przed wydrukiem. Kolejny dokument w tym samym wydaniu Dz.U. (np. Umowa po decyzji o jej
+  podpisaniu, 32006D0370) zaczyna się po `hr.oj-doc-sep` — w tym miejscu znak U+001E (granica +
+  podstawa oznaczenia `[w dokumencie dołączonym do aktu: …]`).
 - **ELI URI**: `http://data.europa.eu/eli/reg/2016/679/oj` → przekierowanie na EUR-Lex.
 
 ## Ontologia CDM (prefiks `cdm: <http://publications.europa.eu/ontology/cdm#>`)
@@ -45,13 +47,27 @@ Najużyteczniejsze właściwości (zweryfikowane):
 - `cdm:work_date_document` (data aktu), `cdm:resource_legal_date_signature`,
   `cdm:resource_legal_date_entry-into-force` — bywa KILKA wartości: wejście w życie ORAZ daty
   rozpoczęcia stosowania (RODO: 2016-05-24, 2018-05-25; AI Act: 5 dat). **CDM nie ma osobnej
-  właściwości „data stosowania"** ani opisu poszczególnych dat (EUR-Lex pokazuje je z komentarzem
-  tylko na stronie notatki) — sprawdzone na 32016R0679/32024R1689 przez
-  `SELECT ?p ?o { ?w ?p ?o FILTER(CONTAINS(STR(?p),"date")||CONTAINS(STR(?p),"applic")) }`.
-  Po nowelizacji CELLAR NIE aktualizuje tych dat w akcie bazowym (32024R1689 dalej ma 2027-08-02,
-  choć 32026R1744 zmienił art. 113). `cdm:resource_legal_date_end-of-validity` (9999-12-31 =
-  bezterminowo). `cdm:resource_legal_date_deadline` — inne terminy z aktu (przeglądy, sprawozdania),
-  nie stosowanie.
+  właściwości „data stosowania"** (sprawdzone na 32016R0679/32024R1689 przez
+  `SELECT ?p ?o { ?w ?p ?o FILTER(CONTAINS(STR(?p),"date")||CONTAINS(STR(?p),"applic")) }`), ale
+  rodzaj i opis KAŻDEJ daty są w adnotacjach OWL (z nich EUR-Lex buduje „Wejście w życie",
+  „Częściowy upływ terminu ważności Art. 30"):
+  `?ax owl:annotatedSource ?w ; owl:annotatedProperty ?p ; owl:annotatedTarget ?d ;
+  annot:type_of_date ?typ ; annot:comment_on_date ?kom` (`annot:` =
+  `http://publications.europa.eu/ontology/annotation#`). Literały to kody tabel autorytatywnych
+  z URI, np. `{MA|…/fd_335/MA} {V|…/fd_335/V} {ART|…/fd_335/ART} 99` = „stosowanie, patrz art. 99";
+  `{FIN/VAL/PART|…/fd_330/…} {ART|…} 30 {AI/PAR|…} 32019R0006`; etykiety PL — `skos:prefLabel` w
+  schematach `…/authority/fd_330` (koniec ważności), `fd_335` (daty), `fd_361` (transpozycja). Typy
+  dat eiv: `EV` wejście w życie, `MA` stosowanie. Po nowelizacji CELLAR NIE aktualizuje tych dat w
+  akcie bazowym (32024R1689 dalej ma 2027-08-02, choć 32026R1744 zmienił art. 113).
+- `cdm:resource_legal_date_end-of-validity` — bywa KILKA wartości: 9999-12-31 = akt bez daty końca,
+  a obok daty CZĘŚCIOWEGO upływu ważności (32009R0470: 2022-01-27 = art. 30, adnotacja
+  `FIN/VAL/PART`; 32011L0060: 2011-06-13 bez wskazania przepisu). Pierwsza wartość z SPARQL to NIE
+  koniec aktu. Uwaga na iloczyn kartezjański: to pole (jak każde wielowartościowe) w tym samym
+  zapytaniu co relacje mnoży wiersze — relacje pobieraj osobnym zapytaniem.
+- `cdm:resource_legal_date_deadline` — inne terminy z aktu (przeglądy, sprawozdania, okresy
+  przejściowe — AI Act 2027-08-02 = art. 111.3), opisane w `comment_on_date`; w starszych dyrektywach
+  bez `directive_date_transposition` to jedyne miejsce terminu transpozycji (32002L0012: 2003-09-20,
+  „najpóźniej, patrz art. 3.1").
 - `cdm:directive_date_transposition` — termin(y) transpozycji dyrektywy (32019L1937: 2021-12-17,
   2023-12-17; 31995L0046: 1998-10-24). Brak w CDM `resource_legal_date_transposition`.
 - `cdm:resource_legal_in-force` — "1"/"true" = obowiązuje.

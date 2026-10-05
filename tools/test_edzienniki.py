@@ -1108,5 +1108,80 @@ class TestFiltrMazowiecki(unittest.TestCase):
         self.assertNotIn("spoza PL", out)
 
 
+# --- pomiar na losowej próbie (2026-10-05): E4 ----------------------------------------------------
+# Wycinek `pdftotext -layout` urzędowego PDF LD 2024/794 (dziennik.lodzkie.eu): § 1 uchwały, a w
+# Załączniku Nr 3 tabela z kolumną „§" (klasyfikacja) — samotny „§" nad wierszem numeracji kolumn.
+PDF_LD794 = (
+    "                         DZIENNIK URZĘDOWY\n"
+    "                                  WOJEWÓDZTWA ŁÓDZKIEGO\n\n"
+    "                                        Łódź, dnia 26 stycznia 2024 r.                         Podpisany przez:\n"
+    "                                                                                                Aleksandra Brochocka\n"
+    "                                                       Poz. 794\n\n\n"
+    "                                            UCHWAŁA NR LXII/367/23\n"
+    "                                            RADY GMINY MNISZKÓW\n\n"
+    "Rada Gminy Mniszków uchwala, co następuje:\n"
+    "    § 1. Dokonuje się zmian w planie dochodów budżetowych, zgodnie z Załącznikiem Nr 1.\n"
+    "    § 2. Dokonuje sie zmian w planie wydatków budżetowych, zgodnie z Załącznikiem Nr 2.\n"
+    "   § 10. Wykonanie uchwały powierza się Wójtowi Gminy.\n"
+    "   § 11. Uchwała wchodzi w życie z dniem podjęcia i podlega ogłoszeniu w Dzienniku Urzędowym Województwa\n"
+    "Łódzkiego.\n"
+    "\x0cDziennik Urzędowy Województwa Łódzkiego               –5–                                                   Poz. 794\n\n\n\n"
+    "                                                            Załącznik Nr 3 do uchwały Nr LXII/367/23\n"
+    "                                                            Rady Gminy Mniszków\n\n"
+    "                                               Przychody i rozchody\n\n\n\n"
+    "Lp.                                   Treść                                  Klasyfikacja         Kwota\n"
+    "                                                                                  §\n"
+    " 1.                                       2.                                      3.                   4.\n\n"
+    "                          Przychody ogółem:                                                       1.804.019,26\n\n"
+    " 2.    Wolne środki, których mowa w art. 27 ust. 2 pkt 6 ustawy                   950             1.752.420,00\n"
+    "\x0c")
+
+
+class TestE4ParagrafWTabeliZalacznika(unittest.TestCase):
+    """E4: „§ 1" nie łapie nagłówka kolumny „§" + numeracji kolumn „1. 2. 3. 4." z tabeli załącznika;
+    trafienia w załączniku są oznaczone „[w załączniku: …]"."""
+
+    def setUp(self):
+        p = mock.patch.object(edz, "_get_rejestr", return_value={
+            "actstatus": {"isinvalid": False, "ispartialinvalid": False, "description": ""}, "actrelations": []})
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _tekst(self, pdf, fragment):
+        return _uruchom(["tekst", "LD", "2024", "794", "--fragment", fragment], _get={"side_effect": _get_pdf},
+                        _pdftotext_dostepny={"return_value": "/usr/bin/pdftotext"}, _pdftotext={"return_value": pdf})
+
+    def test_ld794_paragraf_1_bez_naglowka_tabeli(self):
+        out, e = self._tekst(PDF_LD794, "§ 1")
+        self.assertIsNone(e)
+        self.assertIn("§ 1. Dokonuje się zmian w planie dochodów budżetowych, zgodnie z Załącznikiem Nr 1.", out)
+        self.assertNotIn("Przychody ogółem", out)
+        self.assertNotIn("[...]", out)
+        self.assertIn("jednostka § 1: 1 wystąpień", out)
+
+    def test_samotny_paragraf_nad_numeracja_kolumn_nie_jest_jednostka(self):
+        txt, _, _ = edz._czysc_pdf(PDF_LD794)
+        self.assertIn("§\n1.  2.  3.  4.", txt)  # tak wygląda tabela po _czysc_pdf
+        self.assertEqual(len(edz._fragmenty(txt, "§ 1")), 1)
+        self.assertEqual(len(edz._fragmenty(txt, "§ 2")), 1)
+
+    def test_wiersz_numeracji_kolumn_w_jednej_linii_odfiltrowany(self):
+        t = ("§ 1. Uchwała.\n§ 2. Wykonanie.\nZałącznik Nr 1\n§ 1.  2.  3.  4.\nDochody ogółem  100,00\n")
+        spans = edz._fragmenty(t, "§ 1")
+        self.assertEqual([t[s:e].strip() for s, e in spans], ["§ 1. Uchwała."])
+
+    def test_paragraf_z_samym_numerem_ustepu_w_linii_zostaje(self):
+        t = "§ 1. 1.\nTreść ustępu pierwszego.\n§ 2. Drugi.\n"
+        spans = edz._fragmenty(t, "§ 1")
+        self.assertEqual([t[s:e].strip() for s, e in spans], ["§ 1. 1.\nTreść ustępu pierwszego."])
+
+    def test_paragraf_statutu_w_zalaczniku_oznaczony(self):
+        out, e = self._tekst("   " + TestFragmenty.TEKST.replace("\n", "\n   "), "§ 1")
+        self.assertIsNone(e)
+        uchwala, statut = out.split("[...]")
+        self.assertNotIn("[w załączniku", uchwala)
+        self.assertIn("[w załączniku: Załącznik do uchwały]\n\n§ 1. 1. Żłobek nosi nazwę.", statut)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -69,8 +69,11 @@ REGON 000001301 / NIP 8960005408; te same liczby dla `nazwa`, `regon` i `nip`):
 - `przedmiotUmowy` działa pełnotekstowo na przedmiocie umowy (wielowyrazowe frazy OK);
 - `limit` jest obcinany serwerowo do **50**; `sortKey` spoza listy → błąd walidacji
   (`Invalid sort key value`);
-- nieistniejący `idUmowy` (i nie-UUID) → **HTTP 500**, nie 404 — silnik waliduje UUID
-  przed wysłaniem;
+- nieistniejący `idUmowy` w poprawnym formacie UUID → **HTTP 400** (nie 404) z JSON-em
+  `"error": "Błąd danych wejściowych"`, `"message": "Nie znaleziono umowy o podanym identyfikatorze (UUID)."`,
+  `"details": {"[0]": "Agreement not found for ID: …"}` (sprawdzone 2026-10-05; wcześniej API
+  zwracało tu 500); identyfikator, który nie jest UUID → nadal **HTTP 500** „Nieoczekiwany
+  błąd” — silnik waliduje UUID przed wysłaniem;
 - nieznane ścieżki API (`/api`, `/api-dp/v1/cokolwiek`) → **200 z HTML-em SPA** — nie
   traktuj 200 jako sukcesu bez sprawdzenia Content-Type/JSON.
 
