@@ -2150,6 +2150,526 @@ class TestAudyt2026Cache(unittest.TestCase):
         eli._CACHE.clear()
 
 
+# --- Próba losowa 2026-10 (fix 2.1.1): fixture z prawdziwych danych ---
+# DU 2010 poz. 1128, s. 1 (`pdftotext -layout`): przypisy 1–3 na dole LEWEGO łamu, bez kreski w warstwie tekstowej
+PDF_ZESZYT_2010_S1 = "\n".join((
+    'Dziennik Ustaw Nr 166                                   — 12378 —                                             Poz. 1128',
+    '',
+    '',
+    '                                                            1128',
+    '                  ROZPORZĄDZENIE MINISTRA SPRAW WEWNĘTRZNYCH I ADMINISTRACJI1)',
+    '',
+    '                                                 z dnia 7 września 2010 r.',
+    '                                                                                            l',
+    '                                            .go',
+    '     w sprawie wymagań, jakim powinna odpowiadać ochrona wartości pieniężnych przechowywanych',
+    '                i transportowanych przez przedsiębiorców i inne jednostki organizacyjne',
+    '',
+    '    Na podstawie art. 6 ust. 2 ustawy z dnia 22 sierp-              pospolitej Polskiej „Monitor Polski”, na podstawie',
+    'nia 1997 r. o ochronie osób i mienia (Dz. U. z 2005 r.              art. 20 pkt 2 ustawy z dnia 17 grudnia 1998 r.',
+    'Nr 145, poz. 1221, z późn. zm.2)) zarządza się, co nastę-           o emeryturach i rentach z Funduszu Ubezpieczeń',
+    'puje:                                                               Społecznych (Dz. U. z 2009 r. Nr 153, poz. 1227',
+    '',
+    '',
+    '                                               v.p',
+    '                                                                    oraz z 2010 r. Nr 40, poz. 224 i Nr 134, poz. 903);',
+    '    § 1. Użyte w rozporządzeniu określenia oznaczają:',
+    '                                                                  6) klasa odporności na włamanie — przyjęte we właś-',
+    ' 1) ustawa — ustawę z dnia 22 sierpnia 1997 r.                       ciwej Polskiej Normie klasyfikacyjne oznaczenie',
+    '    o ochronie osób i mienia;                                        odporności pomieszczeń lub urządzeń na włama-',
+    '                                                                     nie;',
+    ' 2) wartości pieniężne:',
+    '    a) krajowe i zagraniczne znaki pieniężne,                     7) posterunki doraźne — posterunki wystawiane',
+    '                                                                     w miejscu, które wymaga ochrony natychmiasto-',
+    '    b) czeki, z wyjątkiem czeków zakreślonych, skaso-                wej i tymczasowej;',
+    '       wanych lub opatrzonych indosem pełnomocni-',
+    '       czym, zawierającym wzmiankę „wartość do in-                8) konwojent — osobę posiadającą licencję pracow-',
+    '       kasa”, „należność do inkasa” lub inną o podob-                nika ochrony fizycznej, ochraniającą transport',
+    '       nym charakterze,                                              wartości pieniężnych, wyposażoną w broń palną',
+    '    c) weksle, z wyjątkiem weksli opatrzonych indo-                  bojową, środki ochrony osobistej oraz środki łącz-',
+    '       sem pełnomocniczym zawierającym wzmiankę                      ności;',
+    '       „wartość do inkasa” lub inną o podobnym cha-',
+    '       rakterze,                                                  9) środki łączności wewnętrznej — środki służące do',
+    '                                                                     nawiązywania łączności w obrębie chronionego',
+    '    d) inne dokumenty zastępujące w obrocie gotów-                   obiektu lub między członkami konwoju;',
+    '',
+    '',
+    '     w.',
+    '       kę,',
+    '    e) złoto, srebro i wyroby z tych metali, kamienie            10) środki łączności zewnętrznej — środki służące do',
+    '       szlachetne i perły, a także platynę i inne metale             nawiązywania łączności z podmiotami zewnętrz-',
+    '       z grupy platynowców, z wyjątkiem przedmiotów                  nymi;',
+    '       będących muzealiami w rozumieniu przepisów',
+    '',
+    '',
+    '       rcl',
+    '       ustawy z dnia 21 listopada 1996 r. o muzeach              11) środki ochrony osobistej — wyposażenie kulo-',
+    '       (Dz. U. z 1997 r. Nr 5, poz. 24, z późn. zm.3));              odporne składające się co najmniej z kamizelki',
+    '                                                                     i hełmu;',
+    ' 3) transport wartości pieniężnych — przewożenie lub',
+    '    przenoszenie wartości pieniężnych poza obiektami             12) pojemnik specjalistyczny — pojemnik służący do',
+    '    przedsiębiorcy lub innej jednostki organizacyjnej;               transportu wartości pieniężnych, wyposażony',
+    '                                                                     w urządzenia utrudniające jego zabór, wykorzystu-',
+    ' 4) konwojowany transport wartości pieniężnych —                     jące działanie paralizatora elektrycznego, alarmu',
+    '    przewożenie lub przenoszenie wartości pienięż-                   akustycznego, sygnału dymnego lub uszkadzające',
+    '    nych ochranianych przez konwojentów poza obiek-                  zawartość pojemnika z zachowaniem możliwości',
+    '    tami przedsiębiorcy lub innej jednostki organiza-                identyfikacji papierowych wartości pieniężnych;',
+    '    cyjnej;',
+    '                                                                 13) pojemnik bezpieczny — pojemnik wykonany ze',
+    ' 5) jednostka obliczeniowa — 120-krotność przecięt-                  stopu metali używany w celu ochrony zawartości',
+    '    nego wynagrodzenia w poprzednim kwartale,                        przed włamaniem;',
+    '    ogłaszanego przez Prezesa Głównego Urzędu Sta-',
+    '                                                                 14) osoba transportująca — osobę przenoszącą lub',
+    '',
+    '',
+    'ww',
+    '    tystycznego w Dzienniku Urzędowym Rzeczy-',
+    '                                                                     przewożącą wartości pieniężne;',
+    '1) Minister Spraw Wewnętrznych i Administracji kieruje dzia-',
+    '                                                                 15) bankowozy — pojazdy samochodowe przeznaczo-',
+    '   łem administracji rządowej — sprawy wewnętrzne, na                ne do transportu wartości pieniężnych, oznaczone',
+    '   podstawie § 1 ust. 2 pkt 3 rozporządzenia Prezesa Rady            w zależności od konstrukcji i zabezpieczenia tech-',
+    '   Ministrów z dnia 16 listopada 2007 r. w sprawie szczegóło-        nicznego jako typy: A, B i C;',
+    '   wego zakresu działania Ministra Spraw Wewnętrznych',
+    '   i Administracji (Dz. U. Nr 216, poz. 1604).                   16) pojazdy ubezpieczające — pojazdy samochodowe',
+    '2) Zmiany tekstu jednolitego wymienionej ustawy zostały',
+    '   ogłoszone w Dz. U. z 2006 r. Nr 104, poz. 708, z 2008 r.',
+    '                                                                     przeznaczone do przewożenia konwojentów ochra-',
+    '   Nr 171, poz. 1055 i Nr 180, poz. 1112, z 2009 r. Nr 98,           niających pojazdy samochodowe przewożące war-',
+    '   poz. 817 oraz z 2010 r. Nr 47, poz. 278.                          tości pieniężne;',
+    '3) Zmiany wymienionej ustawy zostały ogłoszone w Dz. U.',
+    '   z 1998 r. Nr 106, poz. 668, z 2002 r. Nr 113, poz. 984,       17) pomieszczenie — wydzieloną część budynku',
+    '   z 2003 r. Nr 162, poz. 1568, z 2005 r. Nr 64, poz. 565 oraz       o określonej klasie odporności na włamanie, słu-',
+    '   z 2007 r. Nr 136, poz. 956.                                       żącą do przechowywania wartości pieniężnych;',
+)) + "\n"
+# DU 2010 poz. 1128: koniec zał. 6 (s. 13), strona-reklama wydawcy (s. 14, OCR tesseract), stopka z ISSN (s. 15)
+PDF_1128_KONIEC = "\n".join((
+    '    2. Urządzenia elektroniczne i elektryczne zamonto-     PN-S 76021 (rodzaje i zakres badań według punk-',
+    'wane w pojeździe powinny spełniać, w zakresie kom-         tu 4.1 .b tablica 2 kolumna 4 tej normy).',
+    'patybilności elektromagnetycznej, wymagania dyrek-',
+    'tywy Rady nr 72/245/EWG z dnia 20 czerwca 1972 r.              4. Koła pojazdu powinny być wykonane z wkładka-',
+    'w sprawie zbliżenia ustawodawstw Państw Członkow-          mi masywowymi lub w innej konstrukcji umożliwiają-',
+    'skich odnoszących się do tłumienia zakłóceń radio-         cej po przebiciu opony dalszą jazdę przez 15 km',
+    'elektrycznych wywoływanych przez silniki z zapłonem        z prędkością 50 (+/–5) km/godz.',
+    '',
+    '',
+    '',
+    '',
+    '                                           v.p',
+    'iskrowym stosowane w pojazdach silnikowych',
+    '(Dz. Urz. UE Polskie wydanie specjalne, rozdz. 13, t. 1,       5. W pojazdach ubezpieczających nie dopuszcza',
+    'str. 226) lub regulaminu nr 10 Europejskiej Komisji        się stosowania instalacji gazowej.',
+    '',
+    '',
+    '',
+    '',
+    '    w.rcl',
+    'ww',
+    '',
+))
+OCR_1128_REKLAMA = "\n".join((
+    '— 12391 —',
+    '',
+    'CENTRUM OBSŁUGI KANCELARII PREZESA RADY MINISTRÓW',
+    'WYDZIAŁ WYDAWNICTW I POLIGRAFII',
+    '',
+    'proponuje',
+    '',
+    'ZAŁĄCZNIK DO REGULAMINU MIĘDZYNARODOWEGO',
+    'PRZEWOZU KOLEJAMI TOWARÓW NIEBEZPIECZNYCH (RID),',
+    'STANOWIĄCEGO ZAŁĄCZNIK C€ DO KONWENCJI',
+    'O MIĘDZYNARODOWYM PRZEWOZIE KOLEJAMI (COTIF)',
+    '',
+    'DZIENNIK USTAW',
+    '',
+    'Załącznik do Dziennika Ustaw Nr 167, poz. 1318',
+    'z dnia 8 października 2009 r.',
+    '',
+    'kierowany do wszystkich uczestniczących',
+    'w przewozie kolejami towarów niebezpiecznych',
+    '',
+    'określa:',
+    '% towary niebezpieczne, które nie są dopuszczone do przewozu międzynarodowego,',
+    '',
+    '% towary niebezpieczne, które są dopuszczone do przewozu międzynarodowego',
+    'oraz przypisane do nich warunki dotyczące w szczególności:',
+    '',
+    '+ klasyfikacji towarów,',
+    '',
+    '+ używania opakowań,',
+    '',
+    '+ używania cystern,',
+    '',
+    '+ procedur wysyłkowych,',
+    '',
+    '* przepisów z zakresu konstrukcji, badania i dopuszczania opakowań i cystern,',
+    '',
+    '+ używania jednostek transportowych.',
+    '',
+    'Cena brutto I tomu — 105,00 zł (w tym 7 % VAT)',
+    'WERSJA POLSKA',
+    '',
+    'Cena brutto II tomu — 113,40 zł (wtym 7 % vAT)',
+    'WERSJA ANGIELSKA',
+    '',
+    'Dodatkowe informacje: tel. 22 694-67-52, 800 287 581',
+    'Adres e-mailowy: wydawnictwa © cokprm.gov.pl',
+    'Faks 22 694-60-48',
+    '',
+    'Pełna oferta: www.wydawnictwa.cokprm.gov.pl',
+    '',
+    '',
+))
+PDF_1128_STOPKA = "\n".join((
+    '                                                               — 12392 —',
+    '',
+    '',
+    '',
+    '',
+    '                                                                                                            l',
+    '                                                 .go',
+    '                                                    v.p',
+    '     w.rcl',
+    'ww                                 Wydawca: Kancelaria Prezesa Rady Ministrów',
+    '          Redakcja: Rządowe Centrum Legislacji — Departament Dziennika Ustaw i Monitora Polskiego',
+    '                             al. J. Ch. Szucha 2/4, 00-582 Warszawa, tel. 22 622-66-56',
+    ' Skład, druk i kolportaż: Centrum Obsługi Kancelarii Prezesa Rady Ministrów — Wydział Wydawnictw i Poligraﬁi,',
+    '                    ul. Powsińska 69/71, 02-903 Warszawa, tel. 22 694-67-52; faks 22 694-60-48',
+    '                             Bezpłatna infolinia: 800 287 581 (czynna w godz. 730–1530)',
+    '                                          www.wydawnictwa.cokprm.gov.pl',
+    '                                        e-mail: wydawnictwa@cokprm.gov.pl',
+    '',
+    '     Tłoczono z polecenia Prezesa Rady Ministrów w Centrum Obsługi Kancelarii Prezesa Rady Ministrów — Wydział Wydawnictw i Poligraﬁi,',
+    '                                                    ul. Powsińska 69/71, 02-903 Warszawa',
+    '',
+    'Zam. 2489/W/C/2010                                          ISSN 0867-3411                          Cena 2,80 zł (w tym 7 % VAT)',
+    '',
+))
+# DU 2026 poz. 1245 (k.p., PDF T) po `pdf_layout_do_tekstu`: obwieszczenie Marszałka Sejmu (skrócone po pkt 2.2)
+TJ_KP_OBWIESZCZENIE = "\n".join((
+    '[obwieszczenie Marszałka Sejmu sprzed załącznika — wiersze ze znakiem » NIE są treścią aktu]',
+    '',
+    '» Dz. U. 2026 poz. 1245',
+    '',
+    '» OBWIESZCZENIE',
+    '',
+    '» MARSZAŁKA SEJMU RZECZYPOSPOLITEJ POLSKIEJ',
+    '',
+    '» z dnia 1 września 2026 r.',
+    '',
+    '» w sprawie ogłoszenia jednolitego tekstu ustawy – Kodeks pracy',
+    '» 1. Na podstawie art. 16 ust. 1 ustawy z dnia 20 lipca 2000 r. o ogłaszaniu aktów normatywnych i niektórych innych aktów prawnych (Dz. U. z 2019 r. poz. 1461 oraz z 2026 r. poz. 912) ogłasza się w załączniku do niniejszego obwieszczenia jednolity tekst ustawy z dnia 26 czerwca 1974 r. – Kodeks pracy (Dz. U. z 2025 r. poz. 277), z uwzględnieniem stanu prawnego na dzień 27 sierpnia 2026 r. oraz zmian wprowadzonych:',
+    '» 1) ustawą z dnia 4 czerwca 2025 r. o zmianie ustawy – Kodeks pracy (Dz. U. poz. 807);',
+    '» 2) ustawą z dnia 26 września 2025 r. o zmianie ustawy – Kodeks pracy oraz niektórych innych ustaw (Dz. U. poz. 1423);',
+    '» 3) ustawą z dnia 5 listopada 2025 r. o układach zbiorowych pracy i porozumieniach zbiorowych (Dz. U. poz. 1661);',
+    '» 4) ustawą z dnia 4 grudnia 2025 r. o zmianie ustawy – Kodeks pracy oraz ustawy o zakładowym funduszu świadczeń socjalnych (Dz. U. z 2026 r. poz. 25);',
+    '» 5) ustawą z dnia 11 marca 2026 r. o zmianie ustawy o Państwowej Inspekcji Pracy oraz niektórych innych ustaw (Dz. U. poz. 473);',
+    '» 6) ustawą z dnia 19 czerwca 2026 r. o zmianie ustawy – Kodeks pracy oraz ustawy – Kodeks postępowania cywilnego (Dz. U. poz. 1046).',
+    '» 2. Podany w załączniku do niniejszego obwieszczenia tekst jednolity ustawy nie obejmuje:',
+    '» 1) art. 2 ustawy z dnia 4 czerwca 2025 r. o zmianie ustawy – Kodeks pracy (Dz. U. poz. 807), który stanowi:',
+    '» „Art. 2. Ustawa wchodzi w życie po upływie 6 miesięcy od dnia ogłoszenia.”;',
+    '» 2) art. 5–10 ustawy z dnia 26 września 2025 r. o zmianie ustawy – Kodeks pracy oraz niektórych innych ustaw (Dz. U. poz. 1423), które stanowią:',
+    'Załącznik do obwieszczenia Marszałka Sejmu Rzeczypospolitej',
+))
+
+# DU 2017 poz. 1692 (text.html → tekst, skrócone): paragrafy w rozporządzeniu bez artykułów
+HTML_TXT_1692 = ("Na podstawie art. 237 15 § 1 ustawy z dnia 26 czerwca 1974 r. – Kodeks pracy zarządza się, co następuje:\n\n"
+                 "§ 3.\n\nW pomieszczeniach inwentarskich:\n\n3)\n\nzapewnia się oświetlenie umożliwiające bezpieczne "
+                 "wykonywanie pracy przy obsłudze\nzwierząt;\n\n"
+                 "§ 4.\n\n1.\n\nW nowo budowanych lub przebudowywanych pomieszczeniach inwentarskich stosuje się urządzenia\n"
+                 "techniczne ułatwiające pracę przy dowozie i dozowaniu pasz, usuwaniu odchodów zwierzęcych\noraz pojeniu zwierząt.\n\n"
+                 "2.\n\nW pomieszczeniach, o których mowa w ust. 1, niedopuszczalne jest umieszczanie progów\n"
+                 "w otworach drzwiowych, na ciągach komunikacyjnych i w przejściach.\n\n"
+                 "§ 5.\n\nW pomieszczeniach inwentarskich przeznaczonych dla świń stosuje się kojce skonstruowane\n"
+                 "w sposób umożliwiający:\n\n")
+# DU 2024 poz. 1600 (text.html → tekst, skrócone): rozporządzenie zmieniające cytuje „§ 7." w cudzysłowie
+HTML_TXT_1600 = ("§ 1.\n\nW rozporządzeniu Ministra Zdrowia z dnia 11 września 2006 r. w sprawie środków odurzających\n"
+                 "(Dz. U. z 2024 r. poz. 373) wprowadza się następujące zmiany:\n\n1)\n\n§ 7 otrzymuje brzmienie:\n\n„\n\n"
+                 "§ 7.\n\nRecepta na preparat zawierający środek odurzający jest wystawiana po uprzednim zbadaniu.\n\n”\n\n;\n\n"
+                 "§ 2.\n\nRozporządzenie wchodzi w życie po upływie 7 dni od dnia ogłoszenia.\n")
+# DU 2023 poz. 2809 (k.r.o., text.html → tekst): paragrafy w artykułach
+HTML_TXT_KRO = ("Art. 24.\n\nMałżonkowie rozstrzygają wspólnie o istotnych sprawach rodziny.\n\n"
+                "Art. 25.\n\n§ 1.\n\nO nazwisku, które każdy z małżonków będzie nosił po zawarciu małżeństwa, decyduje\n"
+                "jego oświadczenie.\n\n§ 2.\n\nMałżonkowie mogą nosić wspólne nazwisko będące dotychczasowym nazwiskiem jednego z\nnich.\n\n"
+                "§ 3.\n\nNazwisko utworzone w wyniku połączenia\nnie może składać się z więcej niż dwóch członów.\n\n"
+                "Art. 26.\n\n§ 1.\n\nNazwisko dziecka określa się w oświadczeniach małżonków.\n\n§ 2.\n\nDziecko nosi nazwisko ojca.\n\n")
+# DU 2026 poz. 1245 (k.p., PDF T): dwa brzmienia art. 94³; data wejścia w życie jest tylko w przypisie 6 (art. 18³a)
+TJ_KP_PRZYPISY = ("Art. 18 3a. § 1. Pracownicy powinni być równo traktowani.\n"
+                  "[przypis 5)] W tym brzmieniu obowiązuje do wejścia w życie zmiany, o której mowa w odnośniku 6.\n"
+                  "§ 2. Równe traktowanie w zatrudnieniu oznacza niedyskryminowanie.\n"
+                  "[przypis 6)] W brzmieniu ustalonym przez art. 1 pkt 1 lit. a ustawy z dnia 19 czerwca 2026 r. o zmianie ustawy – "
+                  "Kodeks pracy oraz ustawy – Kodeks postępowania cywilnego (Dz. U. poz. 1046), która wejdzie w życie z dniem 5 "
+                  "listopada 2026 r.\n\n"
+                  "Art. 94 3. § 1. Pracodawca jest obowiązany przeciwdziałać mobbingowi.\n"
+                  "[przypis 28)] W tym brzmieniu obowiązuje do wejścia w życie zmiany, o której mowa w odnośniku 29.\n"
+                  "§ 2. Mobbing oznacza działania lub zachowania dotyczące pracownika.\n\n"
+                  "Art. 94 3. § 1. Pracodawca jest obowiązany systematycznie przeciwdziałać mobbingowi.\n"
+                  "[przypis 29)] W brzmieniu ustalonym przez art. 1 pkt 5 ustawy, o której mowa w odnośniku 6.\n"
+                  "§ 2. Mobbing oznacza zachowania polegające na uporczywym nękaniu pracownika.\n\n"
+                  "Art. 94 4. Pracodawca jest obowiązany zapewniać bezpieczne i higieniczne warunki pracy.\n")
+# DU 2023 poz. 2809 (k.r.o., text.html → tekst): obwieszczenie t.j. z cytatami bez roku i formułą „ogłoszonych przed dniem"
+HTML_TXT_KRO_OBWIESZCZENIE = (
+    "Treść obwieszczenia\n\n1.\n\nNa podstawie art. 16 ust. 1 zdanie pierwsze ustawy z dnia 20 lipca 2000 r. o ogłaszaniu aktów "
+    "normatywnych\ni niektórych innych aktów prawnych\n(Dz. U. z 2019 r. poz. 1461) ogłasza się w załączniku do niniejszego "
+    "obwieszczenia jednolity tekst ustawy z dnia 25 lutego 1964 r. - Kodeks rodzinny i opiekuńczy\n(Dz. U. z 2020 r. poz. 1359), "
+    "z uwzględnieniem zmian wprowadzonych:\n\n1)\n\nustawą z dnia 7 października 2022 r. o zmianie ustawy o wspieraniu rodziny "
+    "i systemie\npieczy zastępczej oraz niektórych innych ustaw\n(Dz. U. poz. 2140 i 2243),\n\n2)\n\nustawą z dnia 7 lipca 2023 r. "
+    "o ogólnoeuropejskim indywidualnym produkcie emerytalnym\n(Dz. U. poz. 1843),\n\n"
+    "oraz zmian wynikających z przepisów ogłoszonych przed dniem 6 grudnia 2023 r.\n\n2.\n\nPodany w załączniku do niniejszego "
+    "obwieszczenia tekst jednolity ustawy nie obejmuje:\n\n1)\n\nart. 36 i art. 45 ustawy z dnia 7 października 2022 r. o zmianie "
+    "ustawy o wspieraniu\nrodziny i systemie pieczy zastępczej oraz niektórych innych ustaw\n(Dz. U. poz. 2140 i 2243), które "
+    "stanowią:\n\n„\n\nArt. 36.\n\nDo spraw w przedmiocie określenia okresu osobistej styczności stosuje się przepisy dotychczasowe.\n\n”\n\n")
+
+
+class TestProbaLosowa202610(unittest.TestCase):
+    """Pomiar na losowej próbie (2026-10, fix 2.1.1): § jako jednostka fragmentu, reklama wydawcy w zeszycie, obwieszczenie
+    t.j. i łańcuchy przypisów, indeks górny w zeszycie, przypisy łamu bez kreski, HTML <h1>/gloss-section/„Pokaż całość",
+    powtórzony dywiz, --strict przy stronach bez warstwy tekstowej."""
+
+    # 1. --fragment "§ N"
+    def test_paragraf_ciety_na_granicach_paragrafow(self):
+        [(s, e)] = eli._fragmenty(HTML_TXT_1692, "§ 4")
+        frag = HTML_TXT_1692[s:e]
+        self.assertTrue(frag.startswith("§ 4.\n"), frag[:30])
+        self.assertIn("w otworach drzwiowych", frag)
+        self.assertNotIn("oświetlenie", frag)     # koniec § 3 (dawniej start „ię oświetlenie…")
+        self.assertNotIn("§ 5.", frag)
+
+    def test_paragraf_z_indeksem_gornym(self):
+        txt = "§ 2.\n\nTreść drugiego.\n\n§ 2 1.\n\nTreść paragrafu 2¹.\n\n§ 21.\n\nTreść dwudziestego pierwszego.\n"
+        for fraza in ("§ 2¹", "§ 2(1)", "§2[1]"):
+            with self.subTest(fraza=fraza):
+                [(s, e)] = eli._fragmenty(txt, fraza)
+                self.assertEqual(txt[s:e].strip(), "§ 2 1.\n\nTreść paragrafu 2¹.")
+        [(s, e)] = eli._fragmenty(txt, "§ 2")
+        self.assertEqual(txt[s:e].strip(), "§ 2.\n\nTreść drugiego.")
+
+    def test_paragraf_cytowany_w_akcie_zmieniajacym_nie_jest_granica(self):
+        [(s, e)] = eli._fragmenty(HTML_TXT_1600, "§ 1")
+        frag = HTML_TXT_1600[s:e]
+        self.assertIn("Recepta na preparat", frag)          # cytowany „§ 7." nie przerywa § 1
+        self.assertNotIn("wchodzi w życie po upływie 7 dni", frag)
+        [(s, e)] = eli._fragmenty(HTML_TXT_1600, "§ 2")
+        self.assertIn("wchodzi w życie po upływie 7 dni", HTML_TXT_1600[s:e])
+
+    def test_paragraf_w_artykule_niejednoznaczny_i_z_artykulem(self):
+        self.assertEqual(len(eli._hity_paragrafu(HTML_TXT_KRO, "§ 1")), 2)
+        spans = eli._fragmenty(HTML_TXT_KRO, "§ 1")
+        self.assertEqual([eli._artykul_nad(HTML_TXT_KRO, s) for s, _ in spans], ["Art. 25.", "Art. 26."])
+        [(s, e)] = eli._fragmenty(HTML_TXT_KRO, "art. 25 § 2")
+        self.assertEqual(HTML_TXT_KRO[s:e].strip(), "§ 2.\n\nMałżonkowie mogą nosić wspólne nazwisko będące dotychczasowym "
+                                                     "nazwiskiem jednego z\nnich.")
+        # tekst z PDF: „Art. 25. § 1. …" w jednym wierszu — § 1 trafia w wiersz artykułu
+        pdf = "Art. 25. § 1. O nazwisku decyduje oświadczenie.\n§ 2. Wspólne nazwisko.\nArt. 26. § 1. Nazwisko dziecka.\n"
+        [(s, e)] = eli._fragmenty(pdf, "art. 25 § 1")
+        self.assertEqual(pdf[s:e], "Art. 25. § 1. O nazwisku decyduje oświadczenie.\n")
+
+    def test_paragraf_wypis_z_artykulem_i_ostrzezeniem(self):
+        out = io.StringIO()
+        with mock.patch.object(eli, "_get", side_effect=lambda p, params=None, soft=False:
+                               {} if p.endswith("/references") else "<p>x</p>" if p.endswith("text.html") else {}), \
+                mock.patch.object(eli, "html_to_text", return_value=HTML_TXT_KRO), \
+                mock.patch.object(sys, "argv", ["eli.py", "tekst", "DU", "2023", "2809", "--fragment", "§ 1"]), \
+                contextlib.redirect_stdout(out):
+            eli.main()
+        out = out.getvalue()
+        self.assertIn("NIEJEDNOZNACZNE", out)
+        self.assertIn("[§ 1 — w: Art. 25.]\n§ 1.", out)
+        self.assertIn("[§ 1 — w: Art. 26.]\n§ 1.", out)
+
+    # 2. reklama wydawcy w zeszycie
+    def test_strona_reklamowa_z_ocr_i_z_warstwy_tekstowej(self):
+        self.assertTrue(eli._pdf_strona_reklamowa(OCR_1128_REKLAMA))
+        self.assertFalse(eli._pdf_strona_reklamowa(PDF_1128_KONIEC))
+        self.assertFalse(eli._pdf_strona_reklamowa(PDF_1128_STOPKA))     # stopka: „Centrum Obsługi…" zwykłą pisownią
+        raw = PDF_1128_KONIEC + "\f" + OCR_1128_REKLAMA + "\f" + PDF_1128_STOPKA + "\f"
+        t = eli.pdf_layout_do_tekstu(eli.pdf_zeszyt_do_aktu(raw, 2010, None))
+        self.assertTrue(t.endswith("5. W pojazdach ubezpieczających nie dopuszcza się stosowania instalacji gazowej."), t[-200:])
+        for smiec in ("CENTRUM", "RID", "Pełna oferta", "Cena brutto", "ISSN", "ww"):
+            self.assertNotIn(smiec, t)
+        self.assertIn("50 (+/–5) km/godz.", t)       # „–5)" to liczba w nawiasie, nie odsyłacz do przypisu 5
+
+    def test_ocr_strony_reklamowej_nie_jest_tekstem_aktu(self):
+        meta = {"ELI": "DU/2010/1128", "year": 2010, "pos": None, "publisher": "DU", "textHTML": False,
+                "texts": [{"fileName": "D20101128.pdf", "type": "O"}]}
+        raw = PDF_1128_KONIEC + "\f\f" + PDF_1128_STOPKA + "\f"
+        with mock.patch.object(eli, "_get_bytes", return_value=b"%PDF"), \
+                mock.patch.object(eli, "pdftotext_dostepny", return_value=True), \
+                mock.patch.object(eli, "pdf_do_tekstu_z_notkami", return_value=(raw, {}, {})), \
+                mock.patch.object(eli, "ocr_dostepny", return_value=True), \
+                mock.patch.object(eli, "pdf_ocr_stron", return_value={1: OCR_1128_REKLAMA}):
+            info = {}
+            t, _, err = eli._tekst_z_pdf("/acts/DU/2010/1128", "DU 2010 poz. 1128", meta, info)
+        self.assertEqual(err, "")
+        self.assertNotIn("ocr_strony", info)      # jedyna strona z OCR to reklama — tekst aktu nie pochodzi z OCR
+        self.assertEqual(info.get("reklama_strony"), 1)
+        self.assertNotIn("CENTRUM", t)
+
+    # 3. obwieszczenie t.j. i przypisy odsyłające do innych przypisów
+    def test_obwieszczenie_pdf_t_zmiany_uwzglednione(self):
+        uwzgl, nieobj, przed = eli._obwieszczenie_tj(TJ_KP_OBWIESZCZENIE)
+        self.assertEqual(uwzgl, {(2025, 807), (2025, 1423), (2025, 1661), (2026, 25), (2026, 473), (2026, 1046)})
+        self.assertEqual((nieobj, przed), (set(), ""))
+        linie = ["UWAGA: po tym tekście jednolitym (stan prawny na 2026-08-27) odnotowano zmiany (2) — sprawdź:",
+                 "  - Dz.U. 2026 poz. 1046  Ustawa z dnia 19 czerwca 2026 r. o zmianie ustawy - Kodeks pracy  (data aktu "
+                 "2026-06-19, ogłoszono 2026-08-04, wejście w życie zmiany 2026-11-05)",
+                 "  - Dz.U. 2026 poz. 1300  Ustawa późniejsza  (data aktu 2026-09-10, ogłoszono 2026-09-20, wejście w życie zmiany 2027-01-01)"]
+        out = eli._oznacz_obwieszczenie(linie, uwzgl, nieobj, przed, dzis="2026-10-05")
+        self.assertIn("[UWZGLĘDNIONA w tym t.j.", out[1])
+        self.assertIn("wchodzi w życie 2026-11-05 — do tego dnia obowiązuje dotychczasowe brzmienie", out[1])
+        self.assertNotIn("[", out[2].split(")", 2)[-1])           # nie z obwieszczenia — bez oznaczenia
+        self.assertIn("wg obwieszczenia Marszałka Sejmu", out[0])
+
+    def test_obwieszczenie_html_rok_z_daty_aktu_i_formula_ogloszonych_przed(self):
+        uwzgl, nieobj, przed = eli._obwieszczenie_tj(HTML_TXT_KRO_OBWIESZCZENIE)
+        self.assertEqual(uwzgl, {(2022, 2140), (2022, 2243), (2023, 1843)})
+        self.assertEqual((nieobj, przed), (set(), "2023-12-06"))    # pkt 2 wymienia przepisy, nie zmiany
+        out = eli._oznacz_obwieszczenie(["  - Dz.U. 2023 poz. 2600  Ustawa  (ogłoszono 2023-11-30, wejście w życie zmiany 2024-01-01)"],
+                                        uwzgl, nieobj, przed, dzis="2026-10-05")
+        self.assertIn("UWZGLĘDNIONA", out[0])
+        self.assertEqual(eli._obwieszczenie_tj("Art. 1. Treść aktu bez obwieszczenia."), (set(), set(), ""))
+
+    def test_obwieszczenie_zmiany_nieobjete(self):
+        txt = ("1. Na podstawie art. 16 ust. 1 ustawy ogłasza się w załączniku do niniejszego obwieszczenia jednolity tekst ustawy "
+               "z dnia 6 czerwca 1997 r. (Dz. U. z 2024 r. poz. 17), z uwzględnieniem zmian wprowadzonych ustawą z dnia "
+               "5 marca 2025 r. (Dz. U. poz. 300).\n2. Podany w załączniku tekst jednolity ustawy nie obejmuje:\n"
+               "1) zmian wprowadzonych ustawą z dnia 9 maja 2025 r. (Dz. U. poz. 700), które wejdą w życie z dniem 1 stycznia 2027 r.;\n"
+               "2) art. 5 ustawy z dnia 5 marca 2025 r. (Dz. U. poz. 300), który stanowi: …\n")
+        uwzgl, nieobj, _ = eli._obwieszczenie_tj(txt)
+        self.assertEqual((uwzgl, nieobj), ({(2025, 300)}, {(2025, 700)}))
+        out = eli._oznacz_obwieszczenie(["  - Dz.U. 2025 poz. 700  Ustawa  (ogłoszono 2025-05-20)"], uwzgl, nieobj)
+        self.assertIn("[NIE objęta tym t.j.", out[0])
+        # bez pkt 2: lista kończy się przed załącznikiem — cytaty z treści aktu nie są „uwzględnionymi zmianami"
+        bez_pkt2 = txt.split("\n2. ")[0] + "\n» Marszałek Sejmu: W. Czarzasty\nZałącznik do obwieszczenia\n" \
+            "Art. 1. Przepisy ustawy z dnia 1 lipca 2020 r. (Dz. U. z 2020 r. poz. 5) stosuje się odpowiednio.\n"
+        self.assertEqual(eli._obwieszczenie_tj(bez_pkt2)[0], {(2025, 300)})
+
+    def test_przypis_odsylajacy_do_innego_przypisu_daje_date(self):
+        txt = TJ_KP_PRZYPISY
+        spans = eli._fragmenty(txt, "art. 94(3)")
+        self.assertEqual(len(spans), 2)
+        frag = "\n".join(txt[s:e] for s, e in spans)
+        dociagniete, analiza, ostrz = eli._przypisy_fragmentu(frag, txt, dzis="2026-10-05")
+        self.assertEqual([l[:14] for l in dociagniete], ["[przypis 6)] W"])
+        self.assertEqual(len(ostrz), 1)
+        self.assertIn("brzmienie z przypisem 28) obowiązuje tylko DO wejścia w życie zmiany (2026-11-05; przypis 29) → 6))", ostrz[0])
+        self.assertIn("dziś jeszcze obowiązuje", ostrz[0])
+        przyszle, _ = eli._zmiany_w_tekscie("\n".join(analiza), "2026-10-05")
+        self.assertEqual([(d, o[:39]) for d, o in przyszle], [("2026-11-05", "przepis z przypisem 29) wejdzie w życie")])
+        # po wejściu zmiany w życie stare brzmienie już nie obowiązuje
+        _, _, ostrz = eli._przypisy_fragmentu(frag, txt, dzis="2026-12-01")
+        self.assertIn("już weszła w życie, to brzmienie NIE obowiązuje", ostrz[0])
+
+    def test_tresc_przypisu_z_dalszej_strony_pdf(self):
+        # DU 2026 poz. 1245 (k.p., PDF T): przypis 46 („Obecnie minister właściwy do spraw pracy…") ma treść tylko na
+        # stronie pierwszego odesłania, a t.j. odsyła do niego jeszcze na wielu dalszych stronach (23 → 7 braków)
+        raw = ("Art. 237 1. § 2. Minister właściwy do spraw pracy46) określi, w drodze rozporządzenia, szczegółowe zasady.\n\n"
+               "46) Obecnie minister właściwy do spraw pracy, na podstawie art. 4 ust. 1, art. 5 pkt 16 oraz art. 21 ustawy\n"
+               "    z dnia 4 września 1997 r. o działach administracji rządowej.\n"
+               "\fArt. 237 2. Pracodawca jest obowiązany zapewnić środki.\n"
+               "\fArt. 237 3. § 2. Minister właściwy do spraw pracy46) określi, w drodze rozporządzenia, szczegółowe zasady.\n")
+        t = eli.pdf_layout_do_tekstu(raw)
+        self.assertEqual(t.count("[przypis 46)] Obecnie minister właściwy do spraw pracy"), 2, t)
+        self.assertNotIn("nie odnaleziono", t)
+
+    # 4. indeks górny w zeszycie 2000–2011
+    def test_indeks_gorny_w_zeszycie_w_miejscu(self):
+        # DU 2008 poz. 288, s. 1: słowa z `pdftotext -bbox` („222" + podniesione „1") i ten wiersz z `-layout`
+        slowa = [(134.7674, 406.7197, 150.9244, 416.3097, "art."), (158.8684, 406.7197, 175.9464, 416.3097, "222"),
+                 (176.1389, 405.2372, 180.3089, 412.4297, "1"), (188.2532, 406.7197, 193.8132, 416.3097, "§"),
+                 (201.7562, 406.7197, 207.3162, 416.3097, "3")]
+        wiersz = "   Na podstawie art. 2221 § 3 ustawy z dnia                                     1) drobnoustroje komórkowe, w tym zmo-"
+        out = eli._pdf_oznacz_indeksy(wiersz, slowa, w_miejscu=True)
+        self.assertEqual(out, wiersz.replace("art. 2221", "art. 222¹"))
+        self.assertEqual(len(out), len(wiersz))          # łamy zostają na miejscu
+        self.assertIn("art. 222 1 § 3", eli.pdf_layout_do_tekstu(out))
+
+    def test_zeszyt_dostaje_indeksy_a_ocr_lat_90_nie(self):
+        bbox = _bbox([(595, 842, [(134.7674, 406.7197, "art.", 150.9244, 416.3097), (158.8684, 406.7197, "222", 175.9464, 416.3097),
+                                  (176.1389, 405.2372, "1", 180.3089, 412.4297), (188.2532, 406.7197, "§", 193.8132, 416.3097)])])
+        layout = "Na podstawie art. 2221 § 3 ustawy\n\f"
+        with mock.patch.object(eli, "_pdftotext", side_effect=lambda args, data: bbox if "-bbox" in args else layout):
+            self.assertIn("art. 222¹ §", eli.pdf_do_tekstu_z_notkami(b"%PDF", zeszyt=True)[0])
+            self.assertIn("art. 2221 §", eli.pdf_do_tekstu_z_notkami(b"%PDF", zeszyt=True, indeksy=False)[0])
+
+    # 5. przypisy na dole łamu bez kreski
+    def test_przypisy_lewego_lamu_bez_kreski(self):
+        t = eli.pdf_layout_do_tekstu(eli.pdf_zeszyt_do_aktu(PDF_ZESZYT_2010_S1, 2010, 1128))
+        self.assertIn("[przypis 1)] Minister Spraw Wewnętrznych i Administracji kieruje działem administracji rządowej", t)
+        self.assertIn("[przypis 3)] Zmiany wymienionej ustawy zostały ogłoszone w Dz. U. z 1998 r.", t)
+        self.assertNotIn("nie odnaleziono", t)
+        self.assertIn("w Dzienniku Urzędowym Rzeczypospolitej Polskiej „Monitor Polski”, na podstawie art. 20 pkt 2", t)
+
+    # 6–7. HTML: <h1>, gloss-section, „Pokaż całość"
+    def test_html_naglowek_h1_rozdzielony(self):
+        html = ('<h1><span class="head-type">Rozporządzenie Ministra Zdrowia</span><span class="head-date">z dnia 29 '
+                'października 2024&nbsp;r.</span><span class="head-title">zmieniające rozporządzenie w sprawie środków '
+                'odurzających</span></h1><div id="show-all" class="show-all hidden"><button id="show-all-button">Pokaż '
+                'całość</button></div><script src="/act.js"></script>')
+        self.assertEqual(eli.html_to_text(html), "Rozporządzenie Ministra Zdrowia\nz dnia 29 października 2024 r.\n"
+                                                 "zmieniające rozporządzenie w sprawie środków odurzających")
+
+    def test_html_przypis_z_gloss_section_tylko_raz(self):
+        # DU 2014 poz. 141, § 29 (skrócone): przypis 3 w odsyłaczu i drugi raz w bloku gloss-section
+        html = ('<h3 CLASS="pro-none"><B CLASS="b">§&nbsp;29.</B></h3><div class="unit-inner"><div data-template="xText" '
+                'CLASS="pro-text">Rozporządzenie wchodzi w życie z dniem 1 lutego 2014&nbsp;r.<A class="gloss-link tooltip" '
+                'href="#gloss-0:3:"><sup>3)</sup><span class="tooltip-text"><span class="pro-gloss-inner">Niniejsze '
+                'rozporządzenie było poprzedzone rozporządzeniem Rady Ministrów z dnia 30\n marca 2004&nbsp;r.</span></span>'
+                '</A></div></div><div class="gloss-section"><DIV CLASS="gloss" ID="gloss-0:3:"><div>3)</div><div><span '
+                'class="pro-gloss-inner">Niniejsze rozporządzenie było poprzedzone rozporządzeniem Rady Ministrów z dnia 30\n'
+                ' marca 2004&nbsp;r.</span></div></DIV><DIV CLASS="gloss" ID="gloss-0:9:"><div>9)</div><div>Przypis bez '
+                'odsyłacza w treści.</div></DIV></div>')
+        t = eli.html_to_text(html)
+        self.assertEqual(t.count("Niniejsze rozporządzenie"), 1, t)
+        self.assertNotIn("\n3)\n", t)                  # „3)" z bloku nie udaje punktu § 29
+        self.assertIn("[przypis 9)] Przypis bez odsyłacza w treści.", t)
+        [(s, e)] = eli._fragmenty(t, "§ 29")
+        self.assertIn("[przypis 3)] Niniejsze rozporządzenie", t[s:e])
+
+    # 8. powtórzony dywiz
+    def test_powtorzony_dywiz_przy_lamaniu(self):
+        self.assertEqual(eli._doklej("w Europie Środkowo-", "-Wschodniej. Przed Niemcami"),
+                         "w Europie Środkowo-Wschodniej. Przed Niemcami")
+        self.assertEqual(eli._doklej("zabez-", "pieczenia"), "zabezpieczenia")
+        self.assertEqual(eli._doklej("ust. 1 i 2 –", "– tiret"), "ust. 1 i 2 – – tiret")   # półpauzy bez zmian
+
+    # 9. --strict a strony bez warstwy tekstowej
+    def _tekst_pdf(self, argv, raw, ocr=None):
+        meta = {"ELI": "DU/2010/20", "year": 2010, "pos": None, "publisher": "DU", "textHTML": False,
+                "displayAddress": "Dz.U. 2010 nr 3 poz. 20", "texts": [{"fileName": "D20100020.pdf", "type": "O"}]}
+
+        def fake_get(path, params=None, soft=False):
+            return {} if path.endswith("/references") else "" if path.endswith("/text.html") else meta
+        out = io.StringIO()
+        with mock.patch.object(eli, "_get", side_effect=fake_get), \
+                mock.patch.object(eli, "_get_bytes", return_value=b"%PDF"), \
+                mock.patch.object(eli, "pdftotext_dostepny", return_value=True), \
+                mock.patch.object(eli, "pdf_do_tekstu_z_notkami", return_value=(raw, {}, {})), \
+                mock.patch.object(eli, "ocr_dostepny", return_value=ocr is not None), \
+                mock.patch.object(eli, "pdf_ocr_stron", side_effect=lambda data, nr: {i: ocr for i in nr}), \
+                mock.patch.object(sys, "argv", ["eli.py"] + argv), contextlib.redirect_stdout(out):
+            try:
+                eli.main()
+            except SystemExit as e:
+                return out.getvalue(), str(e)
+        return out.getvalue(), ""
+
+    def test_strict_blokuje_strony_bez_warstwy_tekstowej(self):
+        raw = PDF_1128_KONIEC + "\f\f" + PDF_1128_STOPKA + "\f"
+        out, err = self._tekst_pdf(["tekst", "DU", "2010", "20", "--bez-ocr", "--strict"], raw)
+        self.assertIn("BŁĄD (strict): 1 z 3 stron PDF", err)
+        self.assertIn("NIEKOMPLETNY", err)
+        self.assertNotIn("instalacji gazowej", out)
+        out, err = self._tekst_pdf(["tekst", "DU", "2010", "20", "--bez-ocr"], raw)
+        self.assertEqual(err, "")
+        self.assertIn("1 z 3 stron tego PDF nie ma warstwy tekstowej", out)
+        # z OCR: pusta strona to reklama wydawcy — po jej usunięciu tekst jest kompletny, więc strict przepuszcza
+        out, err = self._tekst_pdf(["--strict", "tekst", "DU", "2010", "20"], raw, ocr=OCR_1128_REKLAMA)
+        self.assertEqual(err, "")
+        self.assertNotIn("UWAGA — OCR", out)
+        self.assertIn("instalacji gazowej.", out)
+
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

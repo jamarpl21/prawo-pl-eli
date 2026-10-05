@@ -108,6 +108,11 @@ Sygnaturę można podać w wielu formach: `DU 2000 1037`, `DU/2024/18`, `"Dz.U. 
   (wycina tylko jednostki z frazą — pełny kodeks to setki tysięcy znaków):
   `python3 scripts/eli.py tekst DU 2024 18 --fragment "art. 299"` (trafia w nagłówek artykułu, nie w odesłania)
   `python3 scripts/eli.py tekst DU 2024 18 --fragment "przedawnienie"` (wyszukiwanie pełnotekstowe)
+  `python3 scripts/eli.py tekst DU 2017 1692 --fragment "§ 4"` (paragraf rozporządzenia — od nagłówka „§ 4." do
+  następnego paragrafu, artykułu albo jednostki wyższej; też `"§ 2(1)"`/`"§ 2¹"`). W akcie z artykułami „§ N"
+  bez artykułu jest NIEJEDNOZNACZNE — wynik pokazuje wszystkie trafienia (do 8) z artykułem, w którym leżą
+  („[§ 1 — w: Art. 25.]"); jeden przepis: `--fragment "art. 25 § 2"`. Paragrafy cytowane w akcie zmieniającym
+  („„§ 7. …”") nie są traktowane jak paragrafy tego aktu.
   `--pdf ŚCIEŻKA` zapisuje urzędowy PDF (preferuje tekst jednolity). Indeks górny podawaj w nawiasie
   albo unicodem: art. 299¹ → `--fragment "art. 299(1)"` lub `"art. 299¹"` (zapis z `struktura`, „Art. 7_1.”,
   też działa: `"art. 7_1"`); sufiks literowy normalnie: `"art. 66c"`, a z indeksem: `"art. 6b(3)"`. Nagłówki przepisów niedawno dodanych lub zmienionych mają w tekście jednolitym
@@ -131,7 +136,9 @@ Sygnaturę można podać w wielu formach: `DU 2000 1037`, `DU/2024/18`, `"Dz.U. 
 pusty stdout): (1) istnieje nowszy t.j. niż podany → blokada; (2) odniesień lub aktu bazowego nie dało się
 pobrać (awaria sieci/zapory) → blokada; (3) `text.html` puste i tekst pochodziłby ze STARSZEGO t.j. albo
 `pdftotext` zawiódł → blokada (tekst z własnego urzędowego PDF aktu PRZECHODZI); (4) listy nowelizacji
-nie dało się uzupełnić z aktu bazowego → blokada. **Czego `--strict` NIE sprawdza:** czy przepis został
+nie dało się uzupełnić z aktu bazowego → blokada; (5) tekst z PDF byłby NIEKOMPLETNY, bo część stron nie ma
+warstwy tekstowej (skan nieodczytany przez OCR, np. z `--bez-ocr`) → blokada (wtedy: OCR bez `--strict` albo
+`--pdf`); (6) tekst pochodziłby z OCR → blokada. **Czego `--strict` NIE sprawdza:** czy przepis został
 zmieniony PO stanie prawnym t.j. — to wiesz tylko z sekcji „Nowelizacje po tekście jednolitym" (czytaj ją
 i sprawdzaj „wejście w życie zmiany" względem daty sprawy); nie sprawdza też obcięcia listy `szukaj`
 (to jest jawnie wypisane) ani opóźnień indeksacji API.
@@ -141,7 +148,15 @@ na tekście jednolitym wypisuje „Nowelizacje po tekście jednolitym" — włas
 „Akty zmieniające" aktu bazowego ogłoszone lub wchodzące w życie po `legalStatusDate` t.j. (Sejm nie
 synchronizuje obu list; każda pozycja ma osobno „data aktu", „ogłoszono", „wejście w życie zmiany") —
 a na STARSZYM t.j. (np. z pamięci) — „NIEAKTUALNY tekst jednolity, istnieje NOWSZY" (sprawdza to na akcie
-bazowym). Gdy `text.html` jest puste w API (`textHTML=false`), narzędzie czyta WŁASNY urzędowy PDF aktu
+bazowym). Na tekście jednolitym narzędzie czyta też OBWIESZCZENIE Marszałka Sejmu z początku tekstu: pozycja
+listy wymieniona w jego pkt 1 („z uwzględnieniem zmian wprowadzonych: …" albo „przepisów ogłoszonych przed dniem
+…") dostaje „[UWZGLĘDNIONA w tym t.j. — … NIE nakładaj ponownie]" (gdy wchodzi w życie później — z datą: do niej
+obowiązuje dotychczasowe brzmienie, a t.j. podaje oba z przypisami), a pozycja z pkt 2 („nie obejmuje: zmian
+wprowadzonych …") — „[NIE objęta tym t.j. — … nałóż ją ręcznie]". Przy `--fragment` przypisy fragmentu, które
+odsyłają do innych przypisów („…ustawy, o której mowa w odnośniku 6"), są rozwijane: narzędzie dopisuje pod
+fragmentem przypisy spoza niego i ostrzega, które brzmienie obowiązuje dziś („brzmienie z przypisem 28)
+obowiązuje tylko DO wejścia w życie zmiany (2026-11-05…)", a drugie — „JESZCZE NIE OBOWIĄZUJĄ … od 2026-11-05").
+Gdy `text.html` jest puste w API (`textHTML=false`), narzędzie czyta WŁASNY urzędowy PDF aktu
 (`pdftotext`); tylko bez `pdftotext` sięga po najnowszy STARSZY t.j. z HTML — wtedy nagłówek mówi
 „NIEAKTUALNE BRZMIENIE MOŻLIWE", wymienia pominięte t.j. i wypisuje INLINE zmiany aktu bazowego po stanie
 prawnym tego starszego t.j., które trzeba nałożyć samemu. Nie ignoruj tych ostrzeżeń.
@@ -163,7 +178,10 @@ tekstowej (skan), narzędzie pisze „N z M stron … nie ma warstwy tekstowej" 
 Gdy w systemie jest `tesseract` (z językiem `pol`) i `pdftoppm`, skany do 10 stron są odczytywane OCR
 samodzielnie, dłuższe — z `tekst … --ocr` (ok. 7 s/stronę; wynik zapamiętywany w `~/.cache/prawo-pl-eli/ocr`);
 `--bez-ocr` wyłącza OCR. Tekst z OCR ma nagłówek „UWAGA — OCR … NIEPEWNY" — liczby, daty i kwoty sprawdź w PDF
-przed cytatem; **`--strict` blokuje tekst z OCR.**
+przed cytatem; **`--strict` blokuje tekst z OCR i tekst ze stronami bez warstwy tekstowej (niekompletny).**
+Ogłoszenia wydawcy z końca zeszytu (strona „CENTRUM OBSŁUGI KANCELARII… proponuje… Pełna oferta") i stopka
+zeszytu nie są treścią aktu — narzędzie je usuwa, także gdy strona-reklama jest skanem odczytanym przez OCR
+(taka strona nie liczy się wtedy jako tekst z OCR).
 Ogłoszony PDF Dz.U./M.P. z lat 1990–1999 ma warstwę tekstową z OCR skanu (nagłówek wyniku to mówi): litery
 i cyfry bywają przekłamane, a wyrazy rozbite spacją — **liczby, daty, kwoty i dosłowny cytat sprawdź w `--pdf`**.
 

@@ -8,7 +8,7 @@ Operacje WYŁĄCZNIE read-only (GET). Źródło pierwotne prawa polskiego: Dzien
 Komendy:
   szukaj ["<fraza>"] [--typ T] [--rok R] [--wyd DU|MP] [--haslo H] [--obowiazujace] [--limit N] [--offset N]
   meta <sygnatura...>            np. meta DU 2024 18  |  meta "Dz.U. 2024 poz. 18"  |  meta WDU20240000018
-  tekst <sygnatura...> [--fragment "art. 299"] [--pdf ŚCIEŻKA]
+  tekst <sygnatura...> [--fragment "art. 299" | "§ 4" | "art. 25 § 2"] [--pdf ŚCIEŻKA]
                                  tekst aktu (text.html → czysty tekst; gdy API nie ma HTML — własny urzędowy
                                  PDF aktu przez `pdftotext -layout`, jeśli jest w PATH); --fragment wycina
                                  tylko jednostki z frazą (np. jeden artykuł); --pdf zapisuje urzędowy PDF
@@ -18,7 +18,8 @@ Komendy:
 Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
            --strict  (blokuje wynik PRZED emisją, gdy nie udało się zweryfikować aktualności lub
                       kompletności: nowszy t.j., awaria kontroli, tekst ze STARSZEGO t.j. zamiast własnego
-                      PDF, niepełna lista nowelizacji; NIE wykrywa zmian przepisu po stanie prawnym t.j.)
+                      PDF, niepełna lista nowelizacji, tekst z OCR, strony PDF bez warstwy tekstowej;
+                      NIE wykrywa zmian przepisu po stanie prawnym t.j.)
 """
 import sys, json, re, time, argparse, shutil, subprocess, tempfile, os, datetime, hashlib
 import concurrent.futures
@@ -155,6 +156,12 @@ class _Stripper(HTMLParser):
     tekstu, a treść przypisu czeka w kolejce i wychodzi na najbliższej granicy bloku jako
     osobna linia „[przypis N)] …" (etykieta jest konieczna: 7 przypisów w k.p.c. zaczyna się
     od „Art. 598…"/„Tytuł działu…" i na początku linii udawałoby nagłówek jednostki — _GRANICE).
+
+    Te same przypisy API powtarza w bloku <div class="gloss-section"> pod treścią („1)", „treść") — przepisany
+    liniowo dawał drugi raz każdy przypis, a jego „1)" udawało punkt ostatniej jednostki aktu. Przypis z bloku
+    wychodzi tylko wtedy, gdy nie było go w odsyłaczu. Przycisk „Pokaż całość" (<button>) nie jest treścią.
+    Tytuł w <h1> to trzy <span class="head-…"> (rodzaj, data, tytuł) — każdy zaczyna nowy wiersz, bez tego
+    wychodziło „Ministra Zdrowiaz dnia … r.zmieniające".
     """
 
     BLOKI = ("p", "br", "div", "tr", "li", "h1", "h2", "h3", "h4")
@@ -167,6 +174,11 @@ class _Stripper(HTMLParser):
         self.tt = 0               # głębokość <span> wewnątrz treści przypisu (tooltip-text)
         self.nr, self.tresc = [], []
         self.oczekujace = []      # przypisy do wypisania na najbliższej granicy bloku
+        self.href = ""            # adres odsyłacza („#gloss-0:1:") — ten sam id ma przypis w gloss-section
+        self.wypisane_id, self.wypisane = set(), set()   # przypisy już wypisane z odsyłaczy (id, (nr, treść))
+        self.sekcja = 0           # głębokość <div> wewnątrz <div class="gloss-section">
+        self.glossa = 0           # głębokość <div> wewnątrz jednego <div class="gloss"> w tej sekcji
+        self.glossa_id, self.glossa_tekst = "", []
 
     def _granica(self):
         for nr, tresc in self.oczekujace:
@@ -180,15 +192,31 @@ class _Stripper(HTMLParser):
             self._granica()
 
     def handle_starttag(self, tag, attrs):
-        if tag in ("script", "style"):
+        if tag in ("script", "style", "button"):
             self.skip += 1
-        klasa = dict(attrs).get("class", "") or ""
-        if tag in self.BLOKI:
+        atrybuty = dict(attrs)
+        klasa = atrybuty.get("class", "") or ""
+        if self.sekcja:
+            if tag == "div":
+                self.sekcja += 1
+                if self.glossa:
+                    self.glossa += 1
+                elif "gloss" in klasa.split():
+                    self.glossa, self.glossa_id, self.glossa_tekst = 1, atrybuty.get("id", "") or "", []
+            if self.glossa and tag in self.BLOKI:
+                self.glossa_tekst.append(" ")
+            return
+        if tag == "div" and "gloss-section" in klasa.split():
+            self._granica()
+            self.sekcja = 1
+            return
+        if tag in self.BLOKI or tag == "span" and klasa.startswith("head-") and not self.gloss:
             self._granica()
         if tag == "a" and self.gloss:
             self.gloss += 1
         elif tag == "a" and "gloss-link" in klasa:
             self.gloss, self.nr, self.tresc = 1, [], []
+            self.href = (atrybuty.get("href") or "").lstrip("#")
         if tag == "sup":
             if self.gloss:
                 self.w_sup = True
@@ -207,8 +235,16 @@ class _Stripper(HTMLParser):
                     self.out.append("\n[przypis] ")
 
     def handle_endtag(self, tag):
-        if tag in ("script", "style") and self.skip:
+        if tag in ("script", "style", "button") and self.skip:
             self.skip -= 1
+        if self.sekcja:
+            if tag == "div":
+                self.sekcja -= 1
+                if self.glossa:
+                    self.glossa -= 1
+                    if not self.glossa:
+                        self._glossa_z_sekcji()
+            return
         if tag == "sup":
             self.w_sup = False
         if tag == "span" and self.tt:
@@ -219,10 +255,28 @@ class _Stripper(HTMLParser):
                 nr = "".join(self.nr).replace("\xa0", " ").strip()
                 tresc = " ".join("".join(self.tresc).replace("\xa0", " ").split())
                 self.oczekujace.append((nr, tresc))
-                self.nr, self.tresc = [], []
+                if tresc:
+                    self.wypisane.add((nr, tresc))
+                    if self.href:
+                        self.wypisane_id.add(self.href)
+                self.nr, self.tresc, self.href = [], [], ""
+
+    def _glossa_z_sekcji(self):
+        """Przypis z bloku gloss-section: „1)" + treść. Wypisany tylko, gdy nie było go w odsyłaczu."""
+        tekst = " ".join("".join(self.glossa_tekst).replace("\xa0", " ").split())
+        m = re.match(r"^(\d+[a-z]?\)|[a-z]\)|\*+)\s*(.*)$", tekst)
+        nr, tresc = (m.group(1), m.group(2)) if m else ("", tekst)
+        if tresc and self.glossa_id not in self.wypisane_id and (nr, tresc) not in self.wypisane:
+            self.oczekujace.append((nr, tresc))
+            self.wypisane.add((nr, tresc))
+        self.glossa_id, self.glossa_tekst = "", []
 
     def handle_data(self, data):
         if self.skip:
+            return
+        if self.sekcja:
+            if self.glossa:
+                self.glossa_tekst.append(data)
             return
         if self.gloss:
             if self.w_sup:
@@ -257,7 +311,8 @@ _PDF_PRZYPIS = re.compile(r"^(\d{1,3})\)(?:\s+(.*))?$")
 # glued odsyłacz do przypisu: „§ 1.3)", „(uchylony)5)", „chemicznych2)" — cyfry + „)" sklejone
 # z poprzedzającym znakiem, który nie jest spacją, cyfrą ani nawiasem otwierającym — także „<" z tekstu
 # ujednoliconego: „<6) udostępnianie…" to punkt 6 w brzmieniu przyszłym, nie odsyłacz do przypisu 6
-_PDF_ODSYLACZ = re.compile(r"(?<=[^\s\d\[(„\"'«<])(\d{1,3})\)")
+# „±"/„–"/„-"/„+"/„/" przed cyframi to liczba w nawiasie, nie odsyłacz: „50 (+/–5) km/godz.", „(art. 5–7)"
+_PDF_ODSYLACZ = re.compile(r"(?<=[^\s\d\[(„\"'«<±–+/-])(\d{1,3})\)")
 _PDF_FRAZY_PRZYPISU = ("przez art.", "weszła w życie", "wszedł w życie", "wchodzi w życie", "Dodany ",
                        "W brzmieniu", "Uchylony", "Ze zmianą", "Zmiany tekstu", "odnośniku", "Obecnie",
                        "kieruje działem", "wdraża dyrektyw")
@@ -361,21 +416,31 @@ def _pdf_tekst_wiersza(ws):
     return tekst
 
 
-def _pdf_oznacz_indeksy(tekst, slowa):
+def _pdf_oznacz_indeksy(tekst, slowa, w_miejscu=False):
     """Strona z `pdftotext -layout` → indeksy górne sklejone z liczbą („Art. 131." = art. 13¹) oznaczone jak
     w PDF z nawiasami („Art. 13[1]."). Pary (liczba, indeks) pochodzą z bbox tej strony (`slowa` — tylko te,
-    które są w tekście strony); w tekście są szukane po kolei, razem ze słowem poprzedzającym w wierszu."""
+    które są w tekście strony); w tekście są szukane po kolei, razem ze słowem poprzedzającym w wierszu.
+
+    `w_miejscu` (zeszyt Dz.U./M.P. 2000–2011 w dwóch łamach, DU 2008 poz. 288: „art. 2221 § 3" = art. 222¹): indeks
+    z samych cyfr zamieniany na znaki indeksu górnego tej samej długości („222¹") — wstawione „[1]" przesunęłoby prawy
+    łam względem rynny, którą dzieli stronę `_pdf_lamy`. Kolejność słów bbox (łam po łamie) nie jest kolejnością
+    wierszy `-layout` (łamy obok siebie), więc każda para jest szukana od początku strony."""
     pos = 0
     for i in range(1, len(slowa)):
         a, b = slowa[i - 1], slowa[i]
         if not _pdf_indeks_gorny(a, b):
             continue
         idx = _PDF_INDEKS.match(b[4]).group(1)
+        if w_miejscu and not idx.isdigit():
+            continue
         prev = slowa[i - 2] if i >= 2 and abs(slowa[i - 2][1] - a[1]) < 3 and 0 <= a[0] - slowa[i - 2][2] < 20 else None
         wzor = re.compile((re.escape(prev[4]) + "[ ]+" if prev else r"(?:^|(?<=[\s(„]))")
                           + "(" + re.escape(a[4]) + ")" + re.escape(idx) + r"(?![\d\[])", re.M)
-        m = wzor.search(tekst, pos)
+        m = wzor.search(tekst, 0 if w_miejscu else pos)
         if not m:
+            continue
+        if w_miejscu:
+            tekst = tekst[:m.end(1)] + idx.translate(_NA_SUP) + tekst[m.end(1) + len(idx):]
             continue
         tekst = tekst[:m.end(1)] + f"[{idx}]" + tekst[m.end(1) + len(idx):]
         pos = m.end(1) + len(idx) + 2
@@ -518,17 +583,25 @@ def _pdf_notki_z_bbox(strony):
     return prog, {nr: strona for nr, (_, strona) in out.items()}, info
 
 
-def pdf_do_tekstu_z_notkami(pdf_bytes, zeszyt=False):
+def pdf_do_tekstu_z_notkami(pdf_bytes, zeszyt=False, indeksy=True):
     """Jak `pdf_do_tekstu_layout`, ale strony z notkami na prawym marginesie (tekst ujednolicony
     Kancelarii Sejmu) są czytane PRZYCIĘTE tuż przed kolumną notek, a notki wracają osobno. Indeksy górne
     sklejone przez `-layout` z liczbą („Art. 131.") są oznaczone jak w PDF z nawiasami („Art. 13[1].").
-    `zeszyt` (PDF zeszytu Dz.U./M.P. 1990–2011, dwa łamy): bez notek i bez oznaczania indeksów — wstawiony
-    „[1]" przesunąłby prawy łam wiersza względem rynny, którą `_pdf_lamy` dzieli stronę.
+    `zeszyt` (PDF zeszytu Dz.U./M.P. 1990–2011, dwa łamy): bez notek, a indeks górny jako znak indeksu tej samej
+    długości („222¹" — `_pdf_oznacz_indeksy(w_miejscu=True)`), żeby nie przesunąć łamów; `indeksy=False` (OCR skanów
+    z lat 90.: współrzędne słów z OCR są niepewne) — bez oznaczania indeksów.
 
     Zwraca (surowy tekst, {nr strony: {k: [notka]}}, info) — patrz `_pdf_margines`."""
     raw = pdf_do_tekstu_layout(pdf_bytes)
-    if not raw or zeszyt:
+    if not raw or zeszyt and not indeksy:
         return raw, {}, {}
+    if zeszyt:
+        strony = _pdf_slowa(_pdftotext(["-bbox", "-enc", "UTF-8"], pdf_bytes))
+        caly = raw.split("\f")
+        if len(strony) <= len(caly):
+            for nr, (_, _, slowa) in enumerate(strony):
+                caly[nr] = _pdf_oznacz_indeksy(caly[nr], slowa, w_miejscu=True)
+        return "\f".join(caly), {}, {}
     strony = _pdf_slowa(_pdftotext(["-bbox", "-enc", "UTF-8"], pdf_bytes))
     _, marg, info = _pdf_margines(strony)
     caly, notki, przyciecie = raw.split("\f"), {}, {}
@@ -745,6 +818,10 @@ def _doklej(a, b):
         return b
     if a.endswith(("-", "­")) and b[:1].islower():
         return a[:-1] + b
+    # łamanie wyrazu złożonego z dywizem powtórzonym na początku wiersza (zasada składu): „Środkowo-" +
+    # „-Wschodniej" (MP 2001 poz. 329) → „Środkowo-Wschodniej"
+    if a.endswith("-") and b[:1] == "-" and b[1:2].isalpha() and a[-2:-1].isalpha():
+        return a + b[1:]
     return a + " " + b
 
 
@@ -869,6 +946,10 @@ def pdf_layout_do_tekstu(raw, info=None, notki=None):
                 if n in przypisy.get(s, {}):
                     tresc = przypisy[s][n]
                     break
+            if tresc is None:
+                # treść na dalszej stronie (przypis łamu/akapitu przeniesiony przez skład): tylko gdy jednoznaczna
+                inne = {p[n] for p in przypisy.values() if p.get(n)}
+                tresc = inne.pop() if len(inne) == 1 else None
             out.append(f"[przypis {n})] {tresc}" if tresc else f"[przypis {n})] (treści przypisu nie odnaleziono na tej stronie PDF)")
         for n in notki_akapitu:
             out.append(f"[margines: {_pdf_normalizuj_indeksy(n)}]")
@@ -908,6 +989,8 @@ def _pdf_bez_znaku_wodnego(raw):
         else:
             # „w. ww Dziennik Ustaw Nr 1 — 3 — Poz. 1": kawałek znaku wodnego przed nagłówkiem strony
             l = re.sub(r"^([\f ]*)(?:[wrclgovp.]{1,4} +)+(?=(?:Dziennik Ustaw|Monitor Polski)\s)", r"\1", l)
+            # „alarmowego,          l": kawałek znaku wodnego w rynnie na końcu wiersza łamu (DU 2010 poz. 1128)
+            l = re.sub(r"(?<=\S) {8,}([wrclgovp.]{1,3}) *$", lambda m: "" if m.group(1) in "www.rcl.gov.pl" else m.group(0), l)
         out.append(l)
     return "\n".join(out)
 
@@ -988,7 +1071,44 @@ def _pdf_lamy(strona, luz=0):
                 if reszta and _PDF_PRZYPIS.match(reszta[0]) and all(_PDF_PRZYPIS.match(l) or l.startswith(" ") for l in reszta):
                     return ws[:r], [ws[r].strip()] + [l for l in ws[r + 1:] if l.strip()]
                 break
+        r = przypisy_bez_kreski(ws)
+        if r is not None:
+            return ws[:r], ["—————"] + [l for l in ws[r:] if l.strip()]
         return ws, []
+
+    def przypisy_bez_kreski(ws):
+        """Kreska nad przypisami bywa grafiką, nie tekstem (DU 2010 poz. 1128 s. 1): przypisy „1) Minister … kieruje
+        działem…", „2) Zmiany tekstu jednolitego…" stoją wtedy na dole łamu bez „———". Rozpoznajemy je po kolei od
+        końca łamu: numery „N)" na lewym marginesie łamu, kolejne, każdy z ciągiem wierszy wciętych; wszystkie numery
+        mają odsyłacz sklejony z tekstem strony („ADMINISTRACJI1)", „zm.2))"), a blok ma frazę przypisu. Zwraca indeks
+        pierwszego wiersza przypisów albo None."""
+        tresc = [k for k, l in enumerate(ws) if l.strip()]
+        poczatki = []       # wiersze „N)" na lewym marginesie, od końca łamu: N, N-1, …
+        for k in reversed(tresc):
+            if ws[k].startswith(" "):
+                continue        # ciąg przypisu (albo, wyżej, zwykły wiersz łamu)
+            m = _PDF_PRZYPIS.match(ws[k])
+            if not m or poczatki and int(m.group(1)) != int(_PDF_PRZYPIS.match(ws[poczatki[-1]]).group(1)) - 1:
+                break
+            poczatki.append(k)
+        if not poczatki or poczatki[-1] == tresc[0]:
+            return None
+        pierwszy = poczatki[-1]
+        ciag = [ws[k] for k in tresc if k > pierwszy and k not in poczatki]
+        # ciąg przypisu ma jedno wcięcie (szerokość „N) ") i nie zaczyna jednostki; blok nie jest dłuższy niż pół łamu
+        wciecia = {len(l) - len(l.lstrip(" ")) for l in ciag}
+        if len(wciecia) > 1 or wciecia and max(wciecia) > 5 or len(ciag) + len(poczatki) > max(4, len(tresc) // 2) \
+                or any(_PDF_JEDNOSTKA.match(l.strip()) or _PDF_NOWY_AKAPIT.match(l.strip()) for l in ciag):
+            return None
+        blok = ""
+        for k in tresc:
+            if k >= pierwszy:
+                blok = _doklej(blok, " ".join(ws[k].split()))     # justowanie: „2) Zmiany   tekstu"
+        numery = {_PDF_PRZYPIS.match(ws[k]).group(1) for k in poczatki}
+        if numery <= odsylacze_strony and any(f in blok for f in _PDF_FRAZY_PRZYPISU):
+            return pierwszy
+        return None
+    odsylacze_strony = set(_PDF_ODSYLACZ.findall(strona))
     out, blok = [], []     # blok: [(wiersz, kolumna podziału)]
 
     def zamknij():
@@ -1066,9 +1186,39 @@ _PDF_STOPKA_ZESZYTU_OCR = re.compile(r"Egzemp\w{2,5}bieżące|Pojedyncze\W{0,2}e
                                      r"|[Uu]przejmieinformuj|Cena(?:rocznej)?prenumeraty|WYDZIAŁWYDAWNICTW")
 
 
+# Ogłoszenie wydawcy na ostatnich stronach zeszytu (2000–2011): nagłówek wersalikami (porównanie bez spacji — także
+# po OCR skanu) i znacznik oferty dalej na stronie
+_PDF_REKLAMA = re.compile(r"CENTRUMOBSŁUGIKANCELARII|WYDZIAŁWYDAWNICTWIPOLIGRAFII")
+_PDF_REKLAMA_OFERTA = re.compile(r"(?i)\bproponuje\b|Pełna\s+oferta|Cena\s+brutto|wydawnictwa\s*\.\s*cokprm|infolinia"
+                                 r"|zamówie\w+\s+można|prenumerat")
+
+
+def _pdf_reklama(linie):
+    """Indeks wiersza, od którego na stronie zaczyna się ogłoszenie wydawcy („CENTRUM OBSŁUGI KANCELARII PREZESA RADY
+    MINISTRÓW / WYDZIAŁ WYDAWNICTW I POLIGRAFII / proponuje … Cena brutto … Pełna oferta: www.wydawnictwa…"), albo
+    None. Nagłówek ogłoszenia jest WERSALIKAMI (w treści aktu ta nazwa ma zwykłą pisownię), a dalej na stronie musi
+    stać znacznik oferty (`_PDF_REKLAMA_OFERTA`) — sama nazwa wydawcy w stopce zeszytu („Skład, druk i kolportaż:
+    Centrum Obsługi…") ogłoszeniem nie jest."""
+    for k, l in enumerate(linie):
+        if _PDF_REKLAMA.search(re.sub(r"\s", "", l)) and _PDF_REKLAMA_OFERTA.search("\n".join(linie[k:])):
+            return k
+    return None
+
+
+def _pdf_strona_reklamowa(tekst):
+    """Cała strona to ogłoszenie wydawcy: przed jego nagłówkiem stoi najwyżej numer/nagłówek strony (≤ 3 krótkie
+    wiersze). Takie strony bywają skanami bez warstwy tekstowej (DU 2010 poz. 20 i 1128) — po OCR nie są treścią aktu."""
+    linie = [l for l in tekst.split("\n") if l.strip()]
+    k = _pdf_reklama(linie)
+    return k is not None and k <= 3 and all(len(l.strip()) <= 60 for l in linie[:k])
+
+
 def _pdf_bez_stopki_zeszytu(raw, ocr=False):
     """Usuwa stopkę wydawniczą z ostatniej strony zeszytu (tej z „ISSN …"); bez niej tekst wraca bez zmian.
     Działa na wyniku `-layout` PRZED rozdzieleniem łamów — stopka jest na całą szerokość strony, pod oboma łamami.
+    Ogłoszenie wydawcy (`_pdf_reklama`) przed stopką — na tej samej stronie albo na jednej z dwóch poprzednich —
+    też nie jest treścią aktu: cięcie zaczyna się od niego (DU 2010 poz. 1128: strona-reklama „RID … Pełna oferta"
+    doklejała się do zał. 6 pkt 5).
     `ocr` (lata 90.): początek stopki także po frazach `_PDF_STOPKA_ZESZYTU_OCR`."""
     def poczatek(l):
         return _PDF_STOPKA_ZESZYTU.search(l) or ocr and _PDF_STOPKA_ZESZYTU_OCR.search(re.sub(r"\s", "", l))
@@ -1076,17 +1226,29 @@ def _pdf_bez_stopki_zeszytu(raw, ocr=False):
     nr = next((i for i in range(len(strony) - 1, -1, -1) if re.search(r"ISSN\s*\d{4}-\d{3}[\dX]", strony[i])), None)
     if nr is None:
         return raw
-    for i in range(nr, -1, -1):
-        linie = strony[i].split("\n")
-        k = next((j for j, l in enumerate(linie) if poczatek(l)), None)
+    ciecie = None       # (strona, wiersz) — początek stopki
+    for i in range(nr, max(nr - 2, -1), -1):      # stopka nie zaczyna się dalej niż stronę przed tą z ISSN
+        k = next((j for j, l in enumerate(strony[i].split("\n")) if poczatek(l)), None)
         if k is not None:
-            strony[i] = "\n".join(linie[:k])
-            for j in range(i + 1, nr + 1):
-                strony[j] = ""
-            return "\f".join(strony)
-        if i < nr - 1:      # stopka nie zaczyna się dalej niż stronę przed tą z ISSN
+            ciecie = (i, k)
             break
-    return raw
+    # ogłoszenie wydawcy przed stopką: najwcześniejsze, za którym do strony z ISSN są już tylko ogłoszenia, puste
+    # strony albo stopka (tekstu aktu nie tniemy)
+    for i in range(max(nr - 2, 0), nr + 1):
+        r = _pdf_reklama(strony[i].split("\n"))
+        if r is None or ciecie is not None and (i, r) >= ciecie:
+            continue
+        dalej = range(i + 1, ciecie[0] if ciecie else nr + 1)
+        if all(_pdf_strona_reklamowa(strony[j]) or len(re.sub(r"[\W\d_]", "", strony[j])) < 20 for j in dalej):
+            ciecie = (i, r)
+            break
+    if ciecie is None:
+        return raw
+    i, k = ciecie
+    strony[i] = "\n".join(strony[i].split("\n")[:k])
+    for j in range(i + 1, nr + 1):
+        strony[j] = ""
+    return "\f".join(strony)
 
 
 # Lata 1990–1999: warstwa tekstowa zeszytu to OCR skanu, więc nagłówek strony bywa zniekształcony, z myślnikami
@@ -1181,6 +1343,7 @@ _GRANICE = r"(?m)^[\[<]?(Art\.\s*\d|Tytuł\s|TYTUŁ\s|Dział\s|DZIAŁ\s|Rozdzia�
 # unicodowe indeksy górne (art. 21¹) — do rozpoznania w zapytaniu i przełożenia na cyfry ASCII
 _SUPS = "¹²³⁴⁵⁶⁷⁸⁹⁰"
 _SUP = str.maketrans(_SUPS, "1234567890")
+_NA_SUP = str.maketrans("1234567890", _SUPS)
 
 # Warianty myślnika (w tekstach ELI trafia się m.in. U+2012) — ujednolicane WYŁĄCZNIE na potrzeby
 # porównania, znak w znak, żeby nie przesunąć pozycji względem oryginału.
@@ -1203,49 +1366,129 @@ def _norm(s):
 _KONIEC_ART = r"(?:\.|\s+\d+\))"
 
 
-def _hity_naglowka(txt, fraza):
-    """Pozycje NAGŁÓWKÓW artykułu wskazanego frazą ("art. 299", "art. 21¹", "art. 66c").
+# Oznaczenie jednostki we frazie: baza + opcjonalny INDEKS GÓRNY (art. 21¹: unicode "21¹", nawiasowy "21(1)"/"21[1]"/
+# "21^1", z /struct "21_1") + opcjonalny SUFIKS LITEROWY (art. 1a, art. 168e)
+_NUMER_FRAZY = (r"(\d+[a-z]*?)"                                           # (1) baza (też z literą przed indeksem: „6b^3")
+                r"(?:[\(\[\^_]\s*(\d+[a-z]?)\s*[\)\]]?|([" + _SUPS + r"]+))?"   # (2) nawiasowy | (3) unicode indeks
+                r"([a-z]*)\.?")                                          # (4) sufiks literowy
 
-    Pusta lista = fraza nie jest oznaczeniem artykułu ALBO tego artykułu nie ma w akcie.
-    """
-    # Baza + opcjonalny INDEKS GÓRNY (art. 21¹: unicode "21¹", nawiasowy "21(1)"/"21[1]"/"21^1", z /struct "21_1")
-    # + opcjonalny SUFIKS LITEROWY (art. 1a, art. 168e). Rozróżnienie jest istotne, bo w tekście
-    # indeks górny ma spację ("Art. 21 1." — patrz _Stripper), a sufiks literowy jest sklejony
-    # ("Art. 1a."); dlatego indeks matchujemy z \s+, a literę z \s*.
-    m = re.match(
-        r"(?i)^art\.?\s*(\d+[a-z]*?)"                           # (1) baza (też z literą przed indeksem: „6b^3")
-        r"(?:[\(\[\^_]\s*(\d+[a-z]?)\s*[\)\]]?|([" + _SUPS + r"]+))?"  # (2) nawiasowy | (3) unicode indeks
-        r"([a-z]*)\.?$",                                        # (4) sufiks literowy
-        fraza.strip())
-    if not m:
-        return []
-    base = m.group(1)
-    idx = m.group(2) or (m.group(3).translate(_SUP) if m.group(3) else "")
-    letter = m.group(4) or ""
+
+def _wzor_numeru(m, od=1):
+    """Grupy `_NUMER_FRAZY` (od grupy `od`) → wzorzec numeru w tekście. Indeks górny jest w tekście rozdzielony spacją
+    („Art. 21 1." — patrz _Stripper), a sufiks literowy sklejony („Art. 1a."); dlatego indeks z \\s+, a litera z \\s*."""
+    base, idx, sup, letter = m.group(od), m.group(od + 1), m.group(od + 2), m.group(od + 3) or ""
+    idx = idx or (sup.translate(_SUP) if sup else "")
     # "art. 130(1a)" → indeks "1" + litera "a"; w tekście i one bywają rozdzielone
     # („Art. 130 1 a."), więc literę doklejamy z \s*, nie na sztywno.
     mi = re.match(r"(\d+)([a-z]*)$", idx)
     if mi:
         idx, letter = mi.group(1), letter or mi.group(2)
     if idx:                       # indeks górny → w tekście rozdzielony spacją
-        pat = rf"(?m)^[\[<]?Art\.\s*{re.escape(base)}\s+{re.escape(idx)}\s*{re.escape(letter)}{_KONIEC_ART}"
-    elif letter:                  # sufiks literowy → sklejony z numerem
-        pat = rf"(?m)^[\[<]?Art\.\s*{re.escape(base)}\s*{re.escape(letter)}{_KONIEC_ART}"
-    else:
-        pat = rf"(?m)^[\[<]?Art\.\s*{re.escape(base)}{_KONIEC_ART}"
+        return rf"{re.escape(base)}\s+{re.escape(idx)}\s*{re.escape(letter)}"
+    if letter:                    # sufiks literowy → sklejony z numerem
+        return rf"{re.escape(base)}\s*{re.escape(letter)}"
+    return re.escape(base)
+
+
+def _hity_naglowka(txt, fraza):
+    """Pozycje NAGŁÓWKÓW artykułu wskazanego frazą ("art. 299", "art. 21¹", "art. 66c").
+
+    Pusta lista = fraza nie jest oznaczeniem artykułu ALBO tego artykułu nie ma w akcie.
+    """
+    m = re.match(r"(?i)^art\.?\s*" + _NUMER_FRAZY + "$", fraza.strip())
+    if not m:
+        return []
+    pat = rf"(?m)^[\[<]?Art\.\s*{_wzor_numeru(m)}{_KONIEC_ART}"
     return [h.start() for h in re.finditer(pat, txt)]
+
+
+# „§ 4", „§ 2¹", „§ 2(1)", „art. 25 § 2" (paragraf w artykule)
+_FRAZA_PARAGRAFU = re.compile(r"(?i)^(?:art\.?\s*(\S+?)\s*)?§\s*" + _NUMER_FRAZY + "$")
+# nagłówek paragrafu na początku wiersza — sam („§ 4." w HTML) albo za nagłówkiem artykułu w tym samym wierszu
+# („Art. 25. § 1. O nazwisku…" w tekście z PDF)
+_NAGLOWEK_ART_W_WIERSZU = r"(?:Art\.[ ]*\d+[a-z]*(?:[ ]+\d+[a-z]*)?[ ]*\.[ ]*(?:\d+\)[ ]*)?[\[<]?)?"
+_NAGLOWEK_PARAGRAFU = re.compile(r"(?m)^[\[<]?" + _NAGLOWEK_ART_W_WIERSZU + r"§\s*\d+[a-z]*(?:\s+\d+[a-z]*)?\s*" + _KONIEC_ART)
+_NAGLOWEK_ART = re.compile(r"(?m)^[\[<]?Art\.\s*\d")
+_OTWARCIE, _ZAMKNIECIE = "„", "”“"
+_MAKS_CYTAT = 30000     # znaków: dłużej otwarty cudzysłów uznajemy za zgubione zamknięcie
+
+
+def _naglowki_paragrafow(txt):
+    """Pozycje nagłówków paragrafów TEGO aktu (początki wierszy) — bez paragrafów cytowanych w przepisach zmieniających.
+
+    Akt zmieniający cytuje nowe brzmienie („§ 5 otrzymuje brzmienie: „§ 5. …”"): w HTML cudzysłów stoi w osobnym
+    wierszu, a kolejne cytowane paragrafy („§ 6. …") zaczynają wiersz jak nagłówki. Odrzucamy nagłówki, przed którymi
+    — licząc od poprzedniego przyjętego nagłówka artykułu albo paragrafu — został otwarty, a niezamknięty cudzysłów.
+    Gdy filtr odrzuciłby wszystko (zgubiony cudzysłów zamykający), zostają wszystkie nagłówki."""
+    par = {m.start() for m in _NAGLOWEK_PARAGRAFU.finditer(txt)}
+    kand = sorted(par | {m.start() for m in _NAGLOWEK_ART.finditer(txt)})
+    cudzyslowy = [(m.start(), m.group(0) in _OTWARCIE) for m in re.finditer("[" + _OTWARCIE + _ZAMKNIECIE + "]", txt)]
+    przyjete, otwarte, q = [], [], 0
+    for c in kand:
+        while q < len(cudzyslowy) and cudzyslowy[q][0] < c:
+            if cudzyslowy[q][1]:
+                otwarte.append(cudzyslowy[q][0])
+            elif otwarte:
+                otwarte.pop()
+            q += 1
+        if otwarte and c - otwarte[0] > _MAKS_CYTAT:
+            otwarte = []        # cudzysłów bez zamknięcia (literówka, OCR) nie może ukryć reszty aktu
+        if not otwarte and c in par:
+            przyjete.append(c)
+    return przyjete if przyjete or not par else sorted(par)
+
+
+def _hity_paragrafu(txt, fraza):
+    """Pozycje NAGŁÓWKÓW paragrafu wskazanego frazą („§ 4", „§ 2¹", „art. 25 § 2"). W akcie z artykułami „§ N" bez
+    artykułu jest niejednoznaczne — wtedy wszystkie trafienia (wywołujący pokazuje artykuł, w którym leżą)."""
+    m = _FRAZA_PARAGRAFU.match(fraza.strip())
+    if not m:
+        return []
+    wzor = re.compile(r"[\[<]?" + _NAGLOWEK_ART_W_WIERSZU + r"§\s*" + _wzor_numeru(m, 2) + _KONIEC_ART)
+    hity = [p for p in _naglowki_paragrafow(txt) if wzor.match(txt, p)]
+    if not hity:    # tylko w cytacie (albo filtr cudzysłowów się pomylił) — lepiej pokazać niż zgubić
+        hity = [m.start() for m in _NAGLOWEK_PARAGRAFU.finditer(txt) if wzor.match(txt, m.start())]
+    if m.group(1):
+        granice = _granice(txt)
+        art = [(h, next((b for b in granice if b > h), len(txt))) for h in _hity_naglowka(txt, "art. " + m.group(1))]
+        hity = [p for p in hity if any(s <= p < e for s, e in art)]
+    return hity
+
+
+def _granice(txt, paragrafy=False):
+    """Pozycje granic jednostek redakcyjnych (`_GRANICE`); `paragrafy` — także nagłówki paragrafów tego aktu."""
+    out = {m.start() for m in re.finditer(_GRANICE, txt)}
+    if paragrafy:
+        out |= set(_naglowki_paragrafow(txt))
+    return sorted(out)
+
+
+def _artykul_nad(txt, pos):
+    """Nagłówek artykułu („Art. 25."), w którym leży pozycja `pos` (paragraf w artykule), albo ""."""
+    m = re.match(r"[\[<]?(Art\.[ ]*\d+[a-z]*(?:[ ]+\d+[a-z]*)?[ ]*\.)", txt[pos:pos + 40])
+    if m:
+        return m.group(1)
+    ostatni = None
+    for m in re.finditer(r"(?m)^[\[<]?(Art\.[ ]*\d+[a-z]*(?:[ ]+\d+[a-z]*)?[ ]*\.)", txt[:pos]):
+        ostatni = m
+    return ostatni.group(1) if ostatni else ""
 
 
 def _fragmenty(txt, fraza, maks=8):
     """Spany (start, end) fragmentów z frazą, docięte do granic jednostek redakcyjnych.
 
-    Fraza w formie "art. 299" trafia w NAGŁÓWEK artykułu (nie w odesłania w treści);
+    Fraza w formie "art. 299" trafia w NAGŁÓWEK artykułu (nie w odesłania w treści), a „§ 4" / „art. 25 § 2" —
+    w nagłówek paragrafu (fragment kończy się na następnym paragrafie, artykule albo jednostce wyższej);
     inna fraza działa jak wyszukiwanie pełnotekstowe (bez rozróżniania wielkości liter).
     Gdy nagłówka nie ma, fraza jest ponawiana pełnotekstowo — lepiej pokazać odesłanie
     niż odpowiedzieć „nie znaleziono" na przepis, który w akcie jest.
     """
-    bounds = [m.start() for m in re.finditer(_GRANICE, txt)]
     hits = _hity_naglowka(txt, fraza)
+    paragraf = not hits and bool(_FRAZA_PARAGRAFU.match(fraza.strip()))
+    if paragraf:
+        hits = _hity_paragrafu(txt, fraza)
+    # akt bez artykułów (rozporządzenie): paragraf jest podstawową jednostką — też przy trafieniu pełnotekstowym
+    bounds = _granice(txt, paragrafy=bool(hits) and paragraf or not _NAGLOWEK_ART.search(txt))
     if not hits:
         # Szukamy po kopii znormalizowanej ZNAK W ZNAK (myślniki → "-"), żeby pozycje zgadzały się
         # z oryginałem — dzięki temu wycinamy dosłowny tekst aktu, a nie jego przerobioną wersję.
@@ -1262,7 +1505,8 @@ def _fragmenty(txt, fraza, maks=8):
     for pos in hits:
         if len(spans) >= maks:
             break
-        start = max((b for b in bounds if b <= pos), default=max(0, pos - 400))
+        # bez granicy przed trafieniem: od początku wiersza (nie w środku wyrazu — „ię oświetlenie…")
+        start = max((b for b in bounds if b <= pos), default=txt.rfind("\n", 0, max(0, pos - 400)) + 1)
         end = min((b for b in bounds if b > pos), default=len(txt))
         if spans and start < spans[-1][1]:
             spans[-1] = (spans[-1][0], max(spans[-1][1], end))
@@ -1492,6 +1736,153 @@ def _oznacz_uwzglednione(linie, podstawa):
             l += " (oznaczenia przy pozycjach: patrz notka „Opracowano na podstawie”)"
         out.append(l)
     return out
+
+
+def _pozycje_dz_u(tekst):
+    """Pozycje Dz.U. cytowane w nawiasach („(Dz. U. poz. 807)", „(Dz. U. z 2026 r. poz. 25)", „(Dz. U. poz. 2140
+    i 2243)") → {(rok, poz)}. Cytat bez roku dotyczy roku aktu („ustawą z dnia 4 czerwca 2025 r. … (Dz. U. poz.
+    807)" = 2025/807)."""
+    out = set()
+    for m in re.finditer(r"\((Dz\.\s*U\.[^()]*)\)", tekst):
+        wn = " ".join(m.group(1).split())
+        rok_aktu = re.findall(r"z dnia \d{1,2}\s+\w+\s+(\d{4})\s*r\.", tekst[:m.start()])
+        if not re.match(r"Dz\.\s*U\.\s*z\s+\d{4}", wn) and rok_aktu:
+            wn = re.sub(r"^Dz\.\s*U\.\s*", f"Dz. U. z {rok_aktu[-1]} r. ", wn)
+        out |= _podstawa_ujednolicenia(wn)
+    return out
+
+
+def _obwieszczenie_tj(txt):
+    """Obwieszczenie Marszałka Sejmu na początku tekstu jednolitego (PDF typu T albo text.html t.j.) →
+    (uwzględnione {(rok, poz)}, nieobjęte {(rok, poz)}, ogłoszone przed: data ISO albo "").
+
+    Pkt 1: „…jednolity tekst ustawy … z uwzględnieniem zmian wprowadzonych: 1) ustawą … (Dz. U. poz. 1046)" — te
+    zmiany SĄ w tekście jednolitym (także te, które wejdą w życie później — t.j. podaje wtedy oba brzmienia
+    z przypisami), a „oraz zmian wynikających z przepisów ogłoszonych przed dniem 6 grudnia 2023 r." obejmuje
+    wszystkie zmiany ogłoszone przed tym dniem. Pkt 2 („nie obejmuje: …"): pozycje „zmian wprowadzonych …" NIE są
+    w tekście (pozycje „art. N ustawy …" to przepisy przejściowe i końcowe, nie zmiany)."""
+    glowa = re.sub(r"(?m)^» ", "", txt[:60000])
+    m = re.search(r"(?s)ogłasza się w załączniku.{0,600}?z uwzględnieniem(.{0,8000}?)"
+                  r"(?:\n\s*2\.\s|\n\s*Załącznik|\n\s*Marszałek Sejmu|\Z)", glowa)
+    if not m:
+        return set(), set(), ""
+    pkt1 = m.group(1)
+    uwzgl = _pozycje_dz_u(pkt1[pkt1.find("zmian"):]) if "zmian" in pkt1 else set()
+    przed = re.search(r"ogłoszonych przed dniem " + _DATA_SLOWNIE, pkt1)
+    przed = _iso(przed.group(1), _MIESIACE[przed.group(2)], przed.group(3)) if przed else ""
+    nieobj = set()
+    m2 = re.search(r"(?s)\n\s*2\.\s+Podany.{0,200}?nie obejmuje(.*?)(?:\n\s*3\.\s|\nZałącznik|\Z)", glowa[m.end(1):])
+    if m2:
+        for poz in re.split(r"\n\s*\d+[a-z]?\)\s", "\n" + m2.group(1)):
+            if re.match(r"\s*:?\s*zmian", poz):
+                nieobj |= _pozycje_dz_u(poz)
+    return uwzgl - nieobj, nieobj, przed
+
+
+def _oznacz_obwieszczenie(linie, uwzgl, nieobj, przed="", dzis=None):
+    """Lista nowelizacji po t.j. a obwieszczenie (`_obwieszczenie_tj`): pozycja wymieniona w pkt 1 (albo ogłoszona
+    przed dniem z formuły „przepisów ogłoszonych przed dniem …") JEST w tekście jednolitym, pozycja z pkt 2
+    („nie obejmuje: zmian wprowadzonych …") — nie. Bez tego zmianę ujętą w t.j. opisywano jak zmianę „po tym t.j."."""
+    dzis = dzis or _dzis()
+    if not (uwzgl or nieobj or przed):
+        return linie
+    out, oznaczono = [], False
+    for l in linie:
+        m = _POZ_LISTY.match(l)
+        if m:
+            klucz = (int(m.group(1)), int(m.group(2)))
+            ogl = re.search(r"ogłoszono (\d{4}-\d{2}-\d{2})", l)
+            if klucz in nieobj:
+                l += "  [NIE objęta tym t.j. — obwieszczenie (pkt 2) ją wyłącza; nałóż ją ręcznie]"
+                oznaczono = True
+            elif klucz in uwzgl or przed and ogl and ogl.group(1) < przed:
+                wej = re.search(r"wejście w życie[^,)]*?(\d{4}-\d{2}-\d{2})", l)
+                l += ("  [UWZGLĘDNIONA w tym t.j. — obejmuje ją obwieszczenie (pkt 1); NIE nakładaj ponownie"
+                      + (f"; wchodzi w życie {wej.group(1)} — do tego dnia obowiązuje dotychczasowe brzmienie, "
+                         "nowe stoi w t.j. z przypisem o wejściu w życie" if wej and wej.group(1) > dzis else "") + "]")
+                oznaczono = True
+        out.append(l)
+    if oznaczono:
+        out = [l + " (oznaczenia przy pozycjach: wg obwieszczenia Marszałka Sejmu na początku tekstu jednolitego)"
+               if l.startswith("UWAGA: po tym tekście jednolitym") else l for l in out]
+    return out
+
+
+# odesłanie przypisu do innego przypisu: „…ustawy, o której mowa w odnośniku 6.", „…w odnośnikach 5 i 6"
+_ODNOSNIK = re.compile(r"(?i)\bodnośnik\w*\s+(\d+[a-z]?(?:\s*(?:,|i|oraz)\s*\d+[a-z]?)*)")
+_OBOWIAZUJE_DO = re.compile(r"(?i)obowiązuj\w*\s+do\s+(?:dnia\s+)?wejścia\s+w\s+życie")
+_PRZYPIS_LINIA = re.compile(r"(?m)^\[przypis (\d+[a-z]?)\)\] (.*)$")
+_BRAK_TRESCI = "(treści przypisu nie odnaleziono"
+
+
+def _przypisy_aktu(txt):
+    """Linie „[przypis N)] treść" całego tekstu → {N: treść} (pierwsza znaleziona treść każdego numeru)."""
+    out = {}
+    for m in _PRZYPIS_LINIA.finditer(txt):
+        if not m.group(2).startswith(_BRAK_TRESCI):
+            out.setdefault(m.group(1), m.group(2))
+    return out
+
+
+def _odeslania(tresc):
+    return [n for m in _ODNOSNIK.finditer(tresc) for n in re.findall(r"\d+[a-z]?", m.group(1))]
+
+
+def _termin_przez_odnosniki(nr, przypisy, bylo=None):
+    """Termin wejścia w życie (ISO, „komunikat"/„nieznany" albo "") z przypisu `nr` albo z przypisów, do których
+    odsyła („…ustawy, o której mowa w odnośniku 6") — najwyżej 4 kroki. Zwraca (termin, [łańcuch numerów])."""
+    bylo = (bylo or set()) | {nr}
+    t = przypisy.get(nr, "")
+    d = _data_wejscia(t) or _termin_bez_daty(t)
+    if d:
+        return d, [nr]
+    if len(bylo) <= 4:
+        for n in _odeslania(t):
+            if n not in bylo:
+                d, lancuch = _termin_przez_odnosniki(n, przypisy, bylo)
+                if d:
+                    return d, [nr] + lancuch
+    return "", []
+
+
+def _przypisy_fragmentu(fragment, txt, dzis=None):
+    """Przypisy fragmentu odsyłające do przypisów SPOZA niego (treść stoi przy innym przepisie, na innej stronie).
+
+    Zwraca (dociągnięte linie do wypisania, linie do analizy wejścia w życie, ostrzeżenia). Przypis „W brzmieniu
+    ustalonym przez … ustawy, o której mowa w odnośniku 6." dostaje do analizy treść przypisu 6 („…która wejdzie
+    w życie z dniem 5 listopada 2026 r.") — bez tego dwa brzmienia art. 94³ k.p. wychodziły bez wskazania, które
+    obowiązuje dziś. Przypis „W tym brzmieniu obowiązuje do wejścia w życie zmiany, o której mowa w odnośniku 29."
+    daje ostrzeżenie „obowiązuje tylko DO …" (to brzmienie DZIŚ obowiązuje, nie jest przyszłe)."""
+    dzis = dzis or _dzis()
+    przypisy = _przypisy_aktu(txt)
+    w_fragmencie = {}
+    for m in _PRZYPIS_LINIA.finditer(fragment):
+        w_fragmencie.setdefault(m.group(1), m.group(2) if not m.group(2).startswith(_BRAK_TRESCI)
+                                else przypisy.get(m.group(1), m.group(2)))
+    dociagniete, analiza, ostrz, kolejka, bylo = [], [], [], list(w_fragmencie), set(w_fragmencie)
+    while kolejka:
+        nr = kolejka.pop(0)
+        for n in _odeslania(w_fragmencie.get(nr) or przypisy.get(nr, "")):
+            if n not in bylo and n in przypisy:
+                bylo.add(n)
+                kolejka.append(n)
+                dociagniete.append(f"[przypis {n})] {przypisy[n]}")
+    for nr, tresc in w_fragmencie.items():
+        if not _odeslania(tresc) or _data_wejscia(tresc) or _termin_bez_daty(tresc):
+            continue
+        d, lancuch = _termin_przez_odnosniki(nr, dict(przypisy, **{nr: tresc}))
+        if not d or len(lancuch) < 2:
+            continue
+        zrodlo = "przypis " + " → ".join(n + ")" for n in lancuch[1:])
+        if _OBOWIAZUJE_DO.search(tresc):
+            kiedy = _BEZ_DATY.get(d, d)
+            ostrz.append(f"UWAGA: brzmienie z przypisem {nr}) obowiązuje tylko DO wejścia w życie zmiany ({kiedy}; "
+                         f"{zrodlo})" + (" — dziś jeszcze obowiązuje; nowe brzmienie (z przypisem odsyłającym do tej "
+                                          "zmiany) zacznie obowiązywać w tym dniu." if d in _BEZ_DATY or d > dzis else
+                                          " — ta zmiana już weszła w życie, to brzmienie NIE obowiązuje."))
+        else:
+            analiza.append(f"[przypis {nr})] {tresc} [{zrodlo}: {przypisy[lancuch[-1]]}]")
+    return dociagniete, analiza, ostrz
 
 
 def _cytat(d):
@@ -1990,7 +2381,7 @@ def _tekst_z_pdf(path, label, meta, info=None, ocr=None):
         return "", url, str(e)
     rok = meta.get("year")
     zeszyt = pick["type"] == "O" and meta.get("publisher") in ("DU", "MP") and isinstance(rok, int) and 1990 <= rok <= 2011
-    raw, notki, info_pdf = pdf_do_tekstu_z_notkami(data, zeszyt=zeszyt)
+    raw, notki, info_pdf = pdf_do_tekstu_z_notkami(data, zeszyt=zeszyt, indeksy=not (zeszyt and rok < 2000))
     info.update(info_pdf)
     info["typ"] = pick["type"]
     # strony bez warstwy tekstowej (skany: DU 2010 poz. 1 ma 564 z 566) — ich treści w wyniku nie będzie
@@ -2004,10 +2395,18 @@ def _tekst_z_pdf(path, label, meta, info=None, ocr=None):
             odczytane = pdf_ocr_stron(data, puste_idx)
             if odczytane:
                 kawalki = raw.split("\f")
+                reklamy = 0
                 for i, t in odczytane.items():
-                    kawalki[i] = t.replace("\f", "")
+                    if _pdf_strona_reklamowa(t):
+                        # skan ogłoszenia wydawcy na końcu zeszytu (DU 2010 poz. 20, 1128) — nie jest treścią aktu
+                        kawalki[i], reklamy = "", reklamy + 1
+                    else:
+                        kawalki[i] = t.replace("\f", "")
                 raw = "\f".join(kawalki)
-                info["ocr_strony"] = (len(odczytane), len(strony))
+                if len(odczytane) > reklamy:
+                    info["ocr_strony"] = (len(odczytane) - reklamy, len(strony))
+                if reklamy:
+                    info["reklama_strony"] = reklamy
                 puste_idx = [i for i in puste_idx if i not in odczytane]
         else:
             info["ocr_pominiete"] = (len(puste_idx), len(puste_idx) * _OCR_SEK_NA_STRONE)
@@ -2102,6 +2501,12 @@ def cmd_tekst(a):
             sys.exit(f"BŁĄD (strict): {n} z {m} stron PDF dla {label} to skany odczytane przez OCR (tesseract) — tekst "
                      "niepewny (cyfry, daty, kwoty). Tryb strict blokuje tekst z OCR; bez --strict zostanie wypisany "
                      f"z ostrzeżeniem, a wiążący jest PDF: tekst {label} --pdf plik.pdf")
+        if txt and info_pdf.get("puste_strony") and strict:
+            n, m = info_pdf["puste_strony"]
+            sys.exit(f"BŁĄD (strict): {n} z {m} stron PDF dla {label} nie ma warstwy tekstowej (skan) — ich treści NIE "
+                     "byłoby w wyniku, więc tekst jest NIEKOMPLETNY. Tryb strict blokuje niekompletny tekst. Odczytaj "
+                     f"skany przez OCR bez --strict (tekst {label} --ocr; wynik z ostrzeżeniem o niepewności OCR) "
+                     f"albo pobierz PDF: tekst {label} --pdf plik.pdf")
         if txt:
             zrodlo = "z urzędowego PDF przez pdftotext -layout"
             if info_pdf.get("podstawa"):
@@ -2159,6 +2564,9 @@ def cmd_tekst(a):
             zrodlo = "z text.html STARSZEGO t.j.; HTML→tekst"
             ostrz = _ostrzezenie_starszego_tj(path, label, refs, meta, act, pominiete, pdf_blad) + ostrz
             label = f"{label} (NIEAKTUALNE BRZMIENIE MOŻLIWE — tekst z: {addr})"
+    if not ujednolicony and "STARSZEGO" not in zrodlo and isinstance(refs, dict) and _akt_bazowy(refs):
+        # tekst jednolity: obwieszczenie mówi, które zmiany z listy „po tym t.j." są już w tekście (pkt 1), a które nie
+        ostrz = _oznacz_obwieszczenie(ostrz, *_obwieszczenie_tj(txt))
     print(f"# {label} — tekst ({zrodlo}; do dosłownego cytatu zweryfikuj z PDF urzędowym)\n")
     for w in ostrz:
         print(w)
@@ -2173,9 +2581,19 @@ def cmd_tekst(a):
                      f"numerem (--fragment \"{goly}\"), słowem kluczowym z treści "
                      "albo pobierz pełny tekst bez --fragment.")
         # tryb nagłówkowy zawiódł → poniżej trafienia pełnotekstowe, więc mogą to być ODESŁANIA
-        if re.match(r"(?i)^art\.?\s*\d", a.fragment.strip()) and not _hity_naglowka(txt, a.fragment):
+        paragraf = bool(_FRAZA_PARAGRAFU.match(a.fragment.strip())) and not _hity_naglowka(txt, a.fragment)
+        hity_par = _hity_paragrafu(txt, a.fragment) if paragraf else []
+        if (re.match(r"(?i)^art\.?\s*\d", a.fragment.strip()) and not paragraf and not _hity_naglowka(txt, a.fragment)
+                or paragraf and not hity_par):
             print(f"UWAGA: nie znalazłem NAGŁÓWKA {a.fragment!r} w tym akcie — poniżej trafienia "
                   "pełnotekstowe; sprawdź, czy to sam przepis, czy tylko odesłanie do niego.\n")
+        artykuly = [_artykul_nad(txt, s) for s, _ in spans] if hity_par else []
+        if hity_par and len(hity_par) > 1 and any(artykuly) and not _FRAZA_PARAGRAFU.match(a.fragment.strip()).group(1):
+            print(f"UWAGA: {a.fragment.strip()!r} bez numeru artykułu jest NIEJEDNOZNACZNE — paragraf o tym numerze "
+                  f"występuje w tym akcie {len(hity_par)} razy (w różnych artykułach)"
+                  + (f"; pokazuję pierwsze {len(spans)}" if len(spans) < len(hity_par) else "")
+                  + "; przy każdym trafieniu podaję artykuł. Jeden przepis: --fragment \"art. N "
+                  + a.fragment.strip() + "\".\n")
         kontekst, dodatkowe = [], []
         bloki = _otwarte_bloki(txt, spans[0][0]) if ujednolicony else []
         for otwarcie, notki in bloki:
@@ -2190,12 +2608,23 @@ def cmd_tekst(a):
             kontekst.append(f"UWAGA: ten fragment leży w jednostce „{naglowek[:80]}” — przypis/notka przy jej nagłówku "
                             "dotyczy także tego fragmentu (patrz niżej).")
             dodatkowe += przy
-        for w in kontekst + _ostrzezenie_przyszle("\n".join(dodatkowe + [txt[s:e] for s, e in spans]), ujednolicony):
+        # przypisy fragmentu odsyłające do innych przypisów („…ustawy, o której mowa w odnośniku 6") — data wejścia
+        # w życie bywa tylko w tamtym przypisie, przy innym przepisie
+        dociagniete, analiza, ostrz_przypisow = _przypisy_fragmentu("\n".join(txt[s:e] for s, e in spans), txt)
+        for w in kontekst + ostrz_przypisow + _ostrzezenie_przyszle(
+                "\n".join(dodatkowe + analiza + [txt[s:e] for s, e in spans]), ujednolicony):
             print(w)
         for i, (s, e) in enumerate(spans):
             if i:
                 print("\n[...]\n")
+            if artykuly and artykuly[i] and not re.match(r"[\[<]?Art\.", txt[s:e]) \
+                    and not _FRAZA_PARAGRAFU.match(a.fragment.strip()).group(1):
+                print(f"[{a.fragment.strip()} — w: {artykuly[i]}]")
             print(txt[s:e].strip())
+        if dociagniete:
+            print("\n[przypisy spoza fragmentu, do których odsyłają przypisy fragmentu:]")
+            for l in dociagniete:
+                print(l)
         print(f"\n(fragmenty: {len(spans)} — pominięto resztę aktu; pełny tekst: bez --fragment)")
         return
     przyszle = _ostrzezenie_przyszle(txt, ujednolicony)
@@ -2377,7 +2806,7 @@ def main():
         p = sub.add_parser(name); p.add_argument("sygnatura", nargs="+"); p.set_defaults(func=fn)
 
     t = sub.add_parser("tekst"); t.add_argument("sygnatura", nargs="+"); t.add_argument("--pdf")
-    t.add_argument("--fragment", help='wytnij tylko jednostki z frazą, np. "art. 299" albo "przedawnienie"')
+    t.add_argument("--fragment", help='wytnij tylko jednostki z frazą, np. "art. 299", "§ 4", "art. 25 § 2" albo "przedawnienie"')
     o = t.add_mutually_exclusive_group()
     o.add_argument("--ocr", action="store_true",
                    help=f"odczytaj OCR (tesseract) WSZYSTKIE strony-skany PDF (domyślnie tylko do {_OCR_AUTO_MAKS} stron)")

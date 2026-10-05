@@ -65,14 +65,24 @@ nagłówki „Dziennik Ustaw Nr N — S — Poz. X"/„Monitor Polski Nr N — S
 strony zeszytu („TREŚĆ: Poz.: …") oraz znak wodny www.rcl.gov.pl (2010–2011), a w 2000–2009 poprawia
 polskie litery (fonty „…PL" w kodach Mac CE opisanych jako Mac Roman: „Za∏àcznik" → „Załącznik" — rozpoznawane po
 treści strony, nie po roku: DU 2010 poz. 1 też je ma); tabele zostają w całości, stopka wydawnicza zeszytu
-(„Egzemplarze bieżące…", „Wydawca:", ISSN, cena) nie trafia do ostatniego aktu. Przypisy pod kreską z dołu
+(„Egzemplarze bieżące…", „Wydawca:", ISSN, cena) nie trafia do ostatniego aktu — tak samo ogłoszenie wydawcy
+przed nią („CENTRUM OBSŁUGI KANCELARII PREZESA RADY MINISTRÓW / WYDZIAŁ WYDAWNICTW I POLIGRAFII proponuje … Pełna
+oferta", do dwóch stron przed stroną z ISSN; DU 2010 poz. 20 i 1128 — tam strona-reklama jest skanem, a po OCR jest
+pomijana i nie liczy się jako tekst z OCR). Indeks górny w zeszycie 2000–2011 (`-layout` skleja „222" i podniesione
+„1" w „2221") jest rozpoznawany z `-bbox` i zamieniany w miejscu na „222¹" (ta sama długość — łamy się nie
+przesuwają), w wyniku „art. 222 1" jak w HTML; w OCR z lat 90. — nie. Wiersz z powtórzonym dywizem przy łamaniu
+(„Środkowo-" + „-Wschodniej") jest sklejany w „Środkowo-Wschodniej". Przypisy pod kreską z dołu
 łamu („———————" + „1) Minister Kultury kieruje…") wychodzą jako `[przypis 1)] …` pod akapitem z odsyłaczem, a nie
-między łamami; podpis dosunięty do prawej krawędzi lewego łamu nie przestawia kolejności łamów (blok zamyka tylko
+między łamami — także gdy kreska jest grafiką, a nie tekstem (DU 2010 poz. 1128 s. 1: kolejne „N)" na marginesie
+łamu, odsyłacze sklejone z tekstem strony i fraza przypisu); treść przypisu, którego nie ma na stronie odsyłacza
+ani obok, jest brana z innej strony, gdy jest tam jednoznaczna (t.j. k.p. DU 2026/1245: „odnośnik 46" na wielu
+stronach — braków 23 → 7); podpis dosunięty do prawej krawędzi lewego łamu nie przestawia kolejności łamów (blok zamyka tylko
 wiersz wyśrodkowany na stronie: numer pozycji, tytuł). Strony bez warstwy tekstowej (skany) są zgłaszane
 („N z M stron…"), a gdy jest `tesseract` (język `pol`) i `pdftoppm` — odczytywane OCR: do 10 stron same, więcej
 z `--ocr` (300 dpi, `--psm 1`, ok. 7 s/stronę, równolegle; „$" przed cyfrą → „§"; wynik w
 `$XDG_CACHE_HOME/prawo-pl-eli/ocr` lub `~/.cache/prawo-pl-eli/ocr`). Tekst z OCR jest oznaczony jako niepewny,
-`--strict` go blokuje.
+`--strict` go blokuje — tak samo jak tekst, w którym zostały strony bez warstwy tekstowej (niekompletny, np. z
+`--bez-ocr`).
 
 **Lata 1990–1999.** PDF zeszytu to skan z warstwą tekstową z OCR (`tekst` dopisuje to do nagłówka wyniku).
 Helper rozpoznaje nagłówki stron zniekształcone przez OCR, z myślnikami ASCII albo bez nich („Dziennik Ustaw Nr 55
@@ -143,7 +153,12 @@ Na **tekście jednolitym** (obwieszczenie, np. `DU/2024/18`):
   k.s.h. DU/2024/18 — 1 z 4). Helper uzupełnia ją o „Akty zmieniające" aktu bazowego, których `promulgation`
   lub `date` (wejście w życie zmiany) jest po `legalStatusDate` t.j., deduplikuje po ELI i opisuje każdą datę
   etykietą („data aktu", „ogłoszono", „wejście w życie zmiany"); brakujące wejście w życie dopytuje z metadanych
-  nowelizacji (maks. 10 żądań).
+  nowelizacji (maks. 10 żądań). Pozycje tej listy helper porównuje z OBWIESZCZENIEM z początku tekstu t.j. (PDF T
+  i `text.html`): pkt 1 „z uwzględnieniem zmian wprowadzonych: 1) ustawą z dnia … (Dz. U. poz. 1046)" (cytat bez
+  roku = rok aktu z „z dnia …") oraz „przepisów ogłoszonych przed dniem …" → „[UWZGLĘDNIONA w tym t.j.]" — t.j.
+  obejmuje też zmiany, które wejdą w życie później (wtedy podaje oba brzmienia z przypisami „W tym brzmieniu
+  obowiązuje do wejścia w życie zmiany, o której mowa w odnośniku N"); pkt 2 „nie obejmuje: … zmian wprowadzonych …"
+  → „[NIE objęta tym t.j.]" (pozycje „art. N ustawy …" w pkt 2 to przepisy przejściowe, nie zmiany).
 - **„Podstawa prawna" / „Podstawa prawna z art."** — delegacje/podstawy.
 
 ## Wskazówki
@@ -152,6 +167,17 @@ Na **tekście jednolitym** (obwieszczenie, np. `DU/2024/18`):
 - `struct` pokazuje układ aktu i id jednostek, ale `text.html/{tree}` jest blokowany przez WAF dla artykułów — pojedynczy przepis pobieraj przez `tekst --fragment "art. N"` (lokalnie wycina z pełnego tekstu).
 - Tekst z `text.html` zawiera twarde spacje (NBSP) — helper normalizuje je do zwykłych spacji. Indeks górny siedzi w `<sup>`, więc po konwersji jest odspacjowany (art. 299¹ → „Art. 299 1."); w `--fragment` podawaj go jako `"art. 299(1)"` albo `"art. 299¹"`.
 - W nagłówku przepisu niedawno dodanego lub zmienionego stoi ODSYŁACZ DO PRZYPISU (też w `<sup>`), a treść przypisu API wstawia INLINE — w surowym HTML wygląda to tak: „Art. 66c 6)Dodany przez art. 3 pkt 2 ustawy… . Kto uporczywie…". Kropka artykułu stoi dopiero za przypisem, więc nagłówek ≠ „Art. N." — `--fragment` to obsługuje (`_KONIEC_ART` w `eli.py`).
+- `tekst --fragment "§ N"` trafia w nagłówek paragrafu („§ 4." w HTML, „Art. 25. § 1." albo „§ 2." na początku
+  wiersza w tekście z PDF) i tnie do następnego paragrafu, artykułu lub jednostki wyższej; „art. N § M" — paragraf
+  w artykule. Paragrafy w cudzysłowie otwartym przed nimi (nowe brzmienie w akcie zmieniającym: w HTML „„" stoi
+  w osobnym wierszu) nie są nagłówkami tego aktu. W akcie z artykułami „§ N" ma wiele trafień — każde z artykułem.
+- Przypisy fragmentu odsyłające do innych przypisów („…ustawy, o której mowa w odnośniku 6") helper rozwija (do 4
+  kroków): datę wejścia w życie bierze z przypisu docelowego, przypis „W tym brzmieniu obowiązuje do wejścia w życie
+  zmiany…" opisuje jako brzmienie obowiązujące DO tej daty, a przypisy spoza fragmentu wypisuje pod nim.
+- Blok `<div class="gloss-section">` pod treścią `text.html` powtarza przypisy z odsyłaczy (`<DIV CLASS="gloss"
+  ID="gloss-0:3:"><div>3)</div><div>treść</div>`) — helper go pomija (przypis bez odsyłacza w treści wychodzi jako
+  `[przypis N)]`); `<button>` „Pokaż całość" nie jest treścią; trzy `<span class="head-…">` w `<h1>` (rodzaj, data,
+  tytuł) wychodzą w osobnych wierszach.
 - Odsyłacz do przypisu siedzi w `<a class="gloss-link tooltip"><sup>N)</sup><span class="tooltip-text">…</span></a>` WEWNĄTRZ numeru jednostki (`<h3>2<a…><sup>1)</sup>…</a>)</h3>` = pkt 2 z przypisem 1; `§ 1<a…><sup>12)</sup>…</a>.`). Helper NIE przepisuje numeru odsyłacza do tekstu (wychodziło „2 1)", „a 2)", „§ 1 12)" — cyfra przypisu wchodziła w numer jednostki), a treść przypisu wynosi do osobnej linii `[przypis N)] …` za najbliższą granicą bloku, bo inaczej komentarz redakcyjny („Dodany przez…", „W tym brzmieniu obowiązuje do…") jest nieodróżnialny od normy; etykieta jest konieczna także dlatego, że część przypisów zaczyna się od „Art. 598…" / „Tytuł działu…" i na początku linii udawałaby nagłówek jednostki. Indeks górny artykułu (goły `<sup>` poza odsyłaczem) nadal dostaje spację („Art. 449 1." ≠ „Art. 4491."). **Linia `[przypis N)]` to jedyny fragment wyniku, którego NIE ma w urzędowym tekście** — nie cytuj jej jako przepisu.
 - Adres ISAP (`WDU{rok}{tom}{poz}` / `WMP...`) i ELI (`DU/{rok}/{poz}`) są równoważnymi identyfikatorami — helper przyjmuje obie formy.
 - `/struct` istnieje głównie dla tekstów jednolitych i starszych aktów; świeżo ogłoszone pozycje często go nie mają (HTTP 404 — helper `struktura` zgłasza „Brak struktury…" z kodem ≠ 0, nie surowy błąd HTTP).
