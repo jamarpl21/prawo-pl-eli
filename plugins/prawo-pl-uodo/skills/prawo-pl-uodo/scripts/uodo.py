@@ -268,8 +268,14 @@ def _uchylona(meta, kontrola):
     uchylenia = [k["date"] for k in kontrola if k["use"] == "repealed"]
     if not uchylenia:
         return False
+    # tylko uprawomocnienie CAŁEJ decyzji (scope '*', bez opisu zakresu) podważa uchylenie; częściowe
+    # (np. „w zakresie punktu 1" po uchyleniu samej kary) zostawia uchylenie w mocy. Sprawdzone 2026-10-05
+    # na wszystkich 586 decyzjach portalu: oba przypadki „uchylenie → potem uprawomocnienie całości"
+    # (DKN.5131.3.2021, DKN.5131.49.2021 — NSA III OSK 251/24 „uchylono zaskarżony wyrok i oddalono
+    # skargę") to decyzje utrzymane w mocy.
     wal = [_data_wpisu(d) for d in meta.get("dates") or []
-           if d.get("use") == "validation" and d.get("status") == "final" and _data_wpisu(d)]
+           if d.get("use") == "validation" and d.get("status") == "final" and _data_wpisu(d)
+           and (d.get("scope") or "*") == "*" and not d.get("text")]
     return not wal or max(uchylenia) >= max(wal)
 
 

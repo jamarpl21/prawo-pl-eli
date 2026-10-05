@@ -5,7 +5,7 @@ Cel (zgłoszenie #12): sprawdzić, czy skille działają tak samo dobrze z dwoma
 
 **Metoda.** Ten sam zestaw 10 pytań prawniczych, każde celowo trafiające w pułapkę wykrytą w audycie 2.2.0. Każdy model
 dostał tylko SKILL.md ośmiu skilli i ich helpery z gałęzi wydania (bez dostępu do internetu poza helperami, bez cytowania
-z pamięci). Ocena czterech kryteriów: **W** — wybór właściwego skilla, **O** — uwzględnienie ostrzeżeń helpera, **C** — brak
+z pamięci). Wybór skilla model wykonywał, czytając pola `description` w SKILL.md (nie przez automatyczne wyzwalanie skilli w kliencie). Ocena czterech kryteriów: **W** — wybór właściwego skilla, **O** — uwzględnienie ostrzeżeń helpera, **C** — brak
 cytowania z pamięci i zmyśleń, **P** — poprawność odpowiedzi.
 
 | # | Pytanie (pułapka) | Fable 5.1 | Opus 5.5 |

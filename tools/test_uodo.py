@@ -790,6 +790,19 @@ class TestStanPrawny(unittest.TestCase):
         meta["dates"] = meta["dates"][:3]
         self.assertEqual(self._stan(meta)["status"], "nieustalony")
 
+    def test_czesciowe_uprawomocnienie_po_uchyleniu_kary_nie_podwaza_uchylenia(self):
+        # WSA uchylił samą karę (pkt 2), potem portal odnotował uprawomocnienie pozostałej części —
+        # uchylenie nadal obowiązuje (wzór z audytu 2026-08)
+        meta = {"publication": {"status": "final", "inforce": True}, "dates": [
+            {"date": "2024-01-10", "use": "publication", "status": "nonfinal", "scope": "*"},
+            {"date": "2024-09-01", "use": "repealed", "status": "nonfinal", "scope": "pkt 2",
+             "refid": "urn:ndoc:court:pl:sa:2024:ii_sa-wa_100"},
+            {"date": "2025-02-01", "use": "validation", "status": "final", "scope": "pkt 1",
+             "text": "w zakresie punktu 1"}]}
+        kontrola = uodo._kontrola_sadowa(meta)
+        self.assertTrue(uodo._uchylona(meta, kontrola))
+        self.assertEqual(self._stan(meta)["status"], "repealed")
+
     def test_lista_pokazuje_stan_z_historii(self):
         w = TestWiersz._wiersz(None, META_DS5648)
         self.assertIn("status: final (PRAWOMOCNA od 2025-07-31", w)
