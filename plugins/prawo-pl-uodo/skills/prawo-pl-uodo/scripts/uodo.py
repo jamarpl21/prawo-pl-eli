@@ -10,7 +10,10 @@ oraz rekordy powiązane (orzeczenia sądów, akty prawne) BEZ treści — z samy
 Identyfikatory: sygnatura (np. DKN.5131.9.2025) i URN (urn:ndoc:gov:pl:uodo:2025:dkn_5131_9).
 Treść RODO bierz z EUR-Lex (skill prawo-eu-eurlex); wyroki WSA/NSA ze skarg na decyzje UODO
 — z CBOSA (prawo-pl-cbosa). Portal zapisuje kontrolę sądową decyzji w meta.json (dates[] z
-use=repealed/defended/trial + refid wyroku) — silnik ją pokazuje, a --strict blokuje decyzje uchylone.
+use=repealed/defended/trial + refid orzeczenia) — silnik ją pokazuje, a --strict blokuje decyzje
+uchylone oraz decyzje, w których sąd rozpatrywał sprawę, a portal nie podaje rozstrzygnięcia.
+Prawomocność ustala z historii (dates[] use=validation = „Uprawomocnienie”), nie z pola
+publication.status, którego API nie aktualizuje po uprawomocnieniu.
 
 Komendy:
   najnowsze [--limit N]                          ostatnio WYDANE dokumenty (API sortuje po dacie decyzji)
@@ -19,7 +22,8 @@ Komendy:
          [--warunek "indeks:operator:wartość"] [--limit N] [--strona N]
   decyzja <sygnatura|URN> [--fragment "<fraza>"]  metadane + kontrola sądowa + pełna treść decyzji
 Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
-           --strict  (decyzja: blokuje wynik bez treści albo UCHYLONY przez sąd; na listach nie działa)
+           --strict  (decyzja: blokuje wynik bez treści, UCHYLONY przez sąd albo z rozpatrzeniem
+                      sądowym bez rozstrzygnięcia w portalu; na listach nie działa)
 """
 import sys, json, re, time, argparse, urllib.request, urllib.parse, urllib.error
 from html.parser import HTMLParser
@@ -33,7 +37,10 @@ DATY_PODSTAWOWE = ("announcement", "publication", "validation")
 ZNACZENIE_USE = {                           # dates[].use poza datami podstawowymi = kontrola sądowa
     "repealed": "UCHYLONA (w całości lub w części)",
     "defended": "utrzymana (oddalono skargę)",
-    "trial": "w toku (skarga rozpoznawana)",
+    # „Rozpatrzenie” w historii portalu: orzeczenie sądu w sprawie decyzji (wyrok WSA/NSA albo
+    # postanowienie, np. o zawieszeniu), którego WYNIKU portal nie oznacza — nie „sprawa w toku”
+    # (sprawdzone 2026-10-05 w CBOSA: II SA/Wa 1266/24, III OSK 4367/21 to wyroki z dnia wpisu)
+    "trial": "rozpatrzenie przez sąd (wynik nieoznaczony w portalu)",
     "other": "inne",
 }
 STATUS_PL = {"final": "prawomocna wg portalu", "nonfinal": "NIEPRAWOMOCNA",
@@ -144,8 +151,26 @@ def _daty(item):
     publication = publikacja w portalu, validation). Wpisy sądowe: _kontrola_sadowa()."""
     out = {}
     for d in item.get("dates") or []:
-        out[d.get("use", "")] = d.get("date", "")
+        out[d.get("use", "")] = _data_wpisu(d)
     return out
+
+
+def _data_wpisu(d):
+    """Data wpisu dates[] bez białych znaków (portal miewa '2019-10-18 ' — psuje porównania)."""
+    return str(d.get("date") or "").strip()
+
+
+def _zakres_walidacji(d):
+    """Zakres wpisu validation: tekst („w zakresie punktu 1)”) albo kod fragmentu sentencji (scope
+    inny niż '*', np. n0a:bi:p1). Portal pokazuje wtedy „częściowo prawomocna” — także BEZ tekstu
+    (DKN.5130.4179.2020, sprawdzone w historii portalu 2026-10-05). None = cała decyzja."""
+    zakres = re.sub(r"\s+", " ", _pl(d.get("text"))).strip()
+    if zakres:
+        return zakres
+    scope = str(d.get("scope") or "").strip()
+    if scope and scope != "*":
+        return f"część sentencji oznaczona w portalu kodem {scope}"
+    return None
 
 
 def _walidacja(item):
@@ -155,32 +180,45 @@ def _walidacja(item):
     for d in item.get("dates") or []:
         if d.get("use") != "validation":
             continue
-        zakres = re.sub(r"\s+", " ", _pl(d.get("text"))).strip()
+        zakres = _zakres_walidacji(d)
         dopisek = ", ".join(x for x in (d.get("status") or "", zakres) if x)
-        return (d.get("date", "?") + (f" ({dopisek})" if dopisek else "")), zakres or None
+        return ((_data_wpisu(d) or "?") + (f" ({dopisek})" if dopisek else "")), zakres
     return None, None
 
 
-def _zapytania_cbosa(meta):
-    """Gotowe zapytania CBOSA o wyrok w sprawie skargi na decyzję Prezesa UODO.
+def _zapytania_cbosa(meta, kontrola=None):
+    """Gotowe zapytania CBOSA o orzeczenia w sprawie skargi na decyzję Prezesa UODO.
 
-    CBOSA anonimizuje numer i dzień decyzji („decyzję … z dnia [...] marca 2025 r. nr [...]”), więc
-    po sygnaturze DKN.… nic nie znajdzie. Działa: rodzaj skarżonego organu (--organ UODO), symbol 647
-    (ochrona danych osobowych), WSA w Warszawie (co do zasady właściwy dla skarg na Prezesa UODO; trzecie zapytanie bez --sad WSA łapie wyjątki w NSA), okno
-    dat od daty decyzji i fraza „<miesiąc> <rok>” daty decyzji, której CBOSA nie zaciera. Sprawdzone
-    na żywo 2026-10-05: DKN.5131.1.2025 → II SA/Wa 837/25 na 1. stronie wyników (13 trafień)."""
+    Najpierw `cbosa.py sygnatura` dla spraw sądowych, które zna portal UODO (najpewniejsze — CBOSA
+    pokazuje też orzeczenia powiązane WSA↔NSA). Po sygnaturze DKN.… CBOSA nic nie znajdzie, bo
+    anonimizuje numer i dzień decyzji — ale zostawia cytat „z dnia [...] <miesiąc> <rok> r. nr [...]”
+    w sentencji wyroku. Ta fraza (w cudzysłowie) + rodzaj organu UODO + WSA w Warszawie + okno od daty
+    decyzji daje kilka–kilkanaście trafień; CBOSA sortuje od najnowszych i nie ma sortowania rosnąco.
+    Sprawdzone na żywo 2026-10-05 — wyrok na 1. stronie: ZSOŚS.440.90.2018 → II SA/Wa 496/19
+    (7 trafień, wcześniej 120), DKN.5131.42.2022 → II SA/Wa 252/24 i DKN.5131.32.2023 →
+    II SA/Wa 285/24 (5 trafień z „kary”), DKN.5131.1.2025 → II SA/Wa 837/25 (6 trafień)."""
+    zapytania, widziane = [], set()
+    for k in kontrola or []:
+        sygn = (k.get("sygnatura") or "").strip()
+        if sygn and not sygn.lower().startswith("urn:") and sygn not in widziane:
+            widziane.add(sygn)
+            zapytania.append((f'cbosa.py sygnatura "{sygn}"',
+                              f"sprawa wskazana przez portal UODO ({k.get('date') or '?'}) — "
+                              "najpewniejsze; pokaże też orzeczenia powiązane (WSA↔NSA)"))
     data = _daty(meta).get("announcement", "")
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", data):
-        return []
-    fraza = f'"{MIESIACE_DOPELNIACZ[int(data[5:7]) - 1]} {data[:4]}"'
-    if re.search(r"\bkar[aęyą]?\b", _pl(meta.get("title")), re.I):
-        fraza += " kary"
-    return [
-        (f"cbosa.py szukaj '{fraza}' --organ UODO --symbol 647 --sad \"WSA Warszawa\" --rodzaj wyrok "
-         f"--od {data}", "wyrok WSA (zawężony frazą z daty decyzji)"),
+        return zapytania
+    fraza = f'"z dnia [...] {MIESIACE_DOPELNIACZ[int(data[5:7]) - 1]} {data[:4]} r. nr"'
+    kary = " kary" if re.search(r"\bkar[aęyą]?\b", _pl(meta.get("title")), re.I) else ""
+    return zapytania + [
+        (f"cbosa.py szukaj '{fraza}{kary}' --organ UODO --symbol 647 --sad \"WSA Warszawa\" "
+         f"--rodzaj wyrok --od {data}",
+         "wyrok WSA — anonimizowany cytat daty decyzji z sentencji (zwykle kilka trafień)"),
+        (f"cbosa.py szukaj '{fraza}' --organ UODO --sad \"WSA Warszawa\" --od {data}",
+         "ta sama fraza bez rodzaju i symbolu — także postanowienia (odrzucenie, umorzenie, zawieszenie)"),
+        (f"cbosa.py szukaj --organ UODO --sad NSA --od {data}", "skarga kasacyjna / zażalenie do NSA"),
         (f"cbosa.py szukaj --organ UODO --symbol 647 --sad \"WSA Warszawa\" --od {data}",
-         "wszystkie orzeczenia WSA od daty decyzji — pełna lista, przejrzyj strony"),
-        (f"cbosa.py szukaj --organ UODO --sad NSA --od {data}", "skarga kasacyjna do NSA"),
+         "pełna lista WSA od daty decyzji (od najnowszych) — ostateczność, przejrzyj strony"),
     ]
 
 
@@ -214,17 +252,88 @@ def _kontrola_sadowa(item):
         refid = d.get("refid") or ""
         if use in DATY_PODSTAWOWE or (not refid and use not in ("repealed", "defended", "trial")):
             continue
-        out.append({"date": d.get("date", ""), "use": use,
+        out.append({"date": _data_wpisu(d), "use": use,
                     "znaczenie": ZNACZENIE_USE.get(use, use), "refid": refid,
                     "sygnatura": _sygnatura_z_urn(refid) if refid else "", "sad": ""})
     return out
 
 
 def _uchylona(meta, kontrola):
-    """Decyzja uchylona (w całości lub w części): status 'repealed' ALBO jakikolwiek wpis use=repealed
-    — portal zostawia status 'final' przy częściowym uchyleniu (np. samej kary)."""
-    return (meta.get("publication") or {}).get("status") == "repealed" or \
-        any(k["use"] == "repealed" for k in kontrola)
+    """Decyzja uchylona (w całości lub w części): status 'repealed' ALBO wpis use=repealed — portal
+    zostawia status 'final' przy częściowym uchyleniu (np. samej kary). Wyjątek: późniejsze
+    „Uprawomocnienie” (validation final) — DKN.5131.3.2021: WSA uchylił decyzję 2022-04-19, NSA
+    III OSK 1830/22 uchylił ten wyrok 2025-10-01, a portal od 2025-12-11 podaje decyzję jako prawomocną."""
+    if (meta.get("publication") or {}).get("status") == "repealed":
+        return True
+    uchylenia = [k["date"] for k in kontrola if k["use"] == "repealed"]
+    if not uchylenia:
+        return False
+    wal = [_data_wpisu(d) for d in meta.get("dates") or []
+           if d.get("use") == "validation" and d.get("status") == "final" and _data_wpisu(d)]
+    return not wal or max(uchylenia) >= max(wal)
+
+
+def _uchylenie_podwazone(meta, kontrola):
+    """Wpisy uchylenia, po których portal podaje uprawomocnienie — do ostrzeżenia (wcześniejsze uchylenie
+    zostało najpewniej uchylone w wyższej instancji; sprawdź w CBOSA)."""
+    if _uchylona(meta, kontrola):
+        return []
+    return [k for k in kontrola if k["use"] == "repealed"]
+
+
+def _stan_prawny(meta, kontrola):
+    """Faktyczny stan prawomocności decyzji wg HISTORII portalu (dates[]), nie wg publication.status.
+
+    - API nie aktualizuje publication.status po uprawomocnieniu: DS.523.5648.2023 ma status
+      „nonfinal”, a w historii „Uprawomocnienie” 2025-07-31 — portal pokazuje PRAWOMOCNA.
+    - Uprawomocnienie (validation, status final) bez zakresu = cała decyzja; z zakresem (text albo
+      scope ≠ '*') = częściowo.
+    - „Rozpatrzenie” (trial) PO ostatnim rozstrzygnięciu (defended/repealed/uprawomocnienie) =
+      sąd orzekał, a portal nie zna wyniku. Status „final” niczego wtedy nie dowodzi — portal bierze
+      go z ostatniego wpisu historii, którym bywa prawomocne POSTANOWIENIE sądu (DKN.5131.32.2023:
+      III OZ 542/24 „prawomocna”, a WSA II SA/Wa 285/24 z 2026-03-02 uchylił decyzję).
+    Zwraca dict: status (final | czesciowo | nonfinal | repealed | nieustalony | status API),
+    status_api, uprawomocnienie, zakres, otwarte (wpisy trial bez rozstrzygnięcia)."""
+    status_api = (meta.get("publication") or {}).get("status") or ""
+    wal = [d for d in meta.get("dates") or []
+           if d.get("use") == "validation" and d.get("status") == "final" and _data_wpisu(d)]
+    wal = max(wal, key=_data_wpisu) if wal else None
+    rozstrzygniecia = [_data_wpisu(d) for d in meta.get("dates") or []
+                       if d.get("use") in ("defended", "repealed")]
+    if wal:
+        rozstrzygniecia.append(_data_wpisu(wal))
+    ostatnie = max(rozstrzygniecia, default="")
+    otwarte = [k for k in kontrola if k["use"] == "trial" and k["date"] > ostatnie]
+    zakres = _zakres_walidacji(wal) if wal else None
+    # rozpatrzenie PO uchyleniu (DKN.5131.3.2021: WSA uchylił decyzję w 2022, NSA III OSK 1830/22
+    # w 2025 uchylił wyrok WSA i przekazał sprawę) — uchylenie przestaje być pewne
+    if otwarte:
+        status = "nieustalony"
+    elif _uchylona(meta, kontrola):
+        status = "repealed"
+    elif wal:
+        status = "czesciowo" if zakres else "final"
+    else:
+        status = status_api
+    return {"status": status, "status_api": status_api,
+            "uprawomocnienie": _data_wpisu(wal) if wal else None, "zakres": zakres,
+            "otwarte": otwarte}
+
+
+def _status_stanu(stan):
+    """Opis statusu do wydruku: faktyczny stan + rozbieżność z publication.status API."""
+    api, st, data = stan["status_api"], stan["status"], stan["uprawomocnienie"]
+    if st == "nieustalony":
+        sygn = ", ".join(k["sygnatura"] or k["refid"] or "?" for k in stan["otwarte"])
+        return (f"NIEUSTALONY — sąd rozpatrywał sprawę ({sygn}), portal nie podaje rozstrzygnięcia "
+                f"(pole API status: „{api or '?'}” — NIE potwierdza prawomocności)")
+    if st == "final" and api != "final":
+        return (f"final (PRAWOMOCNA od {data} wg historii portalu — „Uprawomocnienie”; "
+                f"pole API status: „{api or '?'}” jest nieaktualne)")
+    if st == "czesciowo":
+        return (f"CZĘŚCIOWO prawomocna (uprawomocnienie {data} tylko: {stan['zakres']}; "
+                f"pole API status: {api or '?'})")
+    return _status_opis(api)
 
 
 def _czy_decyzja(refid):
@@ -310,8 +419,11 @@ def _wiersz(item):
     daty = _daty(item)
     status = (item.get("publication") or {}).get("status", "")
     tytul = re.sub(r"\s+", " ", _pl(item.get("title"))).strip()
+    opis_statusu = _status_opis(status)
+    if _czy_decyzja(refid):
+        opis_statusu = _status_stanu(_stan_prawny(item, _kontrola_sadowa(item)))
     print(f"  [{refname}]  (decyzja/orzeczenie {daty.get('announcement', '?')}, publikacja "
-          f"{daty.get('publication', '—')})  {item.get('kind', '')}  status: {_status_opis(status)}")
+          f"{daty.get('publication', '—')})  {item.get('kind', '')}  status: {opis_statusu}")
     if tytul:
         print(f"    {tytul[:400]}{'…' if len(tytul) > 400 else ''}")
     if _czy_decyzja(refid):
@@ -512,6 +624,13 @@ def _rozwin_kontrole(kontrola):
     return kontrola
 
 
+def _opis_otwartych(otwarte):
+    """Wpisy „Rozpatrzenie” bez rozstrzygnięcia → 'II SA/Wa 285/24 — Wyrok - WSA…, 2024-10-23; …'."""
+    return "; ".join(f"{k['sygnatura'] or k['refid'] or '?'}"
+                     + (f" — {k['sad']}" if k.get("sad") else "") + f", {k['date'] or '?'}"
+                     for k in otwarte)
+
+
 def _wyjasnij_rekord_powiazany(meta, refid):
     refname = meta.get("refname") or refid
     daty = _daty(meta)
@@ -539,11 +658,17 @@ def cmd_decyzja(a):
     if not _czy_decyzja(meta.get("refid") or refid) or meta.get("parts") == 0:
         _wyjasnij_rekord_powiazany(meta, refid)
     kontrola = _rozwin_kontrole(_kontrola_sadowa(meta))
-    uchylona = _uchylona(meta, kontrola)
+    stan = _stan_prawny(meta, kontrola)
+    otwarte = stan["otwarte"]
+    # uchylenie, po którym sąd wyższej instancji znów orzekał (wynik nieznany) — nie jest pewne
+    uchylona_wczesniej = _uchylona(meta, kontrola) and bool(otwarte)
+    uchylona = _uchylona(meta, kontrola) and not otwarte
     txt, zrodlo = _tresc(refid)
     refname = meta.get("refname", a.id)
     pub = meta.get("publication") or {}
     uchylajace = [k for k in kontrola if k["use"] == "repealed"]
+    sprawdz_otwarte = "; ".join(f'cbosa.py sygnatura "{k["sygnatura"]}"' for k in otwarte
+                                if k["sygnatura"] and not k["sygnatura"].lower().startswith("urn:"))
     if getattr(a, "strict", False):
         if uchylona:
             wyroki = ", ".join(f"{k['sygnatura']} z {k['date']}" for k in uchylajace) or "wg statusu portalu"
@@ -552,15 +677,29 @@ def cmd_decyzja(a):
                      "uchylenia ustal w sentencji wyroku: "
                      + "; ".join(f'prawo-pl-cbosa sygnatura "{k["sygnatura"]}"' for k in uchylajace)
                      + ". Bez --strict decyzja wyświetli się z ostrzeżeniem.")
+        if otwarte:
+            sys.exit(f"BŁĄD: tryb strict blokuje decyzję {refname} — sąd rozpatrywał sprawę "
+                     f"({_opis_otwartych(otwarte)}), a portal UODO nie podaje rozstrzygnięcia ani "
+                     "uprawomocnienia: prawomocności nie da się potwierdzić (portal UODO może nie znać "
+                     "wyroku — decyzja mogła zostać uchylona"
+                     + (f"; status „{stan['status_api']}” z API tego nie wyklucza" if stan["status_api"] else "")
+                     + "). Sprawdź wynik w CBOSA: " + (sprawdz_otwarte or "prawo-pl-cbosa")
+                     + ". Bez --strict decyzja wyświetli się z ostrzeżeniem.")
         if not txt:
             sys.exit(f"BŁĄD: tryb strict blokuje decyzję {refname} bez zweryfikowanej pełnej treści.")
+    do_zweryfikowania = stan["status"] in ("nonfinal", "czesciowo", "nieustalony")
     if a.json:
         meta["_body"] = txt
         meta["_tresc_zrodlo"] = zrodlo
         meta["_kontrola_sadowa"] = kontrola
         meta["_uchylona"] = uchylona
-        if (meta.get("publication") or {}).get("status") == "nonfinal":
-            meta["_zapytania_cbosa"] = [k for k, _ in _zapytania_cbosa(meta)]
+        meta["_stan_prawny"] = {
+            "status": stan["status"], "status_api": stan["status_api"],
+            "uprawomocnienie": stan["uprawomocnienie"], "zakres_uprawomocnienia": stan["zakres"],
+            "rozpatrzenie_bez_rozstrzygniecia": [k["sygnatura"] or k["refid"] for k in otwarte],
+            "opis": _status_stanu(stan)}
+        if do_zweryfikowania:
+            meta["_zapytania_cbosa"] = [k for k, _ in _zapytania_cbosa(meta, kontrola)]
         print(json.dumps(meta, ensure_ascii=False, indent=2)); return
     daty = _daty(meta)
     if uchylona:
@@ -568,36 +707,67 @@ def cmd_decyzja(a):
         print(f"!!! DECYZJA UCHYLONA PRZEZ SĄD (w całości lub w części) — sprawdź zakres w wyroku {wyroki}: "
               + ("; ".join(f'prawo-pl-cbosa sygnatura "{k["sygnatura"]}"' for k in uchylajace)
                  or "prawo-pl-cbosa") + " !!!\n")
+    elif _uchylenie_podwazone(meta, kontrola):
+        wcz = _uchylenie_podwazone(meta, kontrola)
+        print("!!! UWAGA: decyzję wcześniej UCHYLONO (" + ", ".join(f"{k['sygnatura']} z {k['date']}" for k in wcz)
+              + "), ale portal UODO podaje ją później jako PRAWOMOCNĄ (uprawomocnienie "
+              + f"{stan['uprawomocnienie']}) — wyrok uchylający został najpewniej uchylony w wyższej instancji. "
+              "Potwierdź przebieg w CBOSA: "
+              + "; ".join(f'prawo-pl-cbosa sygnatura "{k["sygnatura"]}"' for k in kontrola if k["sygnatura"])
+              + " !!!\n")
+    if otwarte and uchylona_wczesniej:
+        wyroki = ", ".join(f"{k['sygnatura']} z {k['date']}" for k in uchylajace) or "wg statusu portalu"
+        print(f"!!! STAN PRAWNY NIEUSTALONY — decyzję uchylono ({wyroki}), ale PÓŹNIEJ sąd znów orzekał w "
+              f"sprawie ({_opis_otwartych(otwarte)}), a portal UODO nie podaje wyniku: sąd wyższej instancji "
+              "mógł uchylić wyrok uchylający decyzję i przekazać sprawę do ponownego rozpoznania. Sprawdź "
+              "w CBOSA: " + (sprawdz_otwarte or "prawo-pl-cbosa") + " !!!\n")
+    elif otwarte:
+        print(f"!!! STAN PRAWNY NIEUSTALONY — sąd rozpatrywał sprawę tej decyzji ({_opis_otwartych(otwarte)}), "
+              "a portal UODO nie podaje rozstrzygnięcia ani uprawomocnienia. Portal UODO może nie znać "
+              "wyroku — decyzja mogła zostać uchylona"
+              + (" (status „final” tego nie wyklucza)" if stan["status_api"] == "final" else "")
+              + ". Sprawdź wynik w CBOSA: " + (sprawdz_otwarte or "prawo-pl-cbosa") + " !!!\n")
     print(f"# {_pl(meta.get('name')) or refname}   [{refname}]")
     print(f"  URN:        {meta.get('refid', refid)}")
     inforce = "tak" if pub.get("inforce") else "nie/brak danych"
-    nonfinal = pub.get("status") == "nonfinal"
     zastrzezenie = ""
     if pub.get("inforce") and uchylona:
         zastrzezenie = " (pole nie odzwierciedla uchylenia)"
-    elif pub.get("inforce") and nonfinal:
+    elif pub.get("inforce") and do_zweryfikowania:
         zastrzezenie = (" (pole NIE oznacza prawomocności ani tego, że decyzja nie została zaskarżona "
-                        "lub uchylona — status: NIEPRAWOMOCNA)")
-    print(f"  Rodzaj:     {meta.get('kind', '?')}   status: {_status_opis(pub.get('status'))}"
+                        "lub uchylona — status: " + ("NIEUSTALONY)" if otwarte else "NIEPRAWOMOCNA)"))
+    print(f"  Rodzaj:     {meta.get('kind', '?')}   status: {_status_stanu(stan)}"
           f"   publication.inforce wg API: {inforce}{zastrzezenie}")
     walidacja, zakres_walidacji = _walidacja(meta)
     print(f"  Daty:       decyzja (ogłoszenie) {daty.get('announcement', '?')}, publikacja w portalu "
           f"{daty.get('publication', '?')}, walidacja {walidacja or '—'}")
     print(f"  Portal:     https://orzeczenia.uodo.gov.pl (API: {BASE}/documents/public/items/{refid}/meta.json)")
+    if stan["status"] == "final" and stan["status_api"] != "final":
+        print(f"  UWAGA:      pole API publication.status = „{stan['status_api'] or '?'}”, ale historia portalu "
+              f"ma „Uprawomocnienie” {stan['uprawomocnienie']} bez ograniczenia zakresu — portal pokazuje "
+              "PRAWOMOCNA. API nie aktualizuje tego pola po uprawomocnieniu; rozstrzyga historia.")
     if zakres_walidacji:
         print(f"  UWAGA:      prawomocność CZĘŚCIOWA wg portalu — walidacja dotyczy tylko: "
               f"„{zakres_walidacji}”; pozostała część decyzji nie jest oznaczona jako prawomocna "
               "(zwykle: zaskarżona do WSA).")
-    if nonfinal:
-        print("  UWAGA:      decyzja NIEPRAWOMOCNA (status nonfinal) — przysługuje skarga do WSA; "
+    if stan["status"] in ("nonfinal", "czesciowo"):
+        print("  UWAGA:      decyzja NIEPRAWOMOCNA " + ("w części nieobjętej uprawomocnieniem "
+                                                         if stan["status"] == "czesciowo" else "")
+              + "(status nonfinal) — przysługuje skarga do WSA; "
               "cytuj z zastrzeżeniem (kontrola sądowa: prawo-pl-cbosa).")
         if not kontrola:
             print("              Brak wpisów kontroli sądowej w meta.json NIE oznacza, że wyroku nie ma — "
                   "portal dopisuje je z opóźnieniem.")
-        zapytania = _zapytania_cbosa(meta)
+    if otwarte:
+        print("  UWAGA:      „Rozpatrzenie” w historii portalu to orzeczenie sądu, którego WYNIKU portal nie "
+              "oznacza; brak późniejszego „Uprawomocnienia” albo wpisu o utrzymaniu/uchyleniu = stan "
+              "prawny decyzji nieznany portalowi. Ustal go z sentencji orzeczeń w CBOSA.")
+    if do_zweryfikowania:
+        zapytania = _zapytania_cbosa(meta, kontrola)
         if zapytania:
             ogl = daty.get("announcement", "")
-            przyklad = f"{MIESIACE_DOPELNIACZ[int(ogl[5:7]) - 1]} {ogl[:4]}"
+            przyklad = (f"{MIESIACE_DOPELNIACZ[int(ogl[5:7]) - 1]} {ogl[:4]}"
+                        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", ogl) else "<miesiąc> <rok>")
             print(f"  Wyrok sądu: NIE szukaj w CBOSA po numerze {refname} — CBOSA anonimizuje numer "
                   f"i dzień decyzji („z dnia [...] {przyklad} r. nr [...]”), więc zero trafień "
                   "nie dowodzi braku wyroku. Gotowe zapytania (skill prawo-pl-cbosa, scripts/):")
@@ -663,8 +833,9 @@ def main():
     ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     ap.add_argument("--json", action="store_true", help="zrzut surowego JSON")
     ap.add_argument("--strict", action="store_true",
-                    help="decyzja: zakończ błędem, gdy brak pełnej treści albo decyzja została "
-                         "UCHYLONA przez sąd (w całości lub w części); na listach nic nie zmienia")
+                    help="decyzja: zakończ błędem, gdy brak pełnej treści, decyzja została "
+                         "UCHYLONA przez sąd (w całości lub w części) albo sąd rozpatrywał sprawę, "
+                         "a portal nie podaje rozstrzygnięcia; na listach nic nie zmienia")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     n = sub.add_parser("najnowsze", help="ostatnio WYDANE dokumenty (API sortuje po dacie decyzji, nie publikacji)")
@@ -698,7 +869,8 @@ def main():
         p.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
                        help="zrzut surowego JSON")
         p.add_argument("--strict", action="store_true", default=argparse.SUPPRESS,
-                       help="decyzja: zakończ błędem przy braku treści albo uchyleniu przez sąd")
+                       help="decyzja: zakończ błędem przy braku treści, uchyleniu przez sąd albo "
+                            "rozpatrzeniu sądowym bez rozstrzygnięcia w portalu")
 
     a = ap.parse_args()
     a.func(a)

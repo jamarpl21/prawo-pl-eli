@@ -93,8 +93,8 @@ TYPY_PL = {
 # są zasilane na bieżąco, więc ich tu nie ma. Silnik dodatkowo potwierdza granicę na żywo
 # (_granica_zbioru), gdy ma zablokować albo wyjaśnić zero wyników — gdyby SAOS wznowił zasilanie.
 ZASIEG = {
-    "SUPREME": ("2016-06-22", "nowsze orzeczenia SN: portal SN (www.sn.pl/orzecznictwo) "
-                              "albo Baza Orzeczeń SN"),
+    "SUPREME": ("2016-06-22", "nowsze orzeczenia SN: wyszukiwarka orzeczeń SN "
+                              "(https://www.sn.pl/pl/wyszukiwarka-orzeczen)"),
     "CONSTITUTIONAL_TRIBUNAL": ("2015-12-09", "nowsze orzeczenia TK: OTK (ipo.trybunal.gov.pl)"),
     "NATIONAL_APPEAL_CHAMBER": ("2018-09-06", "nowsze orzeczenia KIO: UZP "
                                               "(orzeczenia.uzp.gov.pl)"),
@@ -527,23 +527,68 @@ UWAGA_INDEKSY = ("UWAGA: SAOS spłaszcza indeksy górne w tekstach SN/TK/KIO (ar
                  "numerację przepisów weryfikuj w źródle")
 
 
+SN_WYSZUKIWARKA = "https://www.sn.pl/pl/wyszukiwarka-orzeczen"
+SN_PROXY = "https://www.sn.pl/pl/index.php?option=com_ajax&plugin=snproxy&format=json"
+
+
+def _norm_sygn(s):
+    return re.sub(r"\s+", " ", str(s or "")).strip().upper()
+
+
+def _sn_id(sygnatura, data):
+    """Identyfikator orzeczenia w wyszukiwarce SN (www.sn.pl/pl/wyszukiwarka-orzeczen).
+
+    Strona wyszukiwarki pobiera wyniki z JSON-owego proxy sn.pl (`task=searchOrzeczenia`), a stronę
+    orzeczenia otwiera jako `?orzeczenie=<id>` — sprawdzone na żywo 2026-10-05 (I UK 328/10 →
+    FV3ISJcBZvGrB8P_g845). Proxy dopasowuje sygnaturę fragmentem („328/10” zwraca też IV CSK 328/10),
+    a jedna sygnatura może mieć kilka orzeczeń — dlatego wymagamy DOKŁADNEJ sygnatury i daty.
+    Dane pomocnicze: każda awaria, brak albo niejednoznaczność → None (bez wpływu na --strict)."""
+    if not sygnatura or not data:
+        return None
+    url = SN_PROXY + "&" + urllib.parse.urlencode(
+        {"task": "searchOrzeczenia", "sygnatura": sygnatura, "strona": 1, "rozmiar_strony": 25})
+    req = urllib.request.Request(url, headers={"User-Agent": f"saos-skill/{__version__}",
+                                               "Accept": "application/json"})
+    try:
+        with _opener.open(req, timeout=20) as r:
+            odp = json.loads(r.read().decode("utf-8", "replace"))
+        lista = odp["data"][0]["data"]
+    except Exception:  # noqa: BLE001 — link pomocniczy; awaria = link do wyszukiwarki z instrukcją
+        return None
+    if not isinstance(lista, list):
+        return None
+    ids = {it.get("id") for it in lista
+           if isinstance(it, dict) and it.get("id")
+           and _norm_sygn(it.get("sygnatura_sprawy") or it.get("sygnatura")) == _norm_sygn(sygnatura)
+           and str(it.get("data_wydania") or "")[:10] == data[:10]}
+    return ids.pop() if len(ids) == 1 else None
+
+
 def _zrodla_urzedowe(data):
     """Linki do weryfikacji w źródle urzędowym.
 
     `source.judgmentUrl` z SAOS dla SN/TK/KIO jest martwy albo ogólny (sprawdzone 2026-08-23:
     sn.pl/…/Baza_orzeczen → 404, otk.trybunal.gov.pl i ftp.uzp.gov.pl nieosiągalne), więc NIE
-    jest ścieżką weryfikacji. Dla SN działa wzorzec adresu PDF (zweryfikowany curl -I na
-    II KK 56/16, I CSK 364/15, III CZP 17/15): sygnatura z '/'→'-' i spacjami %20; dla TK i KIO
-    wyszukiwarki OTK / UZP. Linki sądów powszechnych (apiorzeczenia.*.sa.gov.pl) działają.
+    jest ścieżką weryfikacji. Dawny wzorzec PDF SN (sites/orzecznictwo/Orzeczenia3/<sygn>.pdf)
+    przekierowuje obecnie na sn.pl/404.html (5/5 w próbie 2026-10-05) — SN ma nową wyszukiwarkę:
+    link do strony orzeczenia (`?orzeczenie=<id>`, id z _sn_id), a gdy się nie uda — link do
+    wyszukiwarki z instrukcją. Dla TK i KIO wyszukiwarki OTK / UZP. Linki sądów powszechnych
+    (apiorzeczenia.*.sa.gov.pl) działają.
     """
     ct = data.get("courtType", "")
     cn = next((c.get("caseNumber") for c in (data.get("courtCases") or []) if c.get("caseNumber")), "")
     src = (data.get("source") or {}).get("judgmentUrl")
     linie = []
     if ct == "SUPREME" and cn:
-        pdf = urllib.parse.quote(cn.replace("/", "-"), safe="")
-        linie.append(f"  Źródło urzędowe: https://www.sn.pl/sites/orzecznictwo/Orzeczenia3/{pdf}.pdf"
-                     "  (sprawdź — wzorzec adresu; bywa też z przyrostkiem -1.pdf dla uzasadnienia)")
+        data_orz = str(data.get("judgmentDate") or "")
+        sn_id = _sn_id(cn, data_orz)
+        if sn_id:
+            linie.append(f"  Źródło urzędowe: {SN_WYSZUKIWARKA}?orzeczenie={urllib.parse.quote(sn_id, safe='')}"
+                         "  (strona orzeczenia w wyszukiwarce SN: metryczka + treść PDF/HTML)")
+        else:
+            linie.append(f"  Źródło urzędowe: {SN_WYSZUKIWARKA}  (wpisz w pole „Sygnatura” {cn}, "
+                         f"wybierz orzeczenie z datą {data_orz or '?'} → „Szczegóły”; bezpośredniego "
+                         "linku nie udało się ustalić)")
     elif ct == "CONSTITUTIONAL_TRIBUNAL":
         linie.append(f"  Źródło urzędowe: https://ipo.trybunal.gov.pl/ipo/  (wyszukaj sygnaturę {cn or '?'})")
     elif ct == "NATIONAL_APPEAL_CHAMBER":

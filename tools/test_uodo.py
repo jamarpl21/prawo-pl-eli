@@ -244,7 +244,9 @@ class TestKontrolaSadowa(unittest.TestCase):
         k = uodo._kontrola_sadowa({"dates": [{"date": "2025-04-10", "use": "trial",
                                               "refid": "urn:ndoc:court:pl:sa:2024:ii_sa-wa_1266"}]})
         self.assertEqual(k[0]["sygnatura"], "II SA/Wa 1266/24")
-        self.assertIn("w toku", k[0]["znaczenie"])
+        # „Rozpatrzenie” = orzeczenie sądu bez oznaczonego wyniku (II SA/Wa 1266/24 to wyrok z dnia wpisu)
+        self.assertIn("rozpatrzenie przez sąd", k[0]["znaczenie"])
+        self.assertNotIn("w toku", k[0]["znaczenie"])
 
 
 class TestTekstZHtml(unittest.TestCase):
@@ -573,7 +575,7 @@ class TestNieprawomocnaZapytaniaCbosa(unittest.TestCase):
     def test_gotowe_zapytania_zamiast_numeru(self):
         out, kod = _uruchom(["decyzja", "DKN.5131.1.2025"], self.SIEC)
         self.assertIsNone(kod)
-        self.assertIn("cbosa.py szukaj '\"marca 2025\" kary' --organ UODO --symbol 647 "
+        self.assertIn("cbosa.py szukaj '\"z dnia [...] marca 2025 r. nr\" kary' --organ UODO --symbol 647 "
                       "--sad \"WSA Warszawa\" --rodzaj wyrok --od 2025-03-17", out)
         self.assertIn("cbosa.py szukaj --organ UODO --sad NSA --od 2025-03-17", out)
         self.assertIn("NIE szukaj w CBOSA po numerze DKN.5131.1.2025", out)
@@ -596,7 +598,7 @@ class TestNieprawomocnaZapytaniaCbosa(unittest.TestCase):
     def test_fraza_bez_kary_gdy_tytul_nie_mowi_o_karze(self):
         meta = dict(META_DKN1, title={"pl": "nakaz usunięcia danych"})
         zap = uodo._zapytania_cbosa(meta)
-        self.assertTrue(zap[0][0].startswith("cbosa.py szukaj '\"marca 2025\"' --organ UODO"))
+        self.assertTrue(zap[0][0].startswith("cbosa.py szukaj '\"z dnia [...] marca 2025 r. nr\"' --organ UODO"))
         self.assertEqual(uodo._zapytania_cbosa({"dates": []}), [])
 
     def test_walidacja_bez_zakresu_i_brak(self):
@@ -608,6 +610,191 @@ class TestNieprawomocnaZapytaniaCbosa(unittest.TestCase):
         out, _ = _uruchom(["decyzja", "DKN.5131.33.2021"], {"dkn_5131_33/meta.json": META_KONTROLNA, "body.txt": "treść"})
         self.assertNotIn("--organ UODO", out)
         self.assertNotIn("pole NIE oznacza prawomocności", out)
+
+
+# --- regresja próby B (2026-10-05): stan prawny z historii portalu, nie z publication.status ---
+META_DKN32 = {  # DKN.5131.32.2023 (live meta.json 2026-10-05): status final, dwa „Rozpatrzenia”, brak
+    # uprawomocnienia; CBOSA: II SA/Wa 285/24 z 2026-03-02 „uchyla zaskarżoną decyzję” (nieprawomocny)
+    "refid": "urn:ndoc:gov:pl:uodo:2023:dkn_5131_32", "refname": "DKN.5131.32.2023", "kind": "decision",
+    "name": {"pl": "Decyzja Prezesa UODO nr DKN.5131.32.2023"},
+    "title": {"pl": "nałożenie przez Prezesa Urzędu Ochrony Danych Osobowych administracyjnej kary pieniężnej"},
+    "publication": {"status": "final", "inforce": True, "version": "1.0.0", "pubid": None}, "parts": 1,
+    "dates": [
+        {"date": "2023-12-20", "use": "announcement", "type": "direct", "status": "nonfinal", "scope": "*"},
+        {"date": "2023-12-21", "use": "publication", "type": "direct", "status": "nonfinal", "scope": "*"},
+        {"date": "2024-10-23", "use": "trial", "type": "direct", "status": "nonfinal", "scope": "*",
+         "refid": "urn:ndoc:court:pl:sa:2024:ii_sa-wa_285"},
+        {"date": "2025-01-09", "use": "trial", "type": "direct", "status": "final", "scope": "*",
+         "refid": "urn:ndoc:court:pl:sa:2024:iii_oz_542"},
+    ]}
+META_OZ542 = {"refid": "urn:ndoc:court:pl:sa:2024:iii_oz_542", "refname": "III OZ 542/24", "kind": "Postanowienie",
+              "name": {"pl": "Postanowienie - Naczelny Sąd Administracyjny"}, "parts": 0}
+META_DS5648 = {  # DS.523.5648.2023 (live): API status nonfinal, historia „Uprawomocnienie” 2025-07-31 → PRAWOMOCNA
+    "refid": "urn:ndoc:gov:pl:uodo:2023:ds_523_5648", "refname": "DS.523.5648.2023", "kind": "decision",
+    "name": {"pl": "Decyzja Prezesa UODO nr DS.523.5648.2023"},
+    "title": {"pl": "udzielenie upomnienia za udostępnienie danych osobowych innych niż nazwisko/nazwę płatnika"},
+    "publication": {"status": "nonfinal", "inforce": True, "version": "1.0.0", "pubid": None}, "parts": 1,
+    "dates": [
+        {"date": "2024-09-17", "use": "announcement", "type": "direct", "status": "nonfinal"},
+        {"date": "2025-07-31", "use": "validation", "type": "direct", "status": "final"},
+        {"date": "2025-10-29", "use": "publication", "type": "direct", "status": "final"},
+    ]}
+META_4179 = {  # DKN.5130.4179.2020 (live): walidacja ze scope bez tekstu → portal „częściowo prawomocna”
+    "refid": "urn:ndoc:gov:pl:uodo:2020:dkn_5130_4179", "refname": "DKN.5130.4179.2020", "kind": "decision",
+    "name": {"pl": "Decyzja Prezesa UODO nr DKN.5130.4179.2020"},
+    "title": {"pl": "nałożenie administracyjnej kary pieniężnej za nieprawidłowe przeprowadzenie weryfikacji"},
+    "publication": {"status": "nonfinal", "inforce": True, "version": "1.0.0", "pubid": None}, "parts": 1,
+    "dates": [
+        {"date": "2025-06-23", "use": "announcement", "type": "direct", "status": "nonfinal"},
+        {"date": "2025-07-21", "use": "publication", "type": "direct", "status": "nonfinal"},
+        {"date": "2025-08-07", "use": "validation", "type": "direct", "scope": "n0a:bi:p1", "status": "final"},
+    ]}
+META_DKN59 = {  # DKN.5131.59.2022 (live): nonfinal + „Rozpatrzenie” II SA/Wa 774/24 bez rozstrzygnięcia
+    "refid": "urn:ndoc:gov:pl:uodo:2022:dkn_5131_59", "refname": "DKN.5131.59.2022", "kind": "decision",
+    "name": {"pl": "Decyzja Prezesa UODO nr DKN.5131.59.2022"}, "title": {"pl": "kara."},
+    "publication": {"status": "nonfinal", "inforce": True}, "parts": 1,
+    "dates": [{"date": "2024-03-12", "use": "announcement", "status": "nonfinal", "scope": "*"},
+              {"date": "2024-03-28", "use": "publication", "status": "nonfinal", "scope": "*"},
+              {"date": "2024-07-08", "use": "trial", "status": "nonfinal", "scope": "*",
+               "refid": "urn:ndoc:court:pl:sa:2024:ii_sa-wa_774"}]}
+META_DS7376 = {  # DS.523.7376.2021 (live): „Rozpatrzenie”, potem uprawomocnienie → zamknięte, prawomocna
+    "refid": "urn:ndoc:gov:pl:uodo:2021:ds_523_7376", "refname": "DS.523.7376.2021", "kind": "decision",
+    "publication": {"status": "final", "inforce": True}, "parts": 1,
+    "dates": [{"date": "2022-04-27", "use": "announcement", "status": "nonfinal", "scope": "*"},
+              {"date": "2023-06-30", "use": "trial", "status": "nonfinal", "scope": "*",
+               "refid": "urn:ndoc:court:pl:sa:2022:ii_sa-wa_1177"},
+              {"date": "2023-08-08", "use": "validation", "status": "final", "scope": "*"},
+              {"date": "2024-01-17", "use": "publication", "status": "final", "scope": "*"}]}
+META_ZSOSS13 = {  # ZSOŚS.440.13.2018 (live): data walidacji ze spacją na końcu ('2019-10-18 ')
+    "refid": "urn:ndoc:gov:pl:uodo:2018:zsoss_440_13", "refname": "ZSOŚS.440.13.2018", "kind": "decision",
+    "publication": {"status": "nonfinal", "inforce": True}, "parts": 1,
+    "dates": [{"date": "2018-07-13", "use": "announcement", "status": "nonfinal", "scope": "*"},
+              {"date": "2019-03-29", "use": "publication", "status": "nonfinal", "scope": "*"},
+              {"date": "2019-08-27", "use": "defended", "status": "nonfinal", "scope": "*",
+               "refid": "urn:ndoc:court:pl:sa:2019:ii_sa-wa_856"},
+              {"date": "2019-10-18 ", "use": "validation", "status": "final", "scope": "*"},
+              {"date": "2020-02-13", "use": "trial", "status": "nonfinal", "scope": "*",
+               "refid": "urn:ndoc:court:pl:sa:2020:i_oz_23"},
+              {"date": "2020-07-15", "use": "defended", "status": "nonfinal", "scope": "*",
+               "refid": "urn:ndoc:court:pl:sa:2020:ii_sa-wa_431"}]}
+
+
+class TestStanPrawny(unittest.TestCase):
+    """Regresja 2.1.1 (próba B): status z historii portalu (Uprawomocnienie / Rozpatrzenie), nie z
+    publication.status; rozpatrzenie sądowe bez rozstrzygnięcia = stan nieustalony (+ --strict blokuje)."""
+
+    SIEC32 = {"dkn_5131_32/meta.json": META_DKN32, "iii_oz_542/meta.json": META_OZ542, "body.html": HTML_DECYZJI}
+
+    def _stan(self, meta):
+        return uodo._stan_prawny(meta, uodo._kontrola_sadowa(meta))
+
+    def test_final_z_otwartym_rozpatrzeniem_ostrzega_o_sprzecznosci(self):
+        out, kod = _uruchom(["decyzja", "DKN.5131.32.2023"], self.SIEC32)
+        self.assertIsNone(kod)
+        self.assertTrue(out.startswith("!!! STAN PRAWNY NIEUSTALONY"))
+        self.assertIn("Portal UODO może nie znać wyroku — decyzja mogła zostać uchylona", out)
+        self.assertIn("status „final” tego nie wyklucza", out)
+        self.assertIn("status: NIEUSTALONY", out)
+        self.assertNotIn("prawomocna wg portalu", out)
+        self.assertIn("Postanowienie - Naczelny Sąd Administracyjny", out)
+        # najpierw sygnatura sprawy WSA z portalu — najprostsze i najpewniejsze zapytanie
+        pierwsze = out.index('    cbosa.py sygnatura "II SA/Wa 285/24"')
+        self.assertLess(pierwsze, out.index("cbosa.py szukaj"))
+        self.assertIn("cbosa.py szukaj '\"z dnia [...] grudnia 2023 r. nr\" kary' --organ UODO", out)
+        self.assertIn("rozpatrzenie przez sąd (wynik nieoznaczony w portalu)", out)
+
+    def test_strict_blokuje_otwarte_rozpatrzenie_takze_json(self):
+        for argv in (["decyzja", "DKN.5131.32.2023", "--strict"],
+                     ["--strict", "decyzja", "DKN.5131.32.2023", "--json"]):
+            out, kod = _uruchom(argv, self.SIEC32)
+            self.assertEqual(out, "")
+            self.assertEqual(kod[0], 1)
+            self.assertIn("prawomocności nie da się potwierdzić", kod[1])
+            self.assertIn("decyzja mogła zostać uchylona", kod[1])
+            self.assertIn('cbosa.py sygnatura "II SA/Wa 285/24"', kod[1])
+
+    def test_strict_blokuje_takze_nonfinal_z_otwartym_rozpatrzeniem(self):
+        out, kod = _uruchom(["decyzja", "DKN.5131.59.2022", "--strict"],
+                            {"dkn_5131_59/meta.json": META_DKN59, "body.html": HTML_DECYZJI})
+        self.assertEqual(out, "")
+        self.assertIn('cbosa.py sygnatura "II SA/Wa 774/24"', kod[1])
+
+    def test_json_ma_stan_i_zapytania(self):
+        out, kod = _uruchom(["decyzja", "DKN.5131.32.2023", "--json"], self.SIEC32)
+        self.assertIsNone(kod)
+        d = json.loads(out)
+        self.assertEqual(d["_stan_prawny"]["status"], "nieustalony")
+        self.assertEqual(d["_stan_prawny"]["status_api"], "final")
+        self.assertEqual(d["_stan_prawny"]["rozpatrzenie_bez_rozstrzygniecia"], ["II SA/Wa 285/24", "III OZ 542/24"])
+        self.assertEqual(d["_zapytania_cbosa"][0], 'cbosa.py sygnatura "II SA/Wa 285/24"')
+
+    def test_uprawomocnienie_ma_pierwszenstwo_przed_statusem_api(self):
+        out, kod = _uruchom(["decyzja", "DS.523.5648.2023", "--strict"],
+                            {"ds_523_5648/meta.json": META_DS5648, "body.html": HTML_DECYZJI})
+        self.assertIsNone(kod)
+        self.assertIn("status: final (PRAWOMOCNA od 2025-07-31 wg historii portalu", out)
+        self.assertIn("„nonfinal” jest nieaktualne", out)
+        self.assertIn("rozstrzyga historia", out)
+        self.assertNotIn("NIEPRAWOMOCNA", out)
+        self.assertNotIn("przysługuje skarga do WSA", out)
+        self.assertNotIn("--organ UODO", out)
+        out, _ = _uruchom(["decyzja", "DS.523.5648.2023", "--json"],
+                          {"ds_523_5648/meta.json": META_DS5648, "body.html": HTML_DECYZJI})
+        d = json.loads(out)
+        self.assertEqual((d["_stan_prawny"]["status"], d["_stan_prawny"]["uprawomocnienie"]), ("final", "2025-07-31"))
+        self.assertNotIn("_zapytania_cbosa", d)
+
+    def test_czesciowa_walidacja_po_samym_scope(self):
+        out, kod = _uruchom(["decyzja", "DKN.5130.4179.2020"],
+                            {"dkn_5130_4179/meta.json": META_4179, "body.html": HTML_DECYZJI})
+        self.assertIsNone(kod)
+        self.assertIn("status: CZĘŚCIOWO prawomocna", out)
+        self.assertIn("prawomocność CZĘŚCIOWA wg portalu", out)
+        self.assertIn("n0a:bi:p1", out)
+        self.assertIn("NIEPRAWOMOCNA w części nieobjętej uprawomocnieniem", out)
+        self.assertIn("--organ UODO", out)
+
+    def test_rozpatrzenie_zamkniete_uprawomocnieniem_i_data_ze_spacja(self):
+        self.assertEqual(self._stan(META_DS7376)["status"], "final")
+        self.assertEqual(self._stan(META_DS7376)["otwarte"], [])
+        stan = self._stan(META_ZSOSS13)
+        self.assertEqual((stan["status"], stan["uprawomocnienie"], stan["otwarte"]), ("final", "2019-10-18", []))
+        self.assertEqual(uodo._walidacja(META_ZSOSS13)[0], "2019-10-18 (final)")
+
+    def test_walidacja_nonfinal_nie_jest_uprawomocnieniem(self):
+        meta = {"publication": {"status": "nonfinal"},
+                "dates": [{"date": "2019-03-05", "use": "announcement"},
+                          {"date": "2021-01-20", "use": "validation", "status": "nonfinal", "scope": "*",
+                           "refid": "urn:ndoc:court:pl:sa:2021:iii_osk_2986"}]}
+        self.assertEqual(self._stan(meta)["status"], "nonfinal")
+        self.assertIsNone(self._stan(meta)["uprawomocnienie"])
+
+    def test_uchylenie_ma_pierwszenstwo(self):
+        self.assertEqual(self._stan(META_BISNODE)["status"], "repealed")
+
+    def test_uchylenie_podwazone_pozniejszym_uprawomocnieniem(self):
+        # DKN.5131.3.2021 (meta.json z 2026-10-05): WSA uchylił decyzję, NSA uchylił wyrok WSA, potem
+        # portal podaje uprawomocnienie — decyzja NIE jest uchylona; ostrzeżenie o przebiegu
+        meta = {"publication": {"status": "final", "inforce": True}, "dates": [
+            {"date": "2021-06-21", "use": "publication", "status": "nonfinal", "scope": "*"},
+            {"date": "2022-04-19", "use": "repealed", "status": "nonfinal", "scope": "*",
+             "refid": "urn:ndoc:court:pl:sa:2021:ii_sa-wa_3024"},
+            {"date": "2025-10-01", "use": "trial", "status": "nonfinal", "scope": "*",
+             "refid": "urn:ndoc:court:pl:sa:2022:iii_osk_1830"},
+            {"date": "2025-12-11", "use": "validation", "status": "final", "scope": "*"}]}
+        kontrola = uodo._kontrola_sadowa(meta)
+        self.assertFalse(uodo._uchylona(meta, kontrola))
+        self.assertEqual(self._stan(meta)["status"], "final")
+        self.assertEqual(len(uodo._uchylenie_podwazone(meta, kontrola)), 1)
+        # bez późniejszego uprawomocnienia: rozpatrzenie po uchyleniu → stan nieustalony
+        meta["dates"] = meta["dates"][:3]
+        self.assertEqual(self._stan(meta)["status"], "nieustalony")
+
+    def test_lista_pokazuje_stan_z_historii(self):
+        w = TestWiersz._wiersz(None, META_DS5648)
+        self.assertIn("status: final (PRAWOMOCNA od 2025-07-31", w)
+        w = TestWiersz._wiersz(None, META_DKN32)
+        self.assertIn("status: NIEUSTALONY — sąd rozpatrywał sprawę (II SA/Wa 285/24, III OZ 542/24)", w)
 
 
 if __name__ == "__main__":

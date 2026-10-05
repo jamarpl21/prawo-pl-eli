@@ -4,6 +4,7 @@
 import argparse
 import contextlib
 import io
+import json
 import sys
 import importlib.util
 import pathlib
@@ -314,13 +315,25 @@ class TestWpisPrzepisu(unittest.TestCase):
 class TestZrodlaUrzedowe(unittest.TestCase):
     """D07: link z SAOS dla SN/TK/KIO jest martwy — pokazujemy działający wzorzec / wyszukiwarkę."""
 
-    def test_sn_wzorzec_pdf(self):
-        linie = saos._zrodla_urzedowe({"courtType": "SUPREME", "courtCases": [{"caseNumber": "II KK 56/16"}],
-                                       "source": {"judgmentUrl": "http://www.sn.pl/orzecznictwo/SitePages/Baza_orzeczen"}})
-        self.assertIn("https://www.sn.pl/sites/orzecznictwo/Orzeczenia3/II%20KK%2056-16.pdf", linie[0])
-        self.assertIn("sprawdź — wzorzec adresu", linie[0])
+    SN = {"courtType": "SUPREME", "courtCases": [{"caseNumber": "I UK 328/10"}], "judgmentDate": "2011-03-24",
+          "source": {"judgmentUrl": "http://www.sn.pl/orzecznictwo/SitePages/Baza_orzeczen"}}
+
+    def test_sn_link_do_strony_orzeczenia_w_wyszukiwarce(self):
+        # regresja 2.1.1: wzorzec sites/orzecznictwo/Orzeczenia3/<sygn>.pdf → 301/302 → sn.pl/404.html (5/5)
+        with mock.patch.object(saos, "_sn_id", return_value="FV3ISJcBZvGrB8P_g845") as sn:
+            linie = saos._zrodla_urzedowe(self.SN)
+        sn.assert_called_once_with("I UK 328/10", "2011-03-24")
+        self.assertIn("https://www.sn.pl/pl/wyszukiwarka-orzeczen?orzeczenie=FV3ISJcBZvGrB8P_g845", linie[0])
+        self.assertNotIn("Orzeczenia3", "".join(linie))
         self.assertIn("nie służy do weryfikacji", linie[1])
         self.assertFalse(any(l.startswith("  Źródło oryginalne") for l in linie))
+
+    def test_sn_bez_id_link_do_wyszukiwarki_z_instrukcja(self):
+        with mock.patch.object(saos, "_sn_id", return_value=None):
+            linie = saos._zrodla_urzedowe(self.SN)
+        self.assertIn("https://www.sn.pl/pl/wyszukiwarka-orzeczen  (wpisz w pole „Sygnatura” I UK 328/10", linie[0])
+        self.assertIn("z datą 2011-03-24", linie[0])
+        self.assertNotIn(".pdf", linie[0])
 
     def test_tk_i_kio_wyszukiwarki(self):
         tk = saos._zrodla_urzedowe({"courtType": "CONSTITUTIONAL_TRIBUNAL", "courtCases": [{"caseNumber": "K 35/15"}]})
@@ -682,12 +695,56 @@ class TestT13StrictZasiegKomunikat(unittest.TestCase):
         self.assertNotIn("SENTENCE", out.getvalue())
 
 
+def _odp_sn(payload):
+    """Atrapa odpowiedzi proxy sn.pl (kształt z żywego API 2026-10-05)."""
+    odp = mock.MagicMock()
+    odp.__enter__.return_value.read.return_value = json.dumps(payload).encode()
+    return odp
+
+
+LISTA_SN_328 = {"success": True, "message": None, "messages": None, "data": [{
+    "success": True, "message": None, "messages": None, "data": [
+        {"sygnatura_sprawy": "I UK 328/10", "data_wydania": "2011-03-24", "forma_orzeczenia": "wyrok SN",
+         "id": "FV3ISJcBZvGrB8P_g845"},
+        {"sygnatura_sprawy": "IV CSK 328/10", "data_wydania": "2011-02-17", "forma_orzeczenia": "postanowienie SN",
+         "id": "jV3cSJcBZvGrB8P_1dUp"}]}]}
+
+
+class TestSnId(unittest.TestCase):
+    """_sn_id: dokładna sygnatura + data z proxy wyszukiwarki SN; awaria/niejednoznaczność → None."""
+
+    def test_dokladna_sygnatura_i_data(self):
+        with mock.patch.object(saos._opener, "open", return_value=_odp_sn(LISTA_SN_328)) as op:
+            self.assertEqual(saos._sn_id("I UK 328/10", "2011-03-24"), "FV3ISJcBZvGrB8P_g845")
+        url = op.call_args.args[0].full_url
+        self.assertTrue(url.startswith("https://www.sn.pl/pl/index.php?option=com_ajax&plugin=snproxy&format=json&"))
+        self.assertIn("task=searchOrzeczenia", url)
+        self.assertIn("sygnatura=I+UK+328%2F10", url)
+
+    def test_inna_data_albo_fragment_sygnatury_nie_pasuje(self):
+        with mock.patch.object(saos._opener, "open", return_value=_odp_sn(LISTA_SN_328)):
+            self.assertIsNone(saos._sn_id("I UK 328/10", "2011-03-25"))
+        with mock.patch.object(saos._opener, "open", return_value=_odp_sn(LISTA_SN_328)):
+            self.assertIsNone(saos._sn_id("UK 328/10", "2011-03-24"))
+
+    def test_niejednoznaczne_i_awaria(self):
+        dwa = json.loads(json.dumps(LISTA_SN_328))
+        dwa["data"][0]["data"][1].update({"sygnatura_sprawy": "I UK 328/10", "data_wydania": "2011-03-24"})
+        with mock.patch.object(saos._opener, "open", return_value=_odp_sn(dwa)):
+            self.assertIsNone(saos._sn_id("I UK 328/10", "2011-03-24"))
+        with mock.patch.object(saos._opener, "open", side_effect=urllib.error.URLError("timeout")):
+            self.assertIsNone(saos._sn_id("I UK 328/10", "2011-03-24"))
+        with mock.patch.object(saos._opener, "open", return_value=_odp_sn({"error": "x"})):
+            self.assertIsNone(saos._sn_id("I UK 328/10", "2011-03-24"))
+
+
 class TestOrzeczenieWyjscie(unittest.TestCase):
     """cmd_orzeczenie: źródła, nota o indeksach górnych, etykieta listy przepisów, okna z „…"."""
 
     def _uruchom(self, data, argv_extra=()):
         out = io.StringIO()
         with mock.patch.object(saos, "_get", return_value={"data": data}), \
+                mock.patch.object(saos, "_sn_id", return_value="SNID123"), \
                 mock.patch.object(sys, "argv", ["saos.py", "orzeczenie", str(data["id"]), *argv_extra]), \
                 contextlib.redirect_stdout(out):
             saos.main()
@@ -711,7 +768,8 @@ class TestOrzeczenieWyjscie(unittest.TestCase):
     def test_sn_nota_o_indeksach_i_wzorzec_sn(self):
         out = self._uruchom(self.SN)
         self.assertIn("SAOS spłaszcza indeksy górne", out)
-        self.assertIn("I%20CSK%20364-15.pdf", out)
+        self.assertIn("https://www.sn.pl/pl/wyszukiwarka-orzeczen?orzeczenie=SNID123", out)
+        self.assertNotIn("Orzeczenia3", out)
         self.assertIn("nie służy do weryfikacji", out)
         self.assertIn("lista z SAOS", out)
         self.assertIn("bywa niepełna", out)

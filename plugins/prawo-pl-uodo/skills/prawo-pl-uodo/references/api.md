@@ -79,7 +79,8 @@ type status scope refid text}] parts resources{} entities[] terms`.
   inforce `true`) — **nie oznacza „w obrocie"**; silnik drukuje je jako „publication.inforce wg API".
 - `dates[].use` ∈ `announcement` (data decyzji / orzeczenia) | `publication` (publikacja w portalu) |
   `validation` | **`repealed`** (uchylenie przez sąd — w całości lub w części, `refid` wyroku) |
-  **`defended`** (skargę oddalono; `refid` wyroku) | **`trial`** (skarga w toku; `refid` sprawy) |
+  **`defended`** (skargę oddalono; `refid` wyroku) | **`trial`** („Rozpatrzenie”: orzeczenie sądu bez
+  oznaczonego wyniku — wyrok albo postanowienie, np. o zawieszeniu; `refid` sprawy) |
   `other` (na rekordach sądowych: „Data wpływu", bez refid).
 - **Kontrola sądowa jest tylko w `dates[]`** — status `final` nie znaczy, że kara się ostała:
   ZSPR.421.3.2018 ma status `final`, a `dates[]` zawiera `repealed` 2019-12-11 (II SA/Wa 1030/19 —
@@ -90,9 +91,20 @@ type status scope refid text}] parts resources{} entities[] terms`.
   punktu 1)", "scope": "n0a:p1"}` (DKN.5131.1.2025) = prawomocność częściowa; reszta decyzji
   (tu: pkt 2, kara 27 124 816 zł) została zaskarżona i WSA ją uchylił (II SA/Wa 837/25), choć
   `dates[]` nie miało jeszcze wpisu `repealed`. Silnik pokazuje zakres walidacji, a dla decyzji
-  `nonfinal` podaje gotowe zapytania CBOSA (`--organ UODO --symbol 647 --sad "WSA Warszawa" --od
-  <announcement>` + fraza `"<miesiąc> <rok>"`) — po numerze decyzji CBOSA nic nie znajdzie
-  (anonimizacja „nr [...]”).
+  nieprawomocnych / częściowo prawomocnych / o stanie nieustalonym podaje gotowe zapytania CBOSA:
+  `cbosa.py sygnatura "<sygnatura z dates[].refid>"`, potem fraza `"z dnia [...] <miesiąc> <rok> r. nr"`
+  (cytat daty decyzji, który CBOSA zostawia w sentencji) + `--organ UODO --symbol 647 --sad "WSA Warszawa"
+  --rodzaj wyrok --od <announcement>` — po numerze decyzji CBOSA nic nie znajdzie (anonimizacja „nr [...]”).
+  Sama fraza `"<miesiąc> <rok>"` dawała 120 trafień dla ZSOŚS.440.90.2018 (wyrok na str. 11), cytat — 7
+  (wyrok na str. 1; sprawdzone 2026-10-05).
+- **`publication.status` NIE jest aktualizowany po uprawomocnieniu** (2026-10-05: 6 decyzji `nonfinal`
+  z `validation` final — DS.523.5648.2023, DKN.5131.11.2025, DKN.5131.17.2022, DKN.5131.48.2022, częściowo
+  DKN.5130.4179.2020 i DKN.5131.1.2025). Portal (UI) pokazuje — wg obserwacji na 5 decyzjach — status OSTATNIEGO wpisu historii: walidacja
+  bez zakresu (`scope` brak/`*`, bez `text`) → „prawomocna”, ze `scope` ≠ `*` → „częściowo prawomocna”.
+  Pułapka: przy DKN.5131.32.2023 ostatnim wpisem jest `trial` III OZ 542/24 (postanowienie NSA o
+  zawieszeniu, `status: final`) — UI i API pokazują „prawomocna”, a WSA (II SA/Wa 285/24, 2026-03-02)
+  uchylił decyzję. Silnik: `trial` po ostatnim `defended`/`repealed`/`validation` final = stan
+  nieustalony (ostrzeżenie + blokada `--strict`). Daty bywają ze spacją (`"2019-10-18 "`) — silnik je przycina.
 
 ## Mapowanie komend `uodo.py` → API
 

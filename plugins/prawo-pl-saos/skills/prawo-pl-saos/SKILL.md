@@ -130,10 +130,11 @@ Typowy przepływ: `szukaj` (zawęź `--sad`/`--przepis`/`--haslo`) → wybierz I
    i pewności zweryfikuj w portalu właściwego sądu. Link `source.judgmentUrl` z SAOS dla **SN/TK/KIO jest
    martwy albo ogólny** (sprawdzone 2026-08-23: `sn.pl/…/Baza_orzeczen` → 404, `otk.trybunal.gov.pl`
    i `ftp.uzp.gov.pl` nieosiągalne) — silnik pokazuje go tylko jako „link z metadanych SAOS" i NIE jest to
-   ścieżka weryfikacji. Zamiast tego `orzeczenie` drukuje **źródło urzędowe**: dla SN wzorzec adresu PDF
-   `https://www.sn.pl/sites/orzecznictwo/Orzeczenia3/<SYGN z „/"→„-", spacje %20>.pdf` (np.
-   `II%20KK%2056-16.pdf`; zweryfikowany `curl -I` na II KK 56/16, I CSK 364/15, III CZP 17/15 — traktuj jako
-   wzorzec „sprawdź", nie gwarancję; uzasadnienie bywa pod `…-1.pdf`), dla TK wyszukiwarkę OTK
+   ścieżka weryfikacji. Zamiast tego `orzeczenie` drukuje **źródło urzędowe**: dla SN stronę orzeczenia
+   w nowej wyszukiwarce SN `https://www.sn.pl/pl/wyszukiwarka-orzeczen?orzeczenie=<id>` (id silnik ustala
+   na żywo po dokładnej sygnaturze i dacie; gdy się nie uda — link do wyszukiwarki z instrukcją „wpisz
+   sygnaturę”). Dawny wzorzec PDF `sn.pl/sites/orzecznictwo/Orzeczenia3/<sygn>.pdf` kieruje obecnie
+   na `sn.pl/404.html` — nie podawaj go (sprawdzone 2026-10-05, 5/5). Dla TK wyszukiwarkę OTK
    (`ipo.trybunal.gov.pl/ipo/`), dla KIO wyszukiwarkę UZP (`orzeczenia.uzp.gov.pl/Home/Search`). Linki
    sądów powszechnych (`apiorzeczenia.*.sa.gov.pl`) działają. Zawsze podawaj **sygnaturę + sąd + datę**
    (np. „wyrok SN z 9.04.2010, III CSK 203/09").
@@ -146,7 +147,7 @@ Typowy przepływ: `szukaj` (zawęź `--sad`/`--przepis`/`--haslo`) → wybierz I
    z 27.12.2018 istnieją, a w SAOS ich nie ma — dlatego silnik porównuje `--od/--do` z granicą do dnia,
    `--strict` blokuje zakres sięgający poza nią (podpowiada `--do 2016-06-22` itd.), a `sygnatura` dla
    numeru z rocznika granicy mówi „może być późniejsze niż koniec zbioru", nie „nie ma". Zero trafień
-   z nowszą datą NIE znaczy, że orzecznictwa nie ma. Nowsze bierz z portalu SN (`sn.pl/orzecznictwo`),
+   z nowszą datą NIE znaczy, że orzecznictwa nie ma. Nowsze bierz z wyszukiwarki SN (`sn.pl/pl/wyszukiwarka-orzeczen`),
    OTK (`ipo.trybunal.gov.pl`) albo UZP (`orzeczenia.uzp.gov.pl`) i oznacz jako źródło spoza SAOS.
 4. **Świeżość bywa opóźniona.** Najnowsze orzeczenia sądów powszechnych mogą jeszcze nie być w bazie — przy
    sprawie na konkretną datę zaznacz „wg SAOS na dzień X — do potwierdzenia" i sprawdź portal sądu.

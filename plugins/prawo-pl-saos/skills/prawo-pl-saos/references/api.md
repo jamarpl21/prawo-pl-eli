@@ -10,7 +10,7 @@ SN, TK, sądy powszechne, KIO; sądy administracyjne — praktycznie brak). Dane
 
 | courtType | najnowsze orzeczenie w SAOS | totalResults | nowsze orzeczenia |
 |---|---|---|---|
-| `SUPREME` (SN) | **2016-06-22** (III KK 195/16, id 245360) | 38 081 | sn.pl/orzecznictwo |
+| `SUPREME` (SN) | **2016-06-22** (III KK 195/16, id 245360) | 38 081 | sn.pl/pl/wyszukiwarka-orzeczen |
 | `CONSTITUTIONAL_TRIBUNAL` (TK) | **2015-12-09** (Ts 266/14, K 35/15) | 9 503 | ipo.trybunal.gov.pl |
 | `NATIONAL_APPEAL_CHAMBER` (KIO) | **2018-09-06** (KIO 1711/18, id 354890) | 22 168 | orzeczenia.uzp.gov.pl |
 | `COMMON` | na bieżąco (z opóźnieniem) | — | orzeczenia.ms.gov.pl |
@@ -89,9 +89,14 @@ aktu + powołane artykuły, oraz `journalTitle/journalYear/journalNo/journalEntr
   wpisy „(wpis SAOS prawdopodobnie uszkodzony: …)".
 - **`source.judgmentUrl` dla SN/TK/KIO jest martwy lub ogólny:** SN → `http://www.sn.pl/orzecznictwo/SitePages/Baza_orzeczen`
   (404, bez sygnatury), TK → `otk.trybunal.gov.pl/…/K_35_15.doc` (host nieosiągalny), KIO →
-  `ftp://ftp.uzp.gov.pl/KIO/Wyroki/2018_1564.pdf` (nieosiągalny). Działa: SN
-  `https://www.sn.pl/sites/orzecznictwo/Orzeczenia3/<SYGN, „/"→„-", spacje %20>.pdf` (HTTP 200 + application/pdf
-  dla II KK 56/16, I CSK 364/15, III CZP 17/15, III CZP 81/16; nieistniejąca sygnatura → 404), TK
+  `ftp://ftp.uzp.gov.pl/KIO/Wyroki/2018_1564.pdf` (nieosiągalny). Dawny wzorzec PDF SN
+  `sn.pl/sites/orzecznictwo/Orzeczenia3/<sygn>.pdf` obecnie → 301/302 → `sn.pl/404.html` (5/5, 2026-10-05).
+  Działa: SN — wyszukiwarka `https://www.sn.pl/pl/wyszukiwarka-orzeczen`; strona orzeczenia
+  `…/wyszukiwarka-orzeczen?orzeczenie=<id>`, gdzie `id` zwraca JSON-owe proxy strony:
+  `https://www.sn.pl/pl/index.php?option=com_ajax&plugin=snproxy&format=json&task=searchOrzeczenia&sygnatura=<sygn>`
+  → `data[0].data[] = {sygnatura_sprawy, data_wydania, forma_orzeczenia, id}` (dopasowanie fragmentem —
+  „328/10” zwraca też IV CSK 328/10 — więc `saos.py` wymaga dokładnej sygnatury i daty; awaria → link do
+  wyszukiwarki z instrukcją). Wyszukiwarka nie przyjmuje sygnatury w adresie URL. TK
   `https://ipo.trybunal.gov.pl/ipo/`, KIO `https://orzeczenia.uzp.gov.pl/Home/Search`; sądy powszechne
   `apiorzeczenia.*.sa.gov.pl/ncourt-api/judgement/details?id=…` (działa).
 - Anonimizacja i treść sądów powszechnych są zgodne z feedem sądu (I C 374/25: różnice tylko w numeracji list).
@@ -112,6 +117,6 @@ Helper `_court_label()` w `saos.py` obsługuje oba kształty.
 - **Sądy administracyjne**: `courtType=ADMINISTRATIVE` zwykle zwraca `totalResults: 0` — użyj skilla
   **prawo-pl-cbosa** (baza CBOSA, `https://orzeczenia.nsa.gov.pl`).
 - Do dosłownego cytatu w piśmie/sądzie korzystaj ze źródła urzędowego, bo SAOS to agregat: dla sądów
-  powszechnych `source.judgmentUrl`, dla SN wzorzec PDF na sn.pl, dla TK/KIO wyszukiwarki OTK/UZP (wyżej) —
+  powszechnych `source.judgmentUrl`, dla SN strona orzeczenia w wyszukiwarce sn.pl, dla TK/KIO wyszukiwarki OTK/UZP (wyżej) —
   `source.judgmentUrl` dla SN/TK/KIO nie działa.
 - Licencja danych: orzeczenia jawne, udostępniane publicznie; przy reużyciu podawaj źródło (SAOS) i sygnaturę.
