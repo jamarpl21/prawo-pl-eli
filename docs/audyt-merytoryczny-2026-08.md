@@ -71,7 +71,14 @@
 >   źródłem porównania były urzędowe PDF z CELLAR.
 > - ELI: `struktura` dla tekstów jednolitych bez HTML (wszystkie z lat 2025–2026) — API nie ma dla nich
 >   `/struct`, więc porównania nie da się wykonać; „Stan prawny na” w tekstach ujednoliconych Kancelarii
->   Sejmu — nie mają obwieszczenia; tabele w PDF sprawdzone na poziomie wierszy tylko w 3 przypadkach.
+>   Sejmu — nie mają obwieszczenia.
+>
+> **Nota o stanie (wydanie 2.6.0, listopad 2026).** Punkt „tabele w PDF sprawdzone na poziomie wierszy
+> tylko w 3 przypadkach” wykonano: 41 obszarów tabel (256 stron) i 35 stron tabel bez ostrzeżenia porównano
+> wiersz po wierszu z obrazem strony. Kolejności komórek nie naprawiono; `tekst` ostrzega o tabeli
+> z zawiniętymi komórkami, a `--strict` blokuje taki wynik. Zgodnych wierszy w obszarach z ostrzeżeniem:
+> 1663 z 2904; na 3 z 35 stron bez ostrzeżenia było przemieszanie. Otwarte zostaje porównanie tabel bez
+> pionowych linii. Szczegóły: `CHANGELOG.md`, sekcja 2.6.0, i `docs/znane-problemy.md`.
 
 Cel: sprawdzić, czy to, co zwracają silniki, jest w 100% prawdą — nie jakość kodu, tylko **zgodność z niezależnym źródłem urzędowym**.
 

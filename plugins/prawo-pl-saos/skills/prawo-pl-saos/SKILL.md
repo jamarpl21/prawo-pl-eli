@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-saos
-version: 2.5.0
+version: 2.6.0
 description: >-
   Odpytuje PUBLICZNE API SAOS (saos.org.pl) — bazę polskiego ORZECZNICTWA: wyroki, postanowienia
   i uchwały Sądu Najwyższego (SN), Trybunału Konstytucyjnego (TK), sądów powszechnych (SA/SO/SR)
@@ -59,7 +59,7 @@ SAOS="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-saos/scripts/saos.py"
 #    sprawdzana w kodzie przed zapisem i przed każdym uruchomieniem; niezgodna = helper nie startuje.
 [ -f "$SAOS" ] || SAOS=$(python3 - <<'EOF'
 import hashlib, os, sys, urllib.request
-WERSJA, SHA256 = "2.5.0", "53ca9df983e3d3ed528728997a36012d1cea69c5a7278ae722a9109acdc94e68"
+WERSJA, SHA256 = "2.6.0", "66f8cb4a2457c58d596f61718b86c4bace34779b35f15f40ce660521274b1e45"
 URL = f"https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/v{WERSJA}/plugins/prawo-pl-saos/skills/prawo-pl-saos/scripts/saos.py"
 p = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"prawo-pl-saos-{WERSJA}", "saos.py")
 try:

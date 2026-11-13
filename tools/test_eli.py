@@ -3780,19 +3780,29 @@ class TestPrzypisBezOdsylacza202611b(unittest.TestCase):
         self.assertEqual(eli._przypisy_aktu(txt)["15"], "Ustawa wejdzie w życie z dniem 1 marca 2027 r.")
         self.assertEqual(eli._przypisy_aktu("[przypis 15)] A\n" + eli._przypis_bez_odsylacza("15", "B"))["15"], "A")
 
-    def test_strict_nie_blokuje_przypisu_nieprzypisanego(self):
+    def test_przypis_nieprzypisany_ostrzega_a_strict_blokuje(self):
+        # 202611c: dotąd --strict przepuszczał przypis bez odsyłacza (kod 0) — a jego odsyłacz mógł zostać w treści jako „N)"
         t = eli.pdf_layout_do_tekstu(self.RAW)
         meta = {"ELI": "DU/2026/468", "legalStatusDate": "2026-03-25", "textHTML": False,
                 "displayAddress": "Dz.U. 2026 poz. 468", "texts": [{"fileName": "D20260468L.pdf", "type": "T"}]}
 
         def get(path, params=None, soft=False):
             return {} if path.endswith("/references") else "" if path.endswith("/text.html") else meta
-        kod, out, err = _kod(["--strict", "tekst", "DU", "2026", "468", "--fragment", "art. 2"], get,
-                             _tekst_z_pdf=lambda *a, **k: (t, "https://api.sejm.gov.pl/x.pdf", ""),
-                             _dzis=lambda: "2026-11-13")
+        patche = dict(_tekst_z_pdf=lambda *a, **k: (t, "https://api.sejm.gov.pl/x.pdf", ""), _dzis=lambda: "2026-11-13")
+        kod, out, err = _kod(["tekst", "DU", "2026", "468", "--fragment", "art. 2"], get, **patche)
         self.assertEqual(kod, 0, err)
         self.assertIn("NIEPRZYPISANYM DO JEDNOSTKI", out)
         self.assertNotIn("W PRZYPISIE TEGO FRAGMENTU", out)
+        self.assertIn("UWAGA: w tym fragmencie są miejsca odczytane z PDF niepewnie (1)", out)
+        self.assertIn("przypis 3) bez odsyłacza (art. 2) — odsyłacz mógł zostać w treści jako „3)”", out)
+        kod, out, err = _kod(["--strict", "tekst", "DU", "2026", "468", "--fragment", "art. 2"], get, **patche)
+        self.assertEqual(kod, 2)
+        self.assertIn("BŁĄD (strict)", err)
+        self.assertEqual(out, "")
+        # fragment bez takiego miejsca — strict przepuszcza
+        kod, out, err = _kod(["--strict", "tekst", "DU", "2026", "468", "--fragment", "art. 3"], get, **patche)
+        self.assertEqual(kod, 0, err)
+        self.assertNotIn("odczytane z PDF niepewnie", out)
 
 
 class TestBezWspolrzednych202611b(unittest.TestCase):
@@ -3850,6 +3860,714 @@ class TestBezWspolrzednych202611b(unittest.TestCase):
         self.assertEqual(kod, 0, err)
         self.assertNotIn("współrzędnych słów", out)
         self.assertIn("1) 152,61 zł za 1000 l", out)
+
+
+class TestPrzypisyStronyPdf202611c(unittest.TestCase):
+    """Wada 1: blok przypisów u dołu strony nierozpoznany, treść przypisów zostaje w przepisie. Współrzędne słów skopiowane
+    13.11.2026 z `pdftotext -bbox` urzędowych PDF; układ `-layout` jak w PDF (skrócone wiersze treści)."""
+
+    # k.p. DU 2026/1245 s. 95: „Art. 302[1].62)" — w bbox „302" „[1]" „." „62)"; „." to osobne słowo, w `-layout` bez spacji
+    KP_SLOWA = [(82.39392, 88.46564, 97.1148, 99.49136, "zm."), (97.104, 88.06632, 105.73784, 95.23968, "60)"),
+                (92.064, 138.74564, 109.53384, 149.77136, "302."), (109.46, 138.36632, 118.09784, 145.53968, "61)"),
+                (92.064, 208.70564, 107.124, 219.73136, "302"), (107.18, 208.32632, 114.73784, 215.49968, "[1]"),
+                (114.74, 208.70564, 117.23, 219.73136, "."), (117.14, 208.32632, 125.77784, 215.49968, "62)"),
+                (128.3, 208.70564, 133.28, 219.73136, "§"),
+                (51.0, 728.194, 58.998, 734.836, "60)"), (51.0, 750.27, 58.998, 756.912, "61)"),
+                (51.0, 772.23, 58.998, 778.872, "62)")]
+    KP_STRONA = ("     Art. 301. § 1. Szczególne uprawnienia normują przepisy ustawy o obronie Ojczyzny (Dz. U. z 2025 r. poz. 825,\n"
+                 "z późn. zm.60)).\n"
+                 "     Art. 302.61) Do okresu zatrudnienia wlicza się okres służby w Policji.\n"
+                 "     Art. 302[1].62) § 1. Do okresu zatrudnienia wlicza się okresy prowadzenia działalności.\n"
+                 "      § 2. Do okresu zatrudnienia wlicza się okresy:\n"
+                 "1)    wykonywania przez osobę fizyczną umowy zlecenia,\n"
+                 "2)    wykonywania przez osobę fizyczną umowy agencyjnej.\n"
+                 "     § 7. Do okresu zatrudnienia wlicza się udokumentowany okres wykonywania pracy zarobkowej na innej podstawie niż\n"
+                 "stosunek pracy przebyty za granicą.\n\n\n\n\n"
+                 "60) Zmiany tekstu jednolitego wymienionej ustawy zostały ogłoszone w Dz. U. z 2025 r. poz. 1014 i 1080.\n"
+                 "61) W brzmieniu ustalonym przez art. 1 pkt 1 ustawy z dnia 26 września 2025 r. o zmianie ustawy – Kodeks pracy\n\n"
+                 "    (Dz. U. poz. 1423), która weszła w życie z dniem 1 stycznia 2026 r.\n"
+                 "62)\n"
+                 "    Dodany przez art. 1 pkt 2 ustawy, o której mowa w odnośniku 61.\n")
+
+    def test_kp_art_302_1_przypisy_60_62_pod_tekstem_strony(self):
+        przed = eli.pdf_layout_do_tekstu(self.KP_STRONA)        # bez potwierdzenia „62)" — dawny wynik
+        self.assertIn("\n60) Zmiany tekstu jednolitego", przed)
+        self.assertEqual(eli._pdf_odsylacze_bbox_pelne(self.KP_SLOWA)[2], (".", "62", False, True, True))
+        t = eli.pdf_layout_do_tekstu(eli._pdf_oznacz_odsylacze(self.KP_STRONA, self.KP_SLOWA))
+        self.assertNotIn("nie odnaleziono", t)
+        self.assertIn("z późn. zm.).\n[przypis 60)] Zmiany tekstu jednolitego", t)
+        self.assertIn("Art. 302 1. § 1. Do okresu zatrudnienia wlicza się okresy prowadzenia działalności.\n"
+                      "[przypis 62)] Dodany przez art. 1 pkt 2", t)
+        self.assertIn("[przypis 61)] W brzmieniu ustalonym przez art. 1 pkt 1 ustawy z dnia 26 września 2025 r. o zmianie "
+                      "ustawy – Kodeks pracy (Dz. U. poz. 1423)", t)
+        art = "\n".join(t[s:e] for s, e in eli._fragmenty(t, "art. 302¹"))
+        self.assertTrue(art.rstrip().endswith("przebyty za granicą."), art)
+        # punkty wyliczenia zostają
+        self.assertEqual(len(re.findall(r"(?m)^\d+\) ", t)), 2)
+
+    def test_nawias_za_odsylaczem_i_kropka_bez_sklejenia(self):
+        # DU 2026/55 s. 2: „zm." „1)" „)" „2)" — drugi odsyłacz stoi za „)" sklejonym z pierwszym
+        slowa = [(279.01424, 255.74564, 292.53992, 266.77136, "zm."), (292.49, 255.36632, 297.88784, 262.53968, "1)"),
+                 (297.89, 255.74564, 301.20668, 266.77136, ")"), (301.25, 255.36632, 306.64784, 262.53968, "2)"),
+                 (309.17, 255.74564, 316.36112, 266.77136, "w")]
+        wynik = eli._pdf_oznacz_odsylacze("Prawo telekomunikacyjne (Dz. U. poz. 852, z późn. zm.1))2) w zezwolenie\n", slowa)
+        self.assertEqual(wynik.count(eli._ODS_POTW), 2)
+        # „." NIESKLEJONE w bbox ze słowem przed nim — bez spacji przed sobą w tekście nie jest szukane
+        self.assertEqual(eli._pdf_odsylacze_bbox_pelne([(100.0, 300.0, 110.0, 311.0, "a"), (115.0, 300.0, 117.5, 311.0, "."),
+                                                        (117.6, 299.6, 123.0, 306.8, "5)")])[0][3], False)
+
+    def test_przypis_z_numerem_rzymskim(self):
+        # k.k.s. DU 1999/930 s. 1 (tekst ujednolicony): „1)I)" — dotąd blok szedł do art. 1 § 3 z punktami 1) i 2)
+        strona = ("                                    Kodeks karny skarbowy1)\n\n"
+                  "         Art. 1. § 3. Nie popełnia przestępstwa skarbowego sprawca czynu zabronionego.\n\n\n"
+                  "1)I)\n"
+                  "       Niniejsza ustawa w zakresie swojej regulacji:\n"
+                  "       1) realizuje postanowienia dyrektywy (UE) 2017/1371;\n"
+                  "       2) wdraża dyrektywę Rady (UE) 2022/2523.\n"
+                  "  I)\n"
+                  "       Odnośnik do tytułu ustawy w brzmieniu ustalonym przez art. 142 pkt 1 ustawy z dnia 6 listopada 2024 r.\n")
+        t = eli.pdf_layout_do_tekstu(strona)
+        self.assertIn("Kodeks karny skarbowy\n[przypis 1)] Niniejsza ustawa w zakresie swojej regulacji: 1) realizuje", t)
+        self.assertIn("I) Odnośnik do tytułu ustawy", t)
+        self.assertTrue(t.rstrip().endswith("sprawca czynu zabronionego."), t)
+        self.assertNotIn("\n1) realizuje", t)
+
+    def test_blok_przypisow_bez_pustego_wiersza(self):
+        # DU 2013/714 s. 1: „1)" tuż pod ust. 3, bez odstępu; dotąd przypis 1 szedł do ust. 3
+        slowa = [(60.0, 120.0, 75.0, 131.0, "zm."), (75.2, 119.5, 80.6, 126.7, "1)")]
+        strona = ("    Art. 1. W ustawie o zasadach prowadzenia polityki rozwoju (Dz. U. z 2009 r. Nr 84, poz. 712,\n"
+                  "z późn. zm.1)) wprowadza się następujące zmiany:\n"
+                  "      1) projekt nie uzyskał minimum punktowego;\n\n"
+                  "          3. Wyczerpanie środków nie może stanowić wyłącz-\n"
+                  "      nej przesłanki wniesienia protestu.\n"
+                  "1)\n"
+                  "     Zmiany tekstu jednolitego wymienionej ustawy zostały ogłoszone w Dz. U. z 2009 r. Nr 157, poz. 1241.\n")
+        przed = eli.pdf_layout_do_tekstu(eli._pdf_oznacz_odsylacze(strona, []))
+        self.assertIn("protestu. 1) Zmiany tekstu", przed)
+        t = eli.pdf_layout_do_tekstu(eli._pdf_oznacz_odsylacze(strona, slowa))
+        self.assertIn("wyłącznej przesłanki wniesienia protestu.", t)
+        self.assertIn("[przypis 1)] Zmiany tekstu jednolitego", t)
+        self.assertNotIn("protestu. 1)", t)
+        # „nie psuj": punkt wyliczenia „1) …" z wciętym ciągiem dalszym na dole strony, bez frazy przypisu — zostaje treścią
+        punkt = strona.split("1)\n     Zmiany")[0] + "1)    projekt podlega ponownej ocenie,\n      jeżeli wniesiono protest.\n"
+        t = eli.pdf_layout_do_tekstu(eli._pdf_oznacz_odsylacze(punkt, slowa))
+        self.assertIn("\n1) projekt podlega ponownej ocenie, jeżeli wniesiono protest.", t)
+
+    def test_dwa_przypisy_bez_pustego_wiersza(self):
+        # blok bez odstępu z DWOMA przypisami — oba wychodzą z treści, nie tylko ostatni
+        slowa = [(60.0, 120.0, 75.0, 131.0, "zm."), (75.2, 119.5, 80.6, 126.7, "1)"),
+                 (60.0, 160.0, 75.0, 171.0, "pracy"), (75.2, 159.5, 80.6, 166.7, "2)")]
+        strona = ("    Art. 1. W ustawie o zasadach polityki rozwoju (Dz. U. z 2009 r. Nr 84, poz. 712, z późn. zm.1)) wprowadza się:\n"
+                  "          3. Minister właściwy do spraw pracy2) ogłasza wykaz.\n"
+                  "1)\n"
+                  "     Zmiany tekstu jednolitego wymienionej ustawy zostały ogłoszone w Dz. U. z 2009 r. Nr 157, poz. 1241.\n"
+                  "2)\n"
+                  "     Obecnie minister właściwy do spraw pracy.\n")
+        t = eli.pdf_layout_do_tekstu(eli._pdf_oznacz_odsylacze(strona, slowa))
+        self.assertIn("[przypis 1)] Zmiany tekstu jednolitego", t)
+        self.assertIn("[przypis 2)] Obecnie minister", t)
+        self.assertIn("3. Minister właściwy do spraw pracy ogłasza wykaz.\n", t)
+
+    def test_numer_przypisu_rozbity_na_dwa_wiersze(self):
+        # DU 2014/900 s. 1: „1" ⏎ „ )     Niniejszą…", odsyłacze „ustaw 1), 2)" ze spacją w `-layout`
+        slowa = [(293.13792, 184.60788, 318.07776, 193.57188, "ustaw"), (318.72, 182.65416, 325.73784, 188.48616, "1),"),
+                 (327.96048, 182.65416, 333.35832, 188.48616, "2)"), (66.95988, 210.64176, 84.44964, 219.60576, "Art."),
+                 (51.0, 737.982, 54.0, 743.382, "1"), (54.0, 739.893, 56.997, 747.993, ")"),
+                 (51.0, 760.0, 54.0, 765.4, "2"), (54.0, 761.9, 56.997, 770.0, ")")]
+        strona = ("                                                   innych ustaw 1), 2)\n\n"
+                  "    Art. 1. W ustawie z dnia 16 lutego 2007 r. o zapasach ropy naftowej wprowadza się następujące zmiany:\n\n"
+                  "1)      w art. 2 pkt 2 otrzymuje brzmienie;\n\n"
+                  "1\n )     Niniejszą ustawą zmienia się ustawy: ustawę z dnia 10 kwietnia 1997 r. – Prawo energetyczne.\n"
+                  "2\n )     Niniejsza ustawa dokonuje w zakresie swojej regulacji wdrożenia dyrektywy Rady 2009/119/WE.\n")
+        przed = eli.pdf_layout_do_tekstu(strona)
+        self.assertIn("1 ) Niniejszą ustawą", przed)
+        t = eli.pdf_layout_do_tekstu(eli._pdf_oznacz_odsylacze(strona, slowa))
+        self.assertIn("innych ustaw\n[przypis 1)] Niniejszą ustawą zmienia się ustawy", t)
+        self.assertIn("[przypis 2)] Niniejsza ustawa dokonuje", t)
+        self.assertIn("\n1) w art. 2 pkt 2 otrzymuje brzmienie;", t)       # punkt wyliczenia zostaje
+        self.assertNotIn("1 )", t)
+
+    def test_dokonczenie_przypisu_na_stronie_bez_odsylaczy(self):
+        # DU 2019/1500 s. 2–3: przypis 1 urywa się „…z dniem 25 maja 2018", dokończenie „r. Przepisy…" na s. 3 szło do ust. 4b
+        s2 = ("      3. Minister jest administratorem danych (Dz. U. z 2016 r. poz. 922)1).>\n\n"
+              "1)\n     Ustawa utraciła moc z dniem 25 maja 2018 r. z wyjątkiem art. 1, która weszła w życie z dniem 25 maja 2018\n")
+        s3 = ("       4b. Centralna Informacja udostępnia bezpłatnie, w ogólnodostępnych sieciach\n"
+              "teleinformatycznych, listę podmiotów, wobec których w dziale 6 rejestru\n\n\n"
+              "     r. Przepisy ustawy wymienione w zdaniu pierwszym utraciły moc z dniem 6 lutego 2019 r.\n"
+              "\f"
+              "przedsiębiorców wpisano informację o ogłoszeniu upadłości.\n")
+        slowa2 = [(300.0, 400.0, 320.0, 411.0, "922)"), (320.1, 399.5, 330.0, 406.7, "1).>")]
+        t = eli.pdf_layout_do_tekstu(eli._pdf_oznacz_odsylacze(s2, [(300.0, 400.0, 320.0, 411.0, "922)"),
+                                                                    (320.1, 399.5, 325.0, 406.7, "1)")]) + "\f" + s3)
+        self.assertIn("w dziale 6 rejestru przedsiębiorców wpisano informację", t)
+        self.assertIn("z dniem 25 maja 2018 r. Przepisy ustawy wymienione w zdaniu pierwszym utraciły moc", t)
+        # „nie psuj": przypis poprzedniej strony zakończony kropką — wcięty blok małą literą zostaje w treści
+        s2_kropka = s2.replace("25 maja 2018\n", "25 maja 2018 r.\n")
+        t = eli.pdf_layout_do_tekstu(eli._pdf_oznacz_odsylacze(s2_kropka, [(300.0, 400.0, 320.0, 411.0, "922)"),
+                                                                           (320.1, 399.5, 325.0, 406.7, "1)")]) + "\f" + s3)
+        self.assertIn("rejestru r. Przepisy ustawy", t)
+        self.assertNotIn(slowa2[0][4] + "1)", t)
+
+    def test_dokonczenie_od_liczby_tylko_po_urwanym_przypisie(self):
+        # k.p. DU 2018/917 s. 85–86: dokończenie przypisu 8 zaczyna się od „1566, 1909…"; dotąd przypis 9 „nie odnaleziony"
+        s85 = ("      Art. 175. Minister Pracy i Polityki Socjalnej8) określi zasady.\n\n\n"
+               "8)\n     Obecnie minister właściwy do spraw pracy (Dz. U. z 2017 r. poz. 888, 1086,\n")
+        s86 = ("1)     ubezpieczonej – matce dziecka (Dz. U. z 2017 r. poz. 1778, z późn. zm.9));\n"
+               "2)     ubezpieczonym – ojcu dziecka;\n\n\n\n"
+               "     1566, 1909, 2180 i 2494 oraz z 2018 r. poz. 138 i 379), która weszła w życie z dniem 1 kwietnia\n"
+               "     1999 r.\n"
+               "9)\n     Zmiany tekstu jednolitego wymienionej ustawy zostały ogłoszone w Dz. U. z 2018 r. poz. 106.\n")
+        o85 = eli._pdf_oznacz_odsylacze(s85, [(200.0, 100.0, 240.0, 111.0, "Socjalnej"), (240.1, 99.5, 245.0, 106.7, "8)")])
+        o86 = eli._pdf_oznacz_odsylacze(s86, [(200.0, 100.0, 214.0, 111.0, "zm."), (214.1, 99.5, 219.0, 106.7, "9)")])
+        t = eli.pdf_layout_do_tekstu(o85 + "\f" + o86)
+        self.assertIn("[przypis 8)] Obecnie minister właściwy do spraw pracy (Dz. U. z 2017 r. poz. 888, 1086, 1566, 1909", t)
+        self.assertIn("[przypis 9)] Zmiany tekstu jednolitego", t)
+        self.assertIn("2) ubezpieczonym – ojcu dziecka;\n", t + "\n")
+        self.assertNotIn("nie odnaleziono", t)
+        # „nie psuj": wcięty ustęp „2. …" pod odstępem to treść, nie dokończenie urwanego przypisu
+        o86_ust = o86.replace("     1566, 1909, 2180 i 2494 oraz z 2018 r. poz. 138 i 379), która weszła w życie z dniem 1 kwietnia\n"
+                              "     1999 r.\n", "     2. Przepis § 1 stosuje się odpowiednio.\n")
+        self.assertNotEqual(o86_ust, o86)
+        t = eli.pdf_layout_do_tekstu(o85 + "\f" + o86_ust)
+        self.assertIn("\n2. Przepis § 1 stosuje się odpowiednio.", t)
+        self.assertIn("poz. 888, 1086,\n", t)
+
+
+class TestOdsylaczZeSpacja202611c(unittest.TestCase):
+    """Wada 2: odsyłacz, który w PDF stoi tuż za słowem, a `-layout` oddziela go spacją, zostawał w tekście jako „N)"."""
+
+    # DU 2026/1473 s. 51: „Pożarnej" kończy się na 415,66, „15)" zaczyna się na 415,99 (mniejsze, podniesione)
+    SLOWA = [(377.5592, 307.37564, 415.6562, 318.40136, "Pożarnej"), (415.99, 306.99632, 424.62784, 314.16968, "15)"),
+             (51.0, 761.19, 58.998, 767.832, "15)"), (65.04, 761.5, 90.0, 771.0, "Tytuł")]
+    STRONA = ("                                                       Rozdział 8\n"
+              "                                  Zakwaterowanie strażaków Państwowej Straży Pożarnej 15)\n"
+              "      Art. 74. 1. Strażakowi przysługuje prawo do zakwaterowania.\n"
+              "15)  oświadczenie strażaka o skorzystaniu z pomocy finansowej;\n\n\n"
+              "15)   Tytuł rozdziału w brzmieniu ustalonym przez art. 4 pkt 3 ustawy, o której mowa w odnośniku 7.\n")
+
+    def test_tytul_rozdzialu_z_odsylaczem_po_spacji(self):
+        przed = eli.pdf_layout_do_tekstu(self.STRONA)
+        self.assertIn("Pożarnej 15)", przed)
+        self.assertIn("bez odsyłacza", przed)
+        t = eli.pdf_layout_do_tekstu(eli._pdf_oznacz_odsylacze(self.STRONA, self.SLOWA))
+        self.assertIn("Zakwaterowanie strażaków Państwowej Straży Pożarnej\n[przypis 15)] Tytuł rozdziału", t)
+        self.assertNotIn("bez odsyłacza", t)
+        self.assertIn("\n15) oświadczenie strażaka o skorzystaniu", t)     # punkt wyliczenia zostaje
+
+    def test_bez_numeru_przypisu_mniejsza_czcionka_spacja_zostaje(self):
+        # numer „15)" na dole tej samej wielkości co tekst (punkt wyliczenia, nie przypis) — „15)" w tytule zostaje
+        slowa = self.SLOWA[:2] + [(51.0, 761.19, 58.998, 772.2, "15)")]
+        self.assertFalse(eli._pdf_odsylacze_bbox_pelne(slowa)[0][4])
+        wynik = eli._pdf_oznacz_odsylacze(self.STRONA, slowa)
+        self.assertIn("Pożarnej 15)", wynik)
+        self.assertNotIn(eli._ODS_POTW, wynik)
+
+    def test_dwa_odsylacze_z_przecinkiem(self):
+        # k.p.c. DU 2021/1805 s. 1: „Art." „1." „1)," „2)" — dotąd „Art. 1., 2) Kodeks…" i przypis 2 „bez odsyłacza"
+        slowa = [(106.1, 303.758, 115.1, 317.042, "1."), (115.22, 302.72636, 123.95, 311.62664, "1),"),
+                 (129.5, 302.72636, 136.25732, 311.62664, "2)"), (139.0, 303.758, 180.0, 317.042, "Kodeks"),
+                 (56.64, 627.08416, 62.03784, 632.91616, "1)"), (56.64, 673.19416, 62.03784, 679.02616, "2)")]
+        strona = ("       Art. 1.1), 2) Kodeks postępowania cywilnego normuje postępowanie sądowe.\n\n\n"
+                  "1)\n     Utracił moc z dniem 17 lipca 2000 r. (SK. 12/99).\n"
+                  "2)\n     Utracił moc z dniem 11 września 2017 r. (K 10/17).\n")
+        przed = eli.pdf_layout_do_tekstu(eli._pdf_oznacz_odsylacze(strona, []))
+        self.assertIn("Art. 1., 2) Kodeks", przed)
+        t = eli.pdf_layout_do_tekstu(eli._pdf_oznacz_odsylacze(strona, slowa))
+        self.assertIn("Art. 1. Kodeks postępowania cywilnego normuje postępowanie sądowe.\n[przypis 1)] Utracił moc z dniem "
+                      "17 lipca 2000 r. (SK. 12/99).\n[przypis 2)] Utracił moc z dniem 11 września 2017 r.", t)
+        self.assertNotIn("bez odsyłacza", t)
+
+    def test_kwoty_i_kody_bez_zmian(self):
+        # „nie psuj": cyfry liczby przed odsyłaczem (DU 2026/218, DU 2025/1016) — jak w TestOdsylaczeZeWspolrzednych202611
+        slowa = [(82.224, 469.018, 115.224, 482.302, "152,61"), (115.22, 467.98636, 121.97732, 476.88664, "3)"),
+                 (129.38, 469.018, 137.996, 482.302, "zł"), (51.0, 772.23, 55.998, 778.872, "3)")]
+        strona = "1)     152,613) zł za 1000 l benzyn silnikowych;\n\n\n3)     Aktualne stawki ogłasza minister.\n"
+        t = eli.pdf_layout_do_tekstu(eli._pdf_oznacz_odsylacze(strona, slowa))
+        self.assertIn("1) 152,61 zł za 1000 l", t)
+        self.assertIn("[przypis 3)] Aktualne stawki", t)
+
+
+class TestStopkaZData202611c(unittest.TestCase):
+    """Wada 3: data wydruku w stopce tekstu ujednoliconego w starym zapisie („18.01.2021") zostawała w treści każdej strony
+    (DU 2019/1500, DU 2020/920 i 9 innych PDF typu U wygenerowanych 04.2018–01.2022)."""
+
+    RAW = ("©Kancelaria Sejmu                                                               s. 1/3\n\n"
+           "      Art. 2. 3. Minister określi sposób współpracy sądów rejestrowych i wójtów w tych sprawach,\n\n\n"
+           "                                                                            18.01.2021\n"
+           "\f©Kancelaria Sejmu                                                                                  s. 2/3\n\n"
+           "w szczególności wskazując sposób postępowania sądów.\n"
+           "       Art. 3. Rejestr obejmuje podmioty wpisane do Rejestru z dnia 18.01.2021 r.\n"
+           "       Art. 3a. Minister utrzymuje system teleinformatyczny (Dz. U. z 2016 r. poz. 922)1).\n\n"
+           "1)\n     Zmiana wymienionego rozporządzenia została ogłoszona w Dz. Urz. UE L 28 z 04.02.2016, str. 18.\n"
+           "                                                                                               18.01.2021\n"
+           "\f©Kancelaria Sejmu                                                                          s. 3/3\n\n"
+           "       Art. 4. Ustawa wchodzi w życie z dniem ogłoszenia.\n\n\n"
+           "                                                                                       18.01.2021\n")
+
+    def test_data_stopki_usunieta_i_zdanie_sklejone(self):
+        info = {}
+        t = eli.pdf_layout_do_tekstu(self.RAW, info)
+        self.assertNotIn("\n18.01.2021", t)
+        self.assertIn("współpracy sądów rejestrowych i wójtów w tych sprawach, w szczególności wskazując", t)
+        self.assertIn("[przypis 1)] Zmiana wymienionego rozporządzenia została ogłoszona w Dz. Urz. UE L 28 z 04.02.2016, "
+                      "str. 18.\n", t + "\n")
+        self.assertEqual(info.get("data_wydruku"), "2021-01-18")
+        self.assertNotIn("niepewne_miejsca", info)
+
+    def test_prawdziwa_data_w_tresci_zostaje(self):
+        t = eli.pdf_layout_do_tekstu(self.RAW)
+        self.assertIn("z dnia 18.01.2021 r.", t)
+        # data na końcu tylko 1 z 3 stron — to nie stopka; zostaje i daje ostrzeżenie (samodzielna data)
+        raw = self.RAW.replace("                                                                                               18.01.2021\n", "") \
+                      .replace("                                                                                       18.01.2021\n", "")
+        info = {}
+        t = eli.pdf_layout_do_tekstu(raw, info)
+        self.assertIn("\n18.01.2021\n", t)
+        self.assertEqual(info.get("niepewne_miejsca"), [("data", "18.01.2021", 1)])
+        self.assertIsNone(eli._pdf_data_stopki(raw.split("\f")))
+
+    def test_akt_jednostronicowy_data_zostaje_z_ostrzezeniem(self):
+        # DU 2020/2374: data pod podpisem Prezydenta — bez powtórzenia na innych stronach to nie jest potwierdzona stopka
+        strona = "      Art. 2. Ustawa wchodzi w życie z dniem 1 stycznia 2021 r.\n\n        Prezydent: A. Duda\n\n" \
+                 + " " * 112 + "04.01.2021\n"
+        self.assertIsNone(eli._pdf_data_stopki([strona]))
+        info = {}
+        t = eli.pdf_layout_do_tekstu(strona, info)
+        self.assertIn("\n04.01.2021", t)
+        self.assertEqual(info["niepewne_miejsca"], [("data", "04.01.2021", 1)])
+
+
+class TestNiepewneMiejscaPdf202611c(unittest.TestCase):
+    """Przypis bez treści, przypis bez odsyłacza i samodzielna data w tekście z PDF — dotąd tylko etykieta w tekście, bez
+    ostrzeżenia; teraz UWAGA ze stroną PDF i jednostką, a --strict blokuje (kod 2), z --fragment — tylko w tym fragmencie."""
+
+    RAW = ("      Art. 1. Ustawa reguluje ochronę danych.7)\n"
+           "      Art. 2. Przepis ogólny.\n"
+           "\f      Art. 3. Dalszy przepis.\n\n\n"
+           "                                                                            2026-11-12\n\n"
+           "                                                                                Zmiana\n"
+           "\f      Art. 4. Ustawa wchodzi w życie z dniem ogłoszenia.\n\n\n"
+           "9)    Dodany przez art. 1 ustawy z dnia 1 marca 2020 r. o zmianie ustawy.\n")
+
+    def _kod(self, argv):
+        def tekst_z_pdf(path, label, meta, info=None, ocr=None):
+            return eli.pdf_layout_do_tekstu(self.RAW, info), "https://api.sejm.gov.pl/x.pdf", ""
+
+        def get(path, params=None, soft=False):
+            return {} if path.endswith("/references") else "" if path.endswith("/text.html") else {
+                "ELI": "DU/2026/1", "textHTML": False, "displayAddress": "Dz.U. 2026 poz. 1",
+                "texts": [{"fileName": "D20260001L.pdf", "type": "T"}]}
+        return _kod(argv, get, _tekst_z_pdf=tekst_z_pdf, _nowszy_tj=lambda *a, **k: None,
+                    _ostrzezenia=lambda *a, **k: [], _dzis=lambda: "2026-11-13")
+
+    def test_lista_miejsc_ze_stronami(self):
+        info = {}
+        t = eli.pdf_layout_do_tekstu(self.RAW, info)
+        self.assertEqual(info["niepewne_miejsca"], [("brak_tresci", "7", 1), ("data", "2026-11-12", 2),
+                                                    ("bez_odsylacza", "9", 3)])
+        opisy = eli._niepewne_miejsca_pdf(t, None, info["niepewne_miejsca"])
+        self.assertEqual(len(opisy), 3)
+        self.assertTrue(opisy[0].startswith("przypis 7) bez treści (s. 1 PDF, art. 1)"), opisy)
+        self.assertTrue(opisy[1].startswith("samodzielna data „2026-11-12” (s. 2 PDF, art. 3)"), opisy)
+        self.assertTrue(opisy[2].startswith("przypis 9) bez odsyłacza (s. 3 PDF, art. 4)"), opisy)
+        self.assertEqual(eli._niepewne_miejsca_pdf(t, eli._fragmenty(t, "art. 2"), info["niepewne_miejsca"]), [])
+        self.assertEqual(eli._niepewne_miejsca_pdf(t, [], info["niepewne_miejsca"]), [])
+
+    def test_tekst_ostrzega_strict_blokuje_tylko_we_fragmencie(self):
+        kod, out, err = self._kod(["tekst", "DU", "2026", "1"])
+        self.assertEqual(kod, 0, err)
+        self.assertIn("UWAGA: w tym tekście są miejsca odczytane z PDF niepewnie (3)", out)
+        self.assertIn("przypis 7) bez treści (s. 1 PDF, art. 1) — treści nie znaleziono pod tekstem strony", out)
+        kod, out, err = self._kod(["--strict", "tekst", "DU", "2026", "1", "--fragment", "art. 3"])
+        self.assertEqual(kod, 2)
+        self.assertIn("samodzielna data „2026-11-12” (s. 2 PDF, art. 3)", err)
+        self.assertEqual(out, "")
+        kod, out, err = self._kod(["--strict", "tekst", "DU", "2026", "1", "--fragment", "art. 2"])
+        self.assertEqual(kod, 0, err)
+        self.assertNotIn("niepewnie", out)
+
+    def test_przypis_wklejony_w_inny_artykul(self):
+        # k.p. s. 95 bez współrzędnych (dawny wynik): zaślepki stoją przy art. 301 i 302, a treść przypisów — w art. 302¹ § 7;
+        # ostrzeżenie dla fragmentu art. 302¹ musi wskazać wklejone „60) Zmiany tekstu…"
+        self.RAW = TestPrzypisyStronyPdf202611c.KP_STRONA
+        kod, out, err = self._kod(["tekst", "DU", "2026", "1", "--fragment", "art. 302¹"])
+        self.assertEqual(kod, 0, err)
+        self.assertIn("„60) …” w treści przepisu (s. 1 PDF, art. 302¹)", out)      # indeks górny jak w nagłówku (202611d)
+        self.assertIn("„61) …” w treści przepisu", out)
+        self.assertLess(out.index("ELI_TEXT_SOURCE_PDF="), out.index("odczytane z PDF niepewnie"))
+        kod, out, err = self._kod(["--strict", "tekst", "DU", "2026", "1", "--fragment", "art. 302¹"])
+        self.assertEqual(kod, 2)
+        # punkt wyliczenia małą literą nie jest przypisem
+        self.assertEqual(list(eli._PDF_PRZYPIS_W_TRESCI.finditer("1) w brzmieniu ustalonym przez ustawę; 2) dodany przez")), [])
+
+    def test_tekst_bez_takich_miejsc_bez_ostrzezenia(self):
+        self.RAW = "      Art. 1. Ustawa reguluje ochronę danych.\n      Art. 2. Przepis ogólny.\n"
+        kod, out, err = self._kod(["--strict", "tekst", "DU", "2026", "1"])
+        self.assertEqual(kod, 0, err)
+        self.assertNotIn("niepewnie", out)
+
+
+def _slowa_wiersza(y, x0, tekst, wys=11.0, cw=5.0):
+    """Słowa jednego wiersza bbox (x0, y0, x1, y1, słowo) — szerokość znaku `cw`, wysokość `wys`."""
+    out, x = [], x0
+    for t in tekst.split():
+        out.append((x, y, x + cw * len(t), y + wys, t))
+        x += cw * len(t) + 3.0
+    return out
+
+
+class TestUkrytaWarstwa202611d(unittest.TestCase):
+    """DU 2025/615 — strona tabeli to osadzony PDF z własnymi przypisami i nagłówkami, przycięty ramką; `pdftotext` daje obie
+    kopie (widoczną i ukrytą), więc blok przypisów nie był rozpoznawany (28 przypisów w treści tabel). Strony z tekstem obróconym
+    o 90° nie miały odsyłaczy potwierdzonych współrzędnymi („3.4" + „21)" → „3." i „przypis 421)")."""
+
+    # s. 10: ukryta kopia przypisu 9 (13,7 pt, y = 757) nad widocznym (12,1 pt, y = 783); odsyłacz „9)" przy „45"
+    SLOWA = (_slowa_wiersza(652.8, 57.98, "45", 13.8) + [(70.85, 652.46, 77.95, 661.34, "9)")]
+             + _slowa_wiersza(652.8, 90.06, "Lakierowanie zębów 1/4", 13.8)
+             + [(51.02, 757.05, 57.22, 765.81, "9)"), (53.85, 757.0, 59.43, 765.83, "9)")]
+             + _slowa_wiersza(756.85, 68.18, "Ze zmianą wprowadzoną przez § 1 pkt 3", 13.74)
+             + [(51.02, 783.23, 55.9, 791.11, "9)")]
+             + _slowa_wiersza(782.92, 68.03, "Ze zmianą wprowadzoną przez § 1 pkt 3", 12.12))
+    STRONA = ("      459)   Lakierowanie zębów 1/4                     23.1006              Świadczenie dotyczy wszystkich zębów\n\n\n"
+              " 9)\n9)\n       Ze zmianą wprowadzoną przez § 1 pkt 3\n\n"
+              "9)\n       Ze zmianą wprowadzoną przez § 1 pkt 3\n")
+
+    def test_ukryta_kopia_przypisu_usunieta(self):
+        przed = eli.pdf_layout_do_tekstu(eli._pdf_oznacz_odsylacze(self.STRONA, self.SLOWA))
+        self.assertIn("9) 9) Ze zmianą", przed)          # dawny wynik: przypis w treści tabeli
+        strona, inne = eli._pdf_bez_ukrytych_przypisow(self.STRONA, self.SLOWA)
+        self.assertEqual(inne, [])
+        self.assertEqual(strona.count("Ze zmianą wprowadzoną"), 1)
+        info = {}
+        t = eli.pdf_layout_do_tekstu(eli._pdf_oznacz_odsylacze(strona, self.SLOWA), info)
+        self.assertIn("45 Lakierowanie zębów 1/4 23.1006 Świadczenie dotyczy wszystkich zębów\n"
+                      "[przypis 9)] Ze zmianą wprowadzoną przez § 1 pkt 3", t)
+        self.assertNotIn("niepewne_miejsca", info)
+
+    def test_powtorzony_punkt_tabeli_tej_samej_wielkosci_zostaje(self):
+        # s. 88: „3) sprawdzenie toru oddychania;" w dwóch wierszach tabeli — oba widoczne (ta sama wysokość), nic nie znika
+        slowa = (_slowa_wiersza(186.4, 356.3, "3) sprawdzenie toru oddychania;", 13.8)
+                 + _slowa_wiersza(715.8, 356.3, "3) sprawdzenie toru oddychania;", 13.8))
+        self.assertEqual(eli._pdf_ukryta_warstwa(slowa), ([], []))
+        strona = "      3) sprawdzenie toru oddychania;\n\n      Lp. 2\n      3) sprawdzenie toru oddychania;\n"
+        self.assertEqual(eli._pdf_bez_ukrytych_przypisow(strona, slowa)[0], strona)
+        # VAT DU 2017/1221 s. 310: to samo hasło w poz. 73 i 74, inna wysokość wiersza, ten sam początek — nie warstwa
+        vat = (_slowa_wiersza(205, 240.0, "przeznaczone na nieodpłatne lub odpłatne", 13.3)
+               + _slowa_wiersza(413, 240.0, "przeznaczone na nieodpłatne lub odpłatne", 10.8))
+        self.assertEqual(eli._pdf_ukryta_warstwa(vat), ([], []))
+
+    def test_naglowek_zdublowany_daje_ostrzezenie(self):
+        # s. 63: „Załącznik nr 5" widoczny (12,5 pt, x = 488) i ukryty (16,8 pt, x = 436)
+        slowa = _slowa_wiersza(70.5, 488.2, "Załącznik nr 5", 12.5) + _slowa_wiersza(83.3, 436.5, "Załącznik nr 5", 16.8)
+        strona = "                                  Załącznik nr 5\n                             Załącznik nr 5\n"
+        wynik, inne = eli._pdf_bez_ukrytych_przypisow(strona, slowa)
+        self.assertEqual(wynik, strona)                   # nagłówka nie usuwamy — tylko ostrzeżenie
+        self.assertEqual(inne, ["Załącznik nr 5"])
+        info = {}
+        t = eli.pdf_layout_do_tekstu("      Art. 1. Tekst.\n\f" + strona + "      Lp.  Nazwa\n", info,
+                                     strony_flagi={1: [("warstwa", "Załącznik nr 5")]})
+        self.assertEqual([o[:4] for o in info["niepewne_obszary"]], [("warstwa", "Załącznik nr 5", 2, 2)])
+        opisy = eli._niepewne_miejsca_pdf(t, None, None, info["niepewne_obszary"])
+        self.assertTrue(opisy[0].startswith("strona z ukrytą warstwą tekstu (s. 2 PDF"), opisy)
+        self.assertEqual(eli._niepewne_miejsca_pdf(t, eli._fragmenty(t, "art. 1"), None, info["niepewne_obszary"]), [])
+
+    def test_strona_obrocona_odsylacz_potwierdzony(self):
+        # s. 40: tekst czytany od dołu do góry; „3.4" (x 476–493, y 767–783) i odsyłacz „21)" (x 478–487, y 756–767)
+        slowa = [(476.36, 767.16, 493.29, 782.98, "3.4"), (478.03, 755.78, 487.21, 767.4, "21)"),
+                 (476.36, 684.45, 493.29, 746.29, "Wstrząsarka"), (476.36, 640.0, 493.29, 680.0, "do"),
+                 (535.2, 784.49, 543.08, 792.28, "21)"), (534.89, 765.78, 547.01, 775.28, "Ze")]
+        slowa += [(300.0 + 20 * k, 100.0, 317.0 + 20 * k, 160.0, "słowo") for k in range(10)]
+        w, h, obrocone = eli._pdf_obroc(595.276, 841.89, slowa)
+        self.assertEqual((w, h), (841.89, 595.276))
+        self.assertEqual(eli._pdf_odsylacze_bbox(slowa), [])        # pionowe współrzędne — dawniej brak odsyłacza
+        self.assertIn(("3.4", "21", False), eli._pdf_odsylacze_bbox(obrocone))
+        t = eli.pdf_layout_do_tekstu(eli._pdf_oznacz_odsylacze(
+            "      3.421) Wstrząsarka do\n\n\n21)\n       Ze zmianą wprowadzoną przez § 1 pkt 5.\n", obrocone))
+        self.assertIn("3.4 Wstrząsarka do\n[przypis 21)] Ze zmianą wprowadzoną", t)
+
+    def test_strona_pozioma_bez_zmian(self):
+        slowa = [(56.0 + 30 * k, 100.0 + 12 * (k % 3), 80.0 + 30 * k, 111.0 + 12 * (k % 3), "wyraz") for k in range(12)]
+        self.assertIs(eli._pdf_obroc(595.0, 842.0, slowa)[2], slowa)
+        obr = {}
+        eli._pdf_slowa(_bbox([(595.0, 842.0, [(56.0, 100.0, "Art."), (90.0, 100.0, "1.")])]), obr)
+        self.assertEqual(obr, {})
+
+    def test_strona_obrocona_czytana_z_gory_na_dol(self):
+        # obrót w drugą stronę (w próbie nie wystąpił): wiersz biegnie w dół strony, góra liter po prawej (większe x)
+        slowa = [(476.0, 60.0, 493.0, 76.0, "3.4"), (482.0, 76.2, 491.0, 87.8, "21)"), (476.0, 92.0, 493.0, 150.0, "Wstrząsarka"),
+                 (476.0, 154.0, 493.0, 170.0, "do"), (476.0, 174.0, 493.0, 230.0, "materiałów"),
+                 (476.0, 234.0, 493.0, 310.0, "kapsułkowanych")]
+        slowa += [(300.0 + 20 * k, 200.0, 317.0 + 20 * k, 260.0, "słowo") for k in range(10)]
+        w, h, obrocone = eli._pdf_obroc(595.0, 842.0, slowa)
+        self.assertEqual((w, h), (842.0, 595.0))
+        self.assertEqual([s[4] for s in sorted(obrocone[:4])], ["3.4", "21)", "Wstrząsarka", "do"])   # kolejność czytania
+        self.assertIn(("3.4", "21", False), eli._pdf_odsylacze_bbox(obrocone))
+
+    def test_naglowek_poziomy_strony_obroconej(self):
+        slowa = [(51.0, 46.14, 87.68, 59.61, "Dziennik"), (90.0, 46.14, 120.0, 59.61, "Ustaw"),
+                 (509.0, 46.14, 526.5, 59.61, "Poz."), (529.3, 46.14, 544.3, 59.61, "615"),
+                 (51.0, 28.19, 53.5, 41.66, "﻿"), (476.0, 120.0, 493.0, 700.0, "treść")]
+        self.assertEqual(eli._pdf_naglowek_poziomy(841.89, slowa), 59.61)
+        # słowo treści sięgające nagłówka — strona zostaje w całości
+        self.assertIsNone(eli._pdf_naglowek_poziomy(841.89, slowa + [(300.0, 50.0, 317.0, 300.0, "długi")]))
+
+
+class TestTabeleNiepewne202611d(unittest.TestCase):
+    """tabela, w której w jednym wierszu zawija się kilka komórek — `-layout` przeplata ich słowa; teraz obszar niepewny z
+    numerami stron PDF (UWAGA, --strict blokuje; z --fragment tylko gdy fragment zachodzi na tabelę)."""
+
+    # VAT DU 2026/1263 s. 414 (układ `-layout`)
+    VAT = ("    9     ex 12               Nasiona i owoce oleiste; ziarna, nasiona i owoce różne\n"
+           "   10a    bez względu         Nawozy, środki poprawiające właściwości gleby, stymulatory\n"
+           "          na CN               produkty pofermentacyjne, nawozowe produkty mikrobiologiczne\n"
+           "   10b    bez względu         Środki ochrony roślin, o których mowa w ustawie z dnia 8 marca\n"
+           "          na CN               2013 r. o środkach ochrony roślin\n")
+    # DU 1998/1012 (OCR): zawinięta nazwa, wartości w pierwszym wierszu — „…na- szt. 4 2 1 czyń"
+    NORMY = ("     1    Ręcznik                         szt.     6     2     2\n"
+             "     2    Ścierka do wycierania na-       szt.     4     2     1\n"
+             "          czyń\n"
+             "     3    Koc                             szt.     2     4     2\n")
+
+    def test_przemieszane_komorki_wykryte(self):
+        for tabela in (self.VAT, self.NORMY):
+            linie = tabela.split("\n")
+            self.assertTrue(eli._pdf_tabela_niepewna(linie), tabela)
+        self.assertIn("13 bez względu Wyroby medyczne medycznych", eli.pdf_layout_do_tekstu(
+            "   13    bez względu   Wyroby medyczne\n         na CN         medycznych\n").replace("na CN ", ""))
+
+    def test_tabela_czytana_dobrze_bez_alarmu(self):
+        przyklady = [
+            # zawinięta tylko ostatnia kolumna (VAT „poz. | PKWiU | nazwa")
+            "   73    ex 58.13.10.0    Gazety drukowane lub na nośnikach (dyskach,\n"
+            "                          taśmach i innych) – wyłącznie gazety drukowane –\n"
+            "   74    ex 58.14.1       Czasopisma i pozostałe periodyki drukowane lub na\n"
+            "                          nośnikach (dyskach, taśmach i innych) – wyłącznie\n"
+            "   75    59.20.31.0       Nuty w formie drukowanej\n",
+            # wartość w wierszu ciągu nazwy (DU 1998/895)
+            "     I    Sposób zastosowania azbestu\n"
+            "          l.        Powierzchnia pokryta masą natryskową\n"
+            "                    z azbestem (torkret)........ .. .. .....            25\n"
+            "          2.        Tynk zawierający azbest... .. .... .........        20\n"
+            "          3.        Lekkie płyty izolacyjne z azbestem\n"
+            "                    (gęstość objętościowa <1 000 kg/m3 ...........      15\n",
+            # objaśnienie symboli wzoru (DU 2014/900)
+            "          ZOr       –       minimalną wielkość zapasów obowiązkowych ropy naftowej lub paliw w zakresie ro-\n"
+            "          py naftowej wyrażoną w jednostkach wagowych,\n"
+            "          P–       wielkość przywozu ropy naftowej i ilość ropy naftowej wprowadzonej na rynek krajowy\n"
+            "          z zapasów obowiązkowych w wyniku ich interwencyjnego uwolnienia w poprzednim roku kalendarzo-\n"
+            "          G        –       ilość ropy naftowej wykorzystanej do produkcji paliw w poprzednim roku kalenda-\n"
+            "          rzowym, wyrażoną w jednostkach wagowych,\n",
+            # rozstrzelona proza (k.p.c. DU 2026/468 s. 166) i wyliczenie z odstępem po numerze (k.p. s. 13)
+            "      § 4. W sprawach     o rozwiązanie      przysposobienia     prokurator       wytaczając\n"
+            "powództwo pozywa przysposabiającego oraz przysposobionego.\n\n"
+            "      Art. 454[1]. § 1.   Powództwo       wzajemne       o ustalenie    lub      zaprzeczenie\n"
+            "macierzyństwa,      o ustalenie   lub    zaprzeczenie    ojcostwa,     a także    o ustalenie\n",
+            "  1)   daty, godziny i minuty oraz miejsca przeprowadzenia badania;\n"
+            "  2)   wyniku badania;\n  3)   danych osobowych pracownika:\n"
+            "       a)   imienia i nazwiska,\n       b) numeru PESEL,\n       c)   daty urodzenia, płci, wzrostu,\n",
+        ]
+        for p in przyklady:
+            self.assertEqual(eli._pdf_tabela_niepewna(p.split("\n")), set(), p)
+
+    def test_obszar_fragment_i_strict(self):
+        raw = ("      Art. 1. Stawki określa załącznik.\n      Art. 2. Rozporządzenie wchodzi w życie z dniem ogłoszenia.\n"
+               "\f                                                          Załącznik\n" + self.VAT)
+        info = {}
+        t = eli.pdf_layout_do_tekstu(raw, info)
+        self.assertEqual(t, eli.pdf_layout_do_tekstu(raw))         # znaczniki obszarów nie trafiają do tekstu
+        self.assertFalse(eli._ZNACZNIKI.search(t))
+        [(rodzaj, _, od, do, s, e)] = info["niepewne_obszary"]
+        self.assertEqual((rodzaj, od, do), ("tabela", 2, 2))
+        self.assertIn("bez względu", t[s:e])
+        self.assertEqual(eli._niepewne_miejsca_pdf(t, eli._fragmenty(t, "art. 2"), None, info["niepewne_obszary"]), [])
+
+        def tekst_z_pdf(path, label, meta, info=None, ocr=None):
+            return eli.pdf_layout_do_tekstu(raw, info), "https://api.sejm.gov.pl/x.pdf", ""
+
+        def get(path, params=None, soft=False):
+            return {} if path.endswith("/references") else "" if path.endswith("/text.html") else {
+                "ELI": "DU/2026/1", "textHTML": False, "displayAddress": "Dz.U. 2026 poz. 1",
+                "texts": [{"fileName": "D20260001L.pdf", "type": "O"}]}
+        patche = dict(_tekst_z_pdf=tekst_z_pdf, _nowszy_tj=lambda *a, **k: None, _ostrzezenia=lambda *a, **k: [],
+                      _dzis=lambda: "2026-11-13")
+        kod, out, err = _kod(["--strict", "tekst", "DU", "2026", "1"], get, **patche)
+        self.assertEqual(kod, 2)
+        self.assertIn("tabela (s. 2 PDF, załącznik) — komórki zawinięte", err)
+        kod, out, err = _kod(["--strict", "tekst", "DU", "2026", "1", "--fragment", "art. 2"], get, **patche)
+        self.assertEqual(kod, 0, err)
+        self.assertNotIn("niepewnie", out)
+        kod, out, err = _kod(["tekst", "DU", "2026", "1"], get, **patche)
+        self.assertEqual(kod, 0, err)
+        self.assertIn("UWAGA: w tym tekście są miejsca odczytane z PDF niepewnie (1)", out)
+
+    def test_data_w_komorce_tabeli_bez_alarmu_daty(self):
+        raw = ("      § 1. Ustala się terminy wypłat:\n"
+               "      Lp.    Rodzaj świadczenia                       Termin wypłaty\n"
+               "      1      Dodatek energetyczny                     31.03.2026\n"
+               "      2      Dodatek osłonowy dla gospodarstw\n"
+               "                                                      30.06.2026\n"
+               "             domowych jednoosobowych\n"
+               "      3      Dodatek węglowy                          30.09.2026\n"
+               "      § 2. Rozporządzenie wchodzi w życie z dniem ogłoszenia.\n")
+        info = {}
+        eli.pdf_layout_do_tekstu(raw, info)
+        self.assertNotIn("niepewne_miejsca", info)                # dotąd: „samodzielna data 30.06.2026"
+        self.assertEqual([o[0] for o in info["niepewne_obszary"]], ["tabela"])
+        # data na dole strony (stopka niepotwierdzona) — alarm zostaje
+        info = {}
+        eli.pdf_layout_do_tekstu("      Art. 1. Ustawa wchodzi w życie.\n\n" + " " * 70 + "04.01.2021\n", info)
+        self.assertEqual(info["niepewne_miejsca"], [("data", "04.01.2021", 1)])
+
+
+class TestNumeracjaOcr202611d(unittest.TestCase):
+    """DU 1994/73 (OCR, dwa łamy) — okruch OCR w środku strony zamykał blok łamów (§ 46–48 przed § 40–45), nagłówek strony
+    rozbity przez tesseracta wchodził w treść, „586." to § 86; luki i odwrócenia numeracji — ostrzeżenie."""
+
+    def test_luki_i_odwrocenia(self):
+        t = ("".join(f"§ {n}. Treść.\n" for n in range(1, 9)) + "§9. 1. W pomieszczeniach. § '0. 1. Podłoże.\n§ 11 . Pracownicy.\n"
+             + "".join(f"§ {n}. Treść.\n" for n in range(12, 39))
+             + "§ 39.1. Jest niedopuszczalne:\n§ 46. Do obsługi.\n§ 47. Pojemniki.\n§ 40: Chlorownie.\n§ 41 . Pomieszczenia.\n")
+        opisy = [o for o, _, _ in eli._luki_numeracji(t)]
+        self.assertEqual(opisy, ["§ 10 brak w odczycie (między § 9 a § 11)",
+                                 "§ 40–45 brak w odczycie (między § 39 a § 46)",
+                                 "§ 40 po § 47 — kolejność jednostek w odczycie"])
+        s, e = eli._luki_numeracji(t)[0][1:]
+        self.assertTrue(t[s:].startswith("§9. 1.") and t[s:e].endswith("§ 11 . Pracownicy."))
+        self.assertEqual([o for o, _, _ in eli._luki_numeracji("Na podstawie art. 5:\n§ 3. Rozporządzenie wchodzi.\n§ 1. Określa.\n")],
+                         ["§ 3 jako pierwszy paragraf — § 1–2 brak w odczycie"])
+
+    def test_bez_falszywych_alarmow(self):
+        t = ("Art. 1. W ustawie wprowadza się zmiany:\n1) art. 5 otrzymuje brzmienie:\n„Art. 5. § 1. Nowe.\n"
+             "§ 2. Dalej.\nArt. 6. Także.\nArt. 9. Cytat bez otwarcia w wierszu.”;\n"     # cytat wieloakapitowy
+             "Art. 2. § 1. Przepis.\n§ 2. Dalej.\n§ 2a. Dodany.\n§ 3. Koniec.\n"           # § w artykule, litera
+             "Art. 3. Uchyla się.\nArt. 4–6. (uchylone)\nArt. 7. Wchodzi w życie.\n"        # zakres uchylonych
+             "Załącznik\n§ 1. Regulamin.\n§ 2. Dalej.\n")                                    # § od nowa w załączniku
+        self.assertEqual(eli._luki_numeracji(t), [])
+        # odesłanie przeniesione do nowego wiersza („…stosując zasady określone w ⏎ § 11—14." — DU 1998/875) to nie nagłówek
+        t = "".join(f"§ {n}. Treść.\n" for n in range(1, 18)) + "§ 11—14.\n§ 18. Dane.\n"
+        self.assertEqual(eli._luki_numeracji(t), [])
+        # akt zmieniający z OCR: cudzysłów odczytany jako „,," / `"` — maska cytatów nie działa, akt nie jest sprawdzany (DU 1995/504)
+        t = ('Art. 1. W ustawie wprowadza się zmiany:\n1) art. 33 otrzymuje brzmienie:\n"Art. 33. Nadzór.\n'
+             '2) dodaje się art. 34b w brzmieniu:\n,,Art. 34b. Organ.\nArt. 2. Ustawa wchodzi w życie.\n')
+        self.assertEqual(eli._luki_numeracji(t), [])
+
+    def test_okruch_ocr_nie_zamyka_bloku_lamow(self):
+        # DU 1994/73 s. 4 (układ `-layout`): łamy po ok. 55 znaków, okruch „'. :" w lewym łamie, daleko od marginesu
+        lewy = ["§ 38. 1. Ścieki z obiektów stosujących chlor powinny", "być odprowadzone po ich zneutralizowaniu.",
+                "§ 39.1. Jest niedopuszczalne:", "1) magazynowanie i transportowanie razem z chlorem",
+                "2) neutralizowanie chloru amoniakiem,", "3) pobieranie chloru z pojemnika, w którym ciśnienie",
+                "spadło do 100 kPa przy temperaturze powyżej + 16°C", "§ 40. Chlorownie oraz magazyny, w których stosuje się",
+                "§ 41. Pomieszczenia magazynu podchlorynu sodowego"]
+        prawy = ["§ 46. Do obsługi i konserwacji chloratorów na pod-", "chloryn sodowy dopuszcza się obsługę dwuosobową,",
+                 "§ 47. Pojemniki z podchlorynem sodowym należy skła-", "dać w odległości nie mniejszej niż 1 m od grzejników.",
+                 "§ 48. Pojemniki z podchlorynem sodowym nie mogą", "być magazynowane i transportowane razem z materiałami",
+                 "§ 49. 1. Magazyny podchlorynu sodowego, w których", "przechowuje się pojemniki większe niż 0,2 m3, powinny",
+                 "§ 50. 1. Pomieszczenia do magazynowania wapna"]
+        wiersze = [f"     {l:<59}{p}" for l, p in zip(lewy, prawy)]
+        wiersze.insert(5, " " * 49 + "'. :")
+        strona = "\n".join(wiersze)
+        przed = eli._pdf_lamy(strona.replace("'. :", "'. X"), luz=8)     # wiersz z literą — jak dotąd zamyka blok
+        self.assertLess(przed.index("§ 46"), przed.index("§ 40"))
+        po = eli._pdf_lamy(strona, luz=8)
+        self.assertLess(po.index("§ 41"), po.index("§ 46"))
+        self.assertNotIn("'. :", po)
+        self.assertEqual(eli._pdf_lamy(strona), eli._pdf_lamy(strona, luz=0))     # bez OCR — bez zmian
+        self.assertIn("'. :", eli._pdf_lamy(strona))
+
+    def test_naglowek_rozbity_przez_ocr(self):
+        raw = "Dziennik Ustaw Nr 21 —\n\n274 —\n\nPoz. 73\n\nRozdział 12\n\n§87. 1. W pomieszczeniu."
+        wynik = eli._pdf_bez_naglowkow_stron(raw)
+        self.assertNotIn("Dziennik", wynik)
+        self.assertIn("Rozdział 12", wynik)
+        # zwykły wiersz zaczynający się od „Dziennik Ustaw" w treści (bez numeru pozycji w trzech wierszach) zostaje
+        tresc = "Dziennik Ustaw publikuje się w formie elektronicznej\nna stronie urzędowej.\nDalej."
+        self.assertEqual(eli._pdf_bez_naglowkow_stron(tresc), tresc)
+
+    def test_paragraf_sklejony_z_piatka(self):
+        strona = "§ 85. 1. Praca w pomieszczeniach.\nRozdział 12\n586. 1. Kwas siarkowy powinien być\n§87. 1. W pomieszczeniu"
+        self.assertIn("§ 86. 1. Kwas siarkowy", eli._ocr_popraw_paragrafy([strona], [0])[0])
+        for s in ("§ 2. Treść\n317. Wartość graniczna\n§ 4. Dalej",              # bez § 16 i § 18 — to nie § 17
+                  "§ 85. Praca.\n586. 1. Kwas siarkowy\n§ 88. Dalej"):          # za nim nie § 87
+            self.assertEqual(eli._ocr_popraw_paragrafy([s], [0])[0], s)
+
+    def test_strony_zeszytu_od_poczatku_aktu(self):
+        raw = "\f".join(["Inny akt\n\n12\n\nROZPORZĄDZENIE\n", "§ 1. Tekst.7)\n§ 2. Dalej.\n",
+                         "§ 3. Koniec.\n\n13\n\nOBWIESZCZENIE\n"])
+        start = []
+        wyciety = eli._pdf_wytnij_akt(raw, 12, start=start)
+        self.assertEqual(start, [0])
+        info = {}
+        eli.pdf_layout_do_tekstu(wyciety.split("\f", 1)[1], info, strona0=1)
+        self.assertEqual(info["niepewne_miejsca"], [("brak_tresci", "7", 2)])
+
+
+class TestDrobne202611d(unittest.TestCase):
+    """Indeks górny w ostrzeżeniu, urwana notka pod datą wydruku, trzy odsyłacze z przecinkami, strona z notką nieprzycięta."""
+
+    def test_indeks_gorny_w_ostrzezeniu(self):
+        t = "Art. 302 1. § 1. Tekst.\n[przypis 62)] (treści przypisu nie odnaleziono na tej stronie PDF)\n"
+        self.assertEqual(eli._jednostka_w_miejscu(t, t.index("[przypis")), "art. 302¹")
+        t = "Art. 13 1a. Tekst.\nArt. 65a 65b. Wyliczenie.\n"
+        self.assertEqual(eli._jednostka_w_miejscu(t, t.index("Tekst")), "art. 13¹ᵃ")
+        self.assertEqual(eli._jednostka_w_miejscu(t, t.index("Wyliczenie")), "art. 65a")
+
+    def test_urwana_notka_pod_data_wydruku(self):
+        # DU 2026/1263 s. 25: data wydruku, pod nią początek notki urwanej na krawędzi strony
+        strona1 = ("8)    towary mają być czasowo używane przez tego podatnika na terytorium kraju,\n"
+                   "      niedłużej jednak niż przez 24 miesiące, pod warunkiem że import takich towarów\n\n\n"
+                   + " " * 78 + "2026-11-12\n\n" + " " * 92 + "Zmiana\n" + " " * 92 + "(skreślenie\n"
+                   + " " * 92 + "wyrazów) w pkt 9\n")
+        strona2 = ("      z terytorium państwa trzeciego na terytorium kraju;\n      Art. 13. Przepis.\n\n\n"
+                   + " " * 78 + "2026-11-12\n")
+        strona3 = "      Art. 14. Dalej.\n\n\n" + " " * 78 + "2026-11-12\n"     # data wydruku potwierdzona na innych stronach
+        info = {}
+        t = eli.pdf_layout_do_tekstu(strona1 + "\f" + strona2 + "\f" + strona3, info)
+        self.assertIn("pod warunkiem że import takich towarów z terytorium państwa trzeciego", t)
+        self.assertNotIn("2026-11-12", t)
+        self.assertIn("[margines: Zmiana (skreślenie wyrazów) w pkt 9 … (notka urwana na dole strony 1 PDF", t)
+        self.assertNotIn("niepewne_miejsca", info)
+        self.assertEqual([o[:4] for o in info["niepewne_obszary"]],
+                         [("notka", "Zmiana (skreślenie wyrazów) w pkt 9", 1, 1)])
+        # inna data niż data wydruku z pozostałych stron — bez zmian, zostaje alarm daty
+        info = {}
+        t = eli.pdf_layout_do_tekstu(strona1 + "\f" + strona2.replace("2026-11-12", "2026-11-13") + "\f"
+                                     + strona3.replace("2026-11-12", "2026-11-13"), info)
+        self.assertIn("\n2026-11-12\n", t)
+        self.assertEqual(info["niepewne_miejsca"], [("data", "2026-11-12", 1)])
+        # pod datą zwykła treść od lewego marginesu — to nie notka
+        self.assertEqual(eli._pdf_notka_pod_data("Tekst\n" + " " * 70 + "2026-11-12\nDalszy tekst od marginesu\n",
+                                                 "2026-11-12")[1], None)
+
+    def test_trzy_odsylacze_z_przecinkami(self):
+        slowa = [(106.1, 303.758, 115.1, 317.042, "1."), (115.22, 302.72636, 123.95, 311.62664, "1),"),
+                 (129.5, 302.72636, 138.25, 311.62664, "2),"), (143.0, 302.72636, 149.75, 311.62664, "3)"),
+                 (153.0, 303.758, 190.0, 317.042, "Kodeks"),
+                 (56.64, 627.08, 62.04, 632.92, "1)"), (56.64, 673.19, 62.04, 679.03, "2)"), (56.64, 700.19, 62.04, 706.03, "3)")]
+        strona = ("       Art. 1.1), 2), 3) Kodeks postępowania cywilnego normuje postępowanie sądowe.\n\n\n"
+                  "1)\n     Utracił moc z dniem 17 lipca 2000 r. (SK. 12/99).\n"
+                  "2)\n     Utracił moc z dniem 11 września 2017 r. (K 10/17).\n"
+                  "3)\n     Utracił moc z dniem 1 stycznia 2020 r. (K 1/19).\n")
+        info = {}
+        t = eli.pdf_layout_do_tekstu(eli._pdf_oznacz_odsylacze(strona, slowa), info)
+        self.assertIn("Art. 1. Kodeks postępowania cywilnego normuje postępowanie sądowe.\n[przypis 1)] Utracił moc z dniem "
+                      "17 lipca 2000 r. (SK. 12/99).\n[przypis 2)] Utracił moc z dniem 11 września 2017 r. (K 10/17).\n"
+                      "[przypis 3)] Utracił moc z dniem 1 stycznia 2020 r.", t)
+        self.assertNotIn("niepewne_miejsca", info)
+        # dwa odsyłacze — jak dotąd (TestOdsylaczZeSpacja202611c)
+        self.assertEqual([x[1] for x in eli._pdf_odsylacze_bbox(slowa[:2] + slowa[3:])], ["1"])
+
+    def test_strona_z_notka_nieprzycieta_oznaczona(self):
+        # notka za krawędzią tekstu, a obok niej słowo treści sięgające za miejsce przycięcia (przypis szerszy niż kolumna)
+        tresc = [w for i in range(30) for w in _wiersz(80 + 20.7 * i, "Rzeczypospolitej Polskiej od co najmniej stu lat", 56.6,
+                                                         468.0)]
+        notka = _notka(497.5, 300.0, ["Nowe brzmienie", "poz. 15 w zał. nr 3", "wejdzie w życie z", "dn. 1.01.2027 r."])
+        obce = [(470.0, 700.0, "UE", 520.0), (523.0, 700.0, "L", 530.0), (533.0, 700.0, "48", 545.0)]
+        _, marg, info = eli._pdf_margines(eli._pdf_slowa(_bbox([(595.32, 841.92, tresc + notka + obce)])))
+        self.assertEqual(marg, {})
+        self.assertEqual(info["nieprzyciete"], [(0, "Nowe brzmienie poz. 15 w zał.")])
+        _, marg, info = eli._pdf_margines(eli._pdf_slowa(_bbox([(595.32, 841.92, tresc + notka)])))
+        self.assertIn(0, marg)
+        self.assertNotIn("nieprzyciete", info)
 
 
 if __name__ == "__main__":

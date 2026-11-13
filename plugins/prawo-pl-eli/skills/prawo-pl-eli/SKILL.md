@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-eli
-version: 2.5.0
+version: 2.6.0
 description: >-
   Odpytuje OFICJALNE API ELI Sejmu (api.sejm.gov.pl/eli) — źródło pierwotne prawa polskiego
   (Dziennik Ustaw, Monitor Polski): wyszukiwanie aktów, TEKST JEDNOLITY, pojedyncze artykuły,
@@ -62,7 +62,7 @@ ELI="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-eli/scripts/eli.py"
 #    sprawdzana w kodzie przed zapisem i przed każdym uruchomieniem; niezgodna = helper nie startuje.
 [ -f "$ELI" ] || ELI=$(python3 - <<'EOF'
 import hashlib, os, sys, urllib.request
-WERSJA, SHA256 = "2.5.0", "4fecbc6e13db6d4056669954d3dc32dcef2d56c731a7c3975a14a2bbbe591710"
+WERSJA, SHA256 = "2.6.0", "107b5522b5bf14a02d4d95d423529d624d4a91a3cc09ac0be47c0811ec78577f"
 URL = f"https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/v{WERSJA}/plugins/prawo-pl-eli/skills/prawo-pl-eli/scripts/eli.py"
 p = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"prawo-pl-eli-{WERSJA}", "eli.py")
 try:
@@ -159,7 +159,17 @@ nie dało się uzupełnić z aktu bazowego → blokada; (5) tekst z PDF byłby N
 warstwy tekstowej (skan nieodczytany przez OCR, np. z `--bez-ocr`) → blokada (wtedy: OCR bez `--strict` albo
 `--pdf`); (6) tekst pochodziłby z OCR → blokada; (6a) `pdftotext -bbox` nie dał współrzędnych słów dla stron PDF
 (indeksy górne i odsyłacze do przypisów niepotwierdzone — liczba tuż przed przypisem może być obcięta, „152,61" →
-„152,") → blokada, bez `--strict` ostrzeżenie „UWAGA: pdftotext -bbox nie zwrócił współrzędnych…"; (7) zmiana po stanie tekstu, która JUŻ obowiązuje, a której
+„152,") → blokada, bez `--strict` ostrzeżenie „UWAGA: pdftotext -bbox nie zwrócił współrzędnych…"; (6b) w tekście z PDF
+(z `--fragment` — w tym fragmencie) jest miejsce odczytane niepewnie: przypis „(treści przypisu nie odnaleziono…)",
+przypis „bez odsyłacza w treści tej strony", akapit będący samą datą (stopka strony w treści) albo wiersz treści
+„N) Zmiany tekstu…”/„N) Dodany przez…” (przypis wklejony w przepis), a także obszar odczytany niepewnie:
+tabela, w której zawija się kilka komórek jednego wiersza (słowa kolumn mogą być przemieszane), strona z ukrytą
+warstwą tekstu (osadzony PDF z drugą, niewidoczną kopią nagłówków), strona z notką marginesu, której nie dało się
+odciąć od treści (także notka urwana na dole strony), luka albo odwrócenie w numeracji art./§ w tekście z zeszytu
+1990–2011 albo z OCR → blokada, bez `--strict` ostrzeżenie „UWAGA: w tym tekście są miejsca odczytane z PDF
+niepewnie (N)" ze stroną PDF i artykułem każdego miejsca; z `--fragment` obszar liczy się tylko wtedy, gdy zachodzi
+na wypisany fragment (artykuł poza tabelą przechodzi);
+(7) zmiana po stanie tekstu, która JUŻ obowiązuje, a której
 tekst nie zawiera (nie ma jej w obwieszczeniu t.j., w „Opracowano na podstawie" tekstu ujednoliconego ani
 w przypisach), dotyczy wypisywanego artykułu — albo nie da się tego ustalić → blokada; bez `--fragment` blokuje
 każda taka zmiana (cały tekst ma wtedy gdzieś stare brzmienie); (8) wyrok TK ogłoszony po stanie tekstu
@@ -207,7 +217,8 @@ albo częściowy … brzmienie się nie zmienia" (ostrzeżenie), „utrata mocy 
 wymienia art. N". Wyroki sprzed stanu t.j. t.j. oddaje przypisem („Z dniem … na podstawie wyroku Trybunału
 Konstytucyjnego…") i oznaczeniem „(utracił moc)" — `--fragment` ostrzega wtedy „WYROK TK W PRZYPISIE TEGO
 FRAGMENTU". Przypis o wyroku, którego odsyłacza w treści PDF nie ustalono, daje osobne „WYROK TK W PRZYPISIE
-NIEPRZYPISANYM DO JEDNOSTKI" — nie wiadomo, którego przepisu dotyczy; sprawdź w PDF (`--strict` tego nie blokuje). Gdy API zapisało skutek wyroku dla aktu, a sentencja nie wskazuje go wprost (wyrok o przepisie
+NIEPRZYPISANYM DO JEDNOSTKI" — nie wiadomo, którego przepisu dotyczy; sprawdź w PDF (`--strict` blokuje fragment
+z takim przypisem — punkt 6b wyżej). Gdy API zapisało skutek wyroku dla aktu, a sentencja nie wskazuje go wprost (wyrok o przepisie
 innej ustawy), narzędzie pisze „nie ustaliłem" (blokada `--strict`). Stan 13.11.2026: w Dz.U. z 2025 i 2026 r.
 nie ma żadnej pozycji typu „Orzeczenie".
 
@@ -293,7 +304,10 @@ potem `tekst <t.j.> --fragment "art. N"` (dwie komendy zamiast trzech):
    przypisu (np. objaśnienia pod tabelą) nie udało się dopasować — sprawdź go w PDF. Odwrotnie
    `[przypis N) — bez odsyłacza w treści tej strony; nie przypisuj go do sąsiedniego przepisu]`: treść jest, ale
    nie wiadomo, której jednostki dotyczy (stoi przed najbliższym artykułem/paragrafem/ustępem strony) — NIE
-   przypisuj jej przepisowi, przy którym stoi; jednostkę ustal w PDF.
+   przypisuj jej przepisowi, przy którym stoi; jednostkę ustal w PDF. Przy obu etykietach (i przy akapicie,
+   który jest samą datą — stopką strony, i przy wierszu treści „N) Zmiany tekstu…”) `tekst` wypisuje
+   „UWAGA: … miejsca odczytane z PDF niepewnie" ze stroną
+   PDF: treść przypisu mogła zostać w przepisie jako akapit „N) …”, a odsyłacz — jako „N)” udające punkt.
 5. **Zawsze podawaj sygnaturę Dz.U./M.P. i ELI** przy cytacie (np. „art. 299 § 1 k.s.h., Dz.U. 2024
    poz. 18"). To pozwala odbiorcy zweryfikować źródło.
 6. Pełna lista endpointów i parametrów: `references/api.md` (czytaj przy zapytaniach spoza powyższych

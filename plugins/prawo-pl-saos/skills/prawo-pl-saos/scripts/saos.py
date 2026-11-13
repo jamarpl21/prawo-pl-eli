@@ -25,7 +25,7 @@ Kody wyjścia: 0 = wynik; 1 = zweryfikowany brak (zero trafień, frazy nie ma w 
 import sys, json, re, time, datetime, argparse, urllib.request, urllib.parse, urllib.error
 from html.parser import HTMLParser
 
-__version__ = "2.5.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "2.6.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://www.saos.org.pl/api"
 CONTENT_HOSTS = ("saos.org.pl",)
 

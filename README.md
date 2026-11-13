@@ -50,7 +50,10 @@ potrafi podać brzmienie sprzed kilku zmian. Ten skill sięga do **źródła pie
 Teksty bez HTML czyta z plików PDF w API ELI: kodeksy z nieurzędowego tekstu ujednoliconego Kancelarii Sejmu
 (notki z marginesu osobno, nie w treści przepisu), akty Dz.U. i M.P. z lat 2000–2011 łam po łamie
 oraz zeszyty z lat 1990–1999, których warstwa tekstowa to OCR — liczby, daty i kwoty z tych lat
-sprawdź w PDF (narzędzie o tym ostrzega).
+sprawdź w PDF (narzędzie o tym ostrzega). Od 2.6.0 `tekst` wypisuje też „UWAGA: … miejsca odczytane z PDF
+niepewnie” ze stroną PDF i artykułem: przypis bez treści albo bez odsyłacza, przypis wklejony w przepis,
+tabela z przemieszanymi komórkami, strona z ukrytą warstwą tekstu, luka w numeracji paragrafów skanu.
+Tabel narzędzie nie naprawia — dane z tabel zawsze sprawdź w PDF.
 
 Pomyślany jako wsparcie pracy nad **umowami i pismami procesowymi** (tworzenie i analiza) — wszędzie tam,
 gdzie trzeba odwołać się do przepisów i procedur prawa polskiego.
@@ -302,9 +305,9 @@ Każdy tag `v*` publikuje po jednym zipie na plugin w GitHub Releases
 dla każdego z ośmiu pluginów):
 
 ```bash
-claude --plugin-dir ./prawo-pl-saos-v2.5.0.zip
+claude --plugin-dir ./prawo-pl-saos-v2.6.0.zip
 # albo zdalnie, bez pobierania:
-claude --plugin-url https://github.com/jamarpl21/prawo-pl-eli/releases/download/v2.5.0/prawo-pl-saos-v2.5.0.zip
+claude --plugin-url https://github.com/jamarpl21/prawo-pl-eli/releases/download/v2.6.0/prawo-pl-saos-v2.6.0.zip
 ```
 
 ## Użycie jako samodzielne CLI (bez żadnego LLM-a)
@@ -337,7 +340,11 @@ Dwie flagi globalne, w każdym silniku, działają przed komendą i po niej:
   (pełna lista per silnik w każdym SKILL.md, sekcja „Co sprawdza --strict"):
   - **ELI:** awaria kontroli aktualności (`/references`), starszy t.j., gdy istnieje nowszy (także gdy
     podasz sygnaturę starego t.j.), tekst zastępczy ze starszego t.j. (brak pdftotext), nieudana
-    ekstrakcja PDF, tekst z PDF bez współrzędnych słów (odsyłacze do przypisów niepotwierdzone),
+    ekstrakcja PDF, tekst z PDF bez współrzędnych słów (odsyłacze do przypisów niepotwierdzone), tekst
+    z PDF (z `--fragment` — ten fragment) z miejscem odczytanym niepewnie: przypis bez treści, przypis
+    bez odsyłacza, przypis wklejony w treść przepisu, samodzielna data ze stopki strony, tabela
+    z przemieszanymi komórkami, strona z ukrytą warstwą tekstu albo z notką marginesu nieodciętą od
+    treści, luka lub odwrócenie numeracji art./§ w tekście z zeszytu 1990–2011 albo z OCR,
     niekompletna lista nowelizacji po t.j., `--fragment` z artykułem zmienionym po stanie
     tekstu (stare brzmienie) albo takim, którego zmiany nie dało się ustalić, przepis, który utracił moc
     po wyroku TK, tekst HTML z odsyłaczem „patrz oryginał” zamiast tabeli lub wzoru;
@@ -548,7 +555,7 @@ docs/                                    # raport audytu merytorycznego, lista z
 
 ## Wersjonowanie
 
-Wszystkie pluginy są wersjonowane **razem (lockstep)** — jedna wersja (obecnie **2.5.0**) zadeklarowana
+Wszystkie pluginy są wersjonowane **razem (lockstep)** — jedna wersja (obecnie **2.6.0**) zadeklarowana
 we wszystkich miejscach, identyczna; `tools/validate.py` wymusza to w CI:
 
 - `plugins/<plugin>/.claude-plugin/plugin.json` i `.codex-plugin/plugin.json` (pole `version`) — wszystkie pluginy,
@@ -608,7 +615,8 @@ i vacatio legis w ELI, sprostowania w EUR-Lex, nieważność aktów w e-dziennik
 kolizje sygnatur), pozostałe — w wydaniu 2.4.0 (m.in. przepisy zmienione po stanie tekstu jednolitego
 i po wyrokach TK, kwoty obok cyfr przypisów, wybór wersji skonsolidowanej w EUR-Lex, hasła i daty
 w SAOS, porównanie rejestru umów z jego interfejsem), a porównanie łańcucha UODO → CBOSA, dat i flagi
-prawomocności w CBOSA — w wydaniu 2.5.0, po powrocie serwera CBOSA (13.11.2026). Stan każdej luki, także nadal otwartych
+prawomocności w CBOSA — w wydaniu 2.5.0, po powrocie serwera CBOSA (13.11.2026). Tabele w PDF porównano z obrazem strony
+w wydaniu 2.6.0 — kolejności komórek nie naprawiono, `tekst` o nich ostrzega. Stan każdej luki, także nadal otwartych
 (daty SN i TK, host mazowiecki, stan 3 decyzji UODO nierozstrzygnięty w CBOSA), opisuje nota na początku
 raportu.
 

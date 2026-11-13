@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-cbosa
-version: 2.5.0
+version: 2.6.0
 description: >-
   Przeszukuje CBOSA — Centralną Bazę Orzeczeń Sądów Administracyjnych (orzeczenia.nsa.gov.pl):
   wyroki, postanowienia i uchwały NSA oraz 16 WSA (~2,4 mln orzeczeń od 2004 r.). Używaj przy
@@ -61,7 +61,7 @@ CBOSA="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-cbosa/scripts/cbosa.py"
 #    sprawdzana w kodzie przed zapisem i przed każdym uruchomieniem; niezgodna = helper nie startuje.
 [ -f "$CBOSA" ] || CBOSA=$(python3 - <<'EOF'
 import hashlib, os, sys, urllib.request
-WERSJA, SHA256 = "2.5.0", "b12a94b6f8f8f765a7efaacb6d466d380e8e546138123b90c5559ee9ec262e8e"
+WERSJA, SHA256 = "2.6.0", "bcd75429682d05a34bc49cb54883cd12016a999b1f1421b4736800de1f7eb77d"
 URL = f"https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/v{WERSJA}/plugins/prawo-pl-cbosa/skills/prawo-pl-cbosa/scripts/cbosa.py"
 p = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"prawo-pl-cbosa-{WERSJA}", "cbosa.py")
 try:

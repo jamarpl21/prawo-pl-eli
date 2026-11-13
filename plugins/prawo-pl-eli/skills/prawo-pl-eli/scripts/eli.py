@@ -29,7 +29,7 @@ import urllib.request, urllib.parse, urllib.error
 from html.parser import HTMLParser
 from html import unescape as _unescape
 
-__version__ = "2.5.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "2.6.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://api.sejm.gov.pl/eli"
 CONTENT_HOSTS = ("api.sejm.gov.pl",)
 # Pamięć podręczna udanych GET-ów bez parametrów (metadane, odniesienia) w obrębie jednego
@@ -317,7 +317,11 @@ def html_to_text(html):
 _PDF_NAGLOWEK = re.compile(r"^\s*(©\s*Kancelaria Sejmu|(Dziennik Ustaw|Monitor Polski)\s+–\s*\d+\s*–"
                            r"|(Dziennik Ustaw|Monitor Polski)\s+Nr\s+\d+\s+[—–]\s*\d+\s*[—–])")
 _PDF_STOPKA = re.compile(r"^\s*(\d{4}-\d{2}-\d{2}|–?\s*\d{1,4}\s*–?)\s*$")
-_PDF_PRZYPIS = re.compile(r"^(\d{1,3})\)(?:\s+(.*))?$")
+# „1)I)" — przypis z dwoma numerami: arabskim i rzymskim odnośnika do tytułu (k.k.s. DU 1999/930, tekst ujednolicony, s. 1:
+# „1)I) Niniejsza ustawa w zakresie swojej regulacji: 1) realizuje…" i niżej „I) Odnośnik do tytułu ustawy w brzmieniu…").
+# Dotąd ten wiersz nie był numerem przypisu, więc blok przypisów strony szedł do art. 1 § 3 (z punktami 1) i 2) dyrektyw
+# udającymi punkty paragrafu), a przy tytule stało „treści przypisu nie odnaleziono".
+_PDF_PRZYPIS = re.compile(r"^(\d{1,3})\)(?:[IVX]{1,4}\))?(?:\s+(.*))?$")
 # glued odsyłacz do przypisu: „§ 1.3)", „(uchylony)5)", „chemicznych2)" — cyfry + „)" sklejone
 # z poprzedzającym znakiem, który nie jest spacją, cyfrą ani nawiasem otwierającym — także „<" z tekstu
 # ujednoliconego: „<6) udostępnianie…" to punkt 6 w brzmieniu przyszłym, nie odsyłacz do przypisu 6
@@ -376,8 +380,10 @@ def pdf_do_tekstu_layout(pdf_bytes):
 _PDF_SLOWO = re.compile(r'<word xMin="([\d.]+)" yMin="([\d.]+)" xMax="([\d.]+)" yMax="([\d.]+)">([^<]*)</word>')
 
 
-def _pdf_slowa(bbox_html):
-    """Wynik `pdftotext -bbox` → [(szerokość, wysokość, [(x0, y0, x1, y1, słowo)])] dla każdej strony."""
+def _pdf_slowa(bbox_html, obrocone=None):
+    """Wynik `pdftotext -bbox` → [(szerokość, wysokość, [(x0, y0, x1, y1, słowo)])] dla każdej strony. Strona z tekstem obróconym
+    o 90° jest we współrzędnych kierunku czytania (`_pdf_obroc`); `obrocone` (dict) dostaje wtedy {nr strony: dolna krawędź
+    poziomego nagłówka strony w pierwotnych współrzędnych albo None}."""
     strony = []
     for kawalek in bbox_html.split("<page ")[1:]:
         w = re.search(r'width="([\d.]+)" height="([\d.]+)"', kawalek)
@@ -385,8 +391,51 @@ def _pdf_slowa(bbox_html):
             return []
         slowa = [(float(a), float(b), float(c), float(d), _unescape(t))
                  for a, b, c, d, t in _PDF_SLOWO.findall(kawalek)]
-        strony.append((float(w.group(1)), float(w.group(2)), slowa))
+        strona = _pdf_obroc(float(w.group(1)), float(w.group(2)), slowa)
+        if strona[2] is not slowa and obrocone is not None:
+            obrocone[len(strony)] = _pdf_naglowek_poziomy(float(w.group(2)), slowa)
+        strony.append(strona)
     return strony
+
+
+def _pdf_naglowek_poziomy(h, slowa):
+    """Strona obrócona: dolna krawędź poziomego nagłówka strony („Dziennik Ustaw – 40 – Poz. 615", górne 10% strony) albo None.
+    `-layout` wstawia jego słowa między wiersze obróconej treści („[przypis 21)] Poz. 615 Ze zmianą…" — DU 2025/615 s. 40), więc
+    taka strona jest czytana od tej krawędzi w dół. Gdy pod tą krawędzią zaczyna się jakiekolwiek inne słowo (koniec obróconego
+    wiersza sięga nagłówka) — None: strona zostaje w całości."""
+    kotwice = [s for s in slowa if s[3] < 0.1 * h and re.fullmatch(r"Dziennik|Monitor|Poz\.", s[4])]
+    if not kotwice:
+        return None
+    g, d = min(s[1] for s in kotwice), max(s[3] for s in kotwice)
+    naglowek = [s for s in slowa if s[1] >= g - 1 and s[3] <= d + 1]
+    if any(s[1] < d + 1 and s not in naglowek and s[4].strip("﻿ ") for s in slowa):
+        return None
+    return d
+
+
+def _pdf_obroc(w, h, slowa):
+    """Strona z tekstem obróconym o 90° (tabela w poziomie na stronie pionowej: DU 2025/615 s. 31–40 i 103–116) → te same słowa
+    we współrzędnych KIERUNKU CZYTANIA: x wzdłuż wiersza, y w dół wierszy. `-layout` czyta taką stronę poprawnie (obraca ją), ale
+    współrzędne z `-bbox` są pionowe, więc testy indeksu górnego i odsyłacza („mniejsze i podniesione") nie działały: „3.4" +
+    odsyłacz „21)" (s. 40 PDF) zostawał w `-layout` jako „3.421)", a dawna reguła kształtu brała „421)" za odsyłacz — „3." w treści
+    i „przypis 421) bez treści" (13.11.2026; obraz strony). Strona jest obrócona, gdy co najmniej połowa słów z ≥3 znaków jest
+    pionowa (wysokość > 1,5 × szerokość), a takich słów jest co najmniej 10. Kierunek (w górę / w dół) — z kolejności słów `-bbox`
+    w wierszu. Słowa poziome na takiej stronie (nagłówek „Dziennik Ustaw – 40 – Poz. 615") też są przeliczane — nie należą do
+    wierszy treści. Zwraca (szerokość, wysokość, słowa) — dla strony obróconej z zamienionymi wymiarami."""
+    dlugie = [s for s in slowa if len(s[4]) >= 3]
+    pionowe = {id(s) for s in dlugie if (s[3] - s[1]) > 1.5 * (s[2] - s[0])}
+    if len(dlugie) < 10 or len(pionowe) < 0.5 * len(dlugie):
+        return w, h, slowa
+    w_gore = w_dol = 0
+    for a, b in zip(slowa, slowa[1:]):
+        if id(a) in pionowe and id(b) in pionowe and abs(a[0] - b[0]) < 2:
+            if b[1] < a[1]:
+                w_gore += 1
+            else:
+                w_dol += 1
+    if w_gore >= w_dol:     # czytane od dołu do góry: góra litery na lewo (mniejsze x)
+        return h, w, [(h - s[3], s[0], h - s[1], s[2], s[4]) for s in slowa]
+    return h, w, [(s[1], w - s[2], s[3], w - s[0], s[4]) for s in slowa]
 
 
 _PDF_DATA_WYDRUKU = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -572,7 +621,12 @@ def _pdf_margines(strony):
             continue
         przyciecie = int(min(s[0] for s in ciag + [s for g in grupy for s in g[4]]) - 0.05)
         if any(s[2] > przyciecie + 0.5 for s in obce):
-            continue        # przycięcie zgubiłoby inną treść za kolumną notek — strona zostaje w całości
+            # przycięcie zgubiłoby inną treść za kolumną notek — strona zostaje w całości, a notkę oddziela tylko reguła odstępów
+            # w wierszu (`_pdf_notki_marginesu`); słowa notki i treści mogą się przemieszać (VAT DU 2026/1263 s. 414: „Dz. Urz.
+            # poz. UE1270). L 48" w przypisie 1) — `pdf_do_tekstu_z_notkami` oznacza taką stronę jako obszar niepewny
+            if grupy:
+                info.setdefault("nieprzyciete", []).append((nr, " ".join(grupy[0][3].split()[:6])))
+            continue
         wiersze_y = []
         for y in sorted(s[1] for s in slowa if s[0] < przyciecie):
             if not wiersze_y or y - wiersze_y[-1] > 3:
@@ -596,6 +650,85 @@ def _pdf_notki_z_bbox(strony):
     return prog, {nr: strona for nr, (_, strona) in out.items()}, info
 
 
+# Ukryta warstwa tekstu (DU 2025/615, tabele w załącznikach; 13.11.2026, współrzędne `-bbox`, strumień strony i obraz s. 10, 40,
+# 63): strona tabeli to osadzony PDF (InDesign „PlacedPDF") z WŁASNYMI przypisami i nagłówkami załączników, przycięty ramką —
+# na s. 10 ścieżka przycinająca kończy się na y ≈ 748 pt, a przypis „9) Ze zmianą…" osadzonego PDF stoi na y = 757 (słowa wysokie na 13,7 pt).
+# Na obrazie strony go nie ma; widać tylko przypis złożony od nowa przez InDesign na y = 783 (szeryfowy, 12,1 pt). `pdftotext` nie
+# uwzględnia przycięcia, więc daje oba: „9)" ⏎ „9)" ⏎ „Ze zmianą…" ⏎ „9)" ⏎ „Ze zmianą…". Blok przypisów nie był rozpoznawany
+# i treść przypisu szła do tabeli (28 miejsc „N) … w treści przepisu" na 118 stronach). Nagłówki („Załącznik nr 5",
+# „WYKAZ ŚWIADCZEŃ…") są w obu warstwach złamane inaczej i `-layout` przeplata je w jeden wiersz.
+_PDF_NUMER_PRZYPISU = re.compile(r"\d{1,3}\)")
+
+
+def _pdf_ukryta_warstwa(slowa):
+    """Słowa bbox strony → (zdublowane przypisy [(numer, treść)], inne zdublowane wiersze [tekst]).
+
+    Przypis zdublowany: wiersz „N) treść" (numer bywa powtórzony: „9) 9) Ze zmianą…") stoi na stronie co najmniej dwa razy z tą
+    samą treścią (≥ 10 znaków), w innej wielkości czcionki (różnica > 0,5 pt i > 5% — osadzony PDF ma inny krój). Ten sam wiersz
+    „N) …" tej samej wielkości to zwykle punkt wyliczenia powtórzony w kolejnych wierszach tabeli (DU 2025/615 s. 88: „3) sprawdzenie
+    toru oddychania;" dwa razy — oba widoczne) i zostaje. Inny zdublowany wiersz: ten sam tekst (≥ 2 słowa, ≥ 10 znaków) dwa razy,
+    w innej wielkości czcionki i od innego miejsca (x różni się o > 1 pt) — powtórzone hasło w kolejnych wierszach tabeli ma ten
+    sam początek wiersza (VAT DU 2017/1221 s. 310: „przeznaczone na nieodpłatne lub odpłatne" w poz. 73 i 74 — oba widoczne, ale
+    w wierszach o innej wysokości)."""
+    def wysokosc(ws):
+        wys = sorted(s[3] - s[1] for s in ws)
+        return wys[len(wys) // 2]
+
+    def rozne(a, b):
+        return abs(a - b) > 0.5 and max(a, b) > 1.05 * min(a, b)
+    przypisy, wiersze = {}, {}
+    for _, ws in _pdf_linie(slowa, 2.5):
+        k = 0
+        while k < len(ws) and _PDF_NUMER_PRZYPISU.fullmatch(ws[k][4]):
+            k += 1
+        reszta = " ".join(s[4] for s in ws[k:])
+        if k and len({s[4] for s in ws[:k]}) == 1 and len(reszta) >= 10:
+            przypisy.setdefault((ws[0][4][:-1], reszta), []).append(wysokosc(ws[k:]))
+        tekst = " ".join(s[4] for s in ws)
+        if len(ws) >= 2 and len(tekst) >= 10:
+            wiersze.setdefault(tekst, []).append((wysokosc(ws), ws[0][0]))
+    zdublowane = [k for k, v in przypisy.items() if any(rozne(a, b) for a in v for b in v)]
+    inne = []
+    for tekst, v in wiersze.items():
+        if any(rozne(a[0], b[0]) and abs(a[1] - b[1]) > 1 for a in v for b in v) \
+                and not any(tekst.endswith(t) for _, t in zdublowane):
+            inne.append(tekst)
+    return zdublowane, inne
+
+
+def _pdf_bez_ukrytych_przypisow(tekst, slowa):
+    """Strona z `-layout` + słowa bbox → (strona bez ukrytych kopii przypisu, [opisy zdublowanych miejsc, których nie usunięto]).
+
+    Z każdego przypisu zdublowanego (`_pdf_ukryta_warstwa`) zostaje OSTATNIA kopia w `-layout` — przypis widoczny stoi na samym dole
+    strony, pod kopią ukrytą; obie mają tę samą treść, więc żadne słowo nie ginie. Usuwane są też samotne numery „N)" między ostatnim
+    wierszem treści a zostawioną kopią, poza ostatnim przed nią, gdy sama kopia jest bez numeru. Przypis, którego kopii nie da się
+    wskazać w `-layout` jako całych wierszy (np. złamany inaczej w dwóch warstwach), i inne zdublowane wiersze (nagłówki) zostają
+    bez zmian — wracają jako opisy do ostrzeżenia."""
+    zdublowane, inne = _pdf_ukryta_warstwa(slowa)
+    if not zdublowane:
+        return tekst, inne
+    lines = tekst.split("\n")
+    for n, t in zdublowane:
+        kopie = [i for i, l in enumerate(lines) if l is not None and " ".join(l.split()) in (t, n + ") " + t)]
+        if len(kopie) < 2:
+            inne.append(f"{n}) {t}")
+            continue
+        ost = kopie[-1]
+        for i in kopie[:-1]:
+            lines[i] = None
+        sam = re.compile(r"^\s*" + n + r"\)\s*$")
+        samotne, i = [], ost - 1
+        while i >= 0 and (lines[i] is None or not lines[i].strip() or sam.match(lines[i])):
+            if lines[i] is not None and sam.match(lines[i]):
+                samotne.append(i)
+            i -= 1
+        if samotne and " ".join(lines[ost].split()) == t:
+            samotne = samotne[1:]       # numer widocznej kopii stoi wiersz wyżej (pierwszy od dołu)
+        for i in samotne:
+            lines[i] = None
+    return "\n".join(l for l in lines if l is not None), inne
+
+
 def pdf_do_tekstu_z_notkami(pdf_bytes, zeszyt=False, indeksy=True):
     """Jak `pdf_do_tekstu_layout`, ale strony z notkami na prawym marginesie (tekst ujednolicony
     Kancelarii Sejmu) są czytane PRZYCIĘTE tuż przed kolumną notek, a notki wracają osobno. Indeksy górne
@@ -613,7 +746,8 @@ def pdf_do_tekstu_z_notkami(pdf_bytes, zeszyt=False, indeksy=True):
     raw = pdf_do_tekstu_layout(pdf_bytes)
     if not raw or zeszyt and not indeksy:
         return raw, {}, {}
-    strony = _pdf_slowa(_pdftotext(["-bbox", "-enc", "UTF-8"], pdf_bytes))
+    obrocone = {}
+    strony = _pdf_slowa(_pdftotext(["-bbox", "-enc", "UTF-8"], pdf_bytes), obrocone)
     caly = raw.split("\f")
     stron_layout = len(caly) - 1 if raw.endswith("\f") else len(caly)
     if len(strony) != stron_layout:
@@ -623,7 +757,16 @@ def pdf_do_tekstu_z_notkami(pdf_bytes, zeszyt=False, indeksy=True):
         for nr, (_, _, slowa) in enumerate(strony):
             caly[nr] = _pdf_oznacz_indeksy(caly[nr], slowa, w_miejscu=True)
         return "\f".join(caly), {}, {}
+    for nr, y in obrocone.items():
+        if y is not None:       # strona obrócona — bez poziomego nagłówka (`_pdf_naglowek_poziomy`)
+            h, w = strony[nr][0], strony[nr][1]
+            ciete = _pdftotext(["-layout", "-enc", "UTF-8", "-f", str(nr + 1), "-l", str(nr + 1), "-x", "0", "-y",
+                                str(int(y) + 1), "-W", str(int(w) + 1), "-H", str(int(h - y) + 1)], pdf_bytes)
+            if ciete.strip():
+                caly[nr] = ciete.rstrip("\f")
     _, marg, info = _pdf_margines(strony)
+    for nr, notka in info.pop("nieprzyciete", []):
+        info.setdefault("strony_flagi", {}).setdefault(nr, []).append(("notka", notka))
     notki, przyciecie = {}, {}
     if marg:
         wys = max(h for _, h, _ in strony)
@@ -637,6 +780,9 @@ def pdf_do_tekstu_z_notkami(pdf_bytes, zeszyt=False, indeksy=True):
                     caly[nr], notki[nr], przyciecie[nr] = ciete[nr], strona, p
     for nr, (w, h, slowa) in enumerate(strony):
         na_stronie = [s for s in slowa if s[0] < przyciecie.get(nr, w + 1)]
+        caly[nr], zdublowane = _pdf_bez_ukrytych_przypisow(caly[nr], na_stronie)
+        if zdublowane:      # → `pdf_layout_do_tekstu`, obszar niepewny „warstwa"
+            info.setdefault("strony_flagi", {}).setdefault(nr, []).append(("warstwa", zdublowane[0][:60]))
         caly[nr] = _pdf_oznacz_odsylacze(_pdf_rozstrzelone(_pdf_oznacz_indeksy(caly[nr], na_stronie), na_stronie),
                                          na_stronie)
     return "\f".join(caly), notki, info
@@ -733,9 +879,23 @@ def _pdf_odsylacze_bbox(slowa):
     Dz.U. 2025–2026 (głównie t.j.): par „N)" „N)" tej samej wysokości na jednej linii są dwie (3,44 i 5,84 pt, obie
     w k.p.c.); „7)" „7)" na dole strony DU 2026/1044 s. 4 (14,76 pt, wysokości 7,88 i 8,73) to nie para. Warunek
     wysokości odrzuca też punkt „1)" zwykłą czcionką tuż za odsyłaczem (górę ma prawie tę samą)."""
+    return [x[:3] for x in _pdf_odsylacze_bbox_pelne(slowa)]
+
+
+def _pdf_odsylacze_bbox_pelne(slowa):
+    """Jak `_pdf_odsylacze_bbox`, ale z dwoma polami więcej:
+    - czy słowo z lewej jest w PDF sklejone ze słowem PRZED nim (przerwa < 0,6 pt w tym samym wierszu). Tak jest z kropką za
+      indeksem górnym: k.p. DU 2026/1245 s. 95 „Art." „302" „[1]" „." „62)" — pdftotext zaczyna nowe słowo przy każdej zmianie
+      wielkości czcionki, więc „." jest osobnym słowem, a w `-layout` stoi w „302[1].62)" bez spacji przed sobą;
+    - czy NIŻEJ na stronie stoi numer przypisu N: słowo „N)" albo „N" mniejsze od słowa z lewej odsyłacza (przypisy są
+      składane mniejszą czcionką: „15)" na dole DU 2026/1473 s. 51 ma 6,6 pt, tekst 11 pt). Punkt wyliczenia „1)" zwykłą
+      czcionką tego warunku nie spełnia — DU 2014/900 s. 1: „innych ustaw 1), 2)" nad punktem „1) w art. 2:".
+    Oba pola służą `_pdf_oznacz_odsylacze`."""
     out, potw = [], set()
     for k, o in enumerate(slowa):
-        mm = re.fullmatch(r"(\d{1,3})(\)?)", o[4])
+        # „1)," — odsyłacz z przecinkiem przed następnym odsyłaczem (k.p.c. DU 2021/1805 s. 1: „Art. 1." „1)," „2)" — dotąd „2)"
+        # zostawało w tekście: „Art. 1., 2) Kodeks…", a przypis 2 był „bez odsyłacza")
+        mm = re.fullmatch(r"(\d{1,3})(\),?)?", o[4])
         if not mm:
             continue
         gora, dol = o[1], o[3]
@@ -747,21 +907,36 @@ def _pdf_odsylacze_bbox(slowa):
         wys = dol - gora
         lewe = [w for w in slowa if w is not o and abs(w[1] - gora) < 6 and -1.5 < o[0] - w[2] < 4
                 and wys < 0.85 * (w[3] - w[1]) and dol < w[3] - 0.5]
+        sklejone = przypis_nizej = False
         if lewe:
-            slowo, za_odsylaczem = min(lewe, key=lambda w: abs(o[0] - w[2]))[4], False
+            lw = min(lewe, key=lambda w: abs(o[0] - w[2]))
+            slowo, za_odsylaczem = lw[4], False
+            sklejone = any(p is not lw and abs(p[1] - lw[1]) < 3 and -0.5 < lw[0] - p[2] < 0.6 for p in slowa)
+            przypis_nizej = any(w[4] in (mm.group(1), mm.group(1) + ")") and w[1] > dol + 5
+                                and (w[3] - w[1]) < 0.85 * (lw[3] - lw[1]) for w in slowa)
         else:
             # za innym odsyłaczem tej samej wysokości (przerwa do 12 pt — patrz wyżej)
             lewe = [w for w in slowa if id(w) in potw and abs(w[1] - gora) < 1 and abs((w[3] - w[1]) - wys) < 0.5
                     and -1.5 < o[0] - w[2] < 12]
-            if not lewe or not o[4].endswith(")"):
+            # „2)," w środku trzech odsyłaczy „1), 2), 3)" też jest odsyłaczem — dotąd tylko „2)" bez przecinka, więc „3)" nie miało
+            # odsyłacza z lewej i zostawało w tekście („Art. 1. 3) Kodeks…"), a przypis 3 był „bez odsyłacza"
+            if not lewe or not o[4].rstrip(",").endswith(")"):
                 continue
             slowo, za_odsylaczem = lewe[0][4], True
         # jak w `_PDF_ODSYLACZ`: po cudzysłowie, nawiasie, „<", „±", myślniku i ukośniku nie usuwamy — obwieszczenie t.j.
         # cytuje przypis z jego numerem („które stanowią: „2) Tekst Programu…" — DU 2025/151)
         if slowo[-1:] not in "[(„\"'«<±–+/-":
-            out.append((slowo, mm.group(1), za_odsylaczem))
+            out.append((slowo, mm.group(1), za_odsylaczem, sklejone, przypis_nizej))
             potw.add(id(o))
     return out
+
+
+def _pdf_spacja_przed_odsylaczem(lines, i, n):
+    """Czy odsyłacz „N)" oddzielony w `-layout` spacją od słowa w wierszu `i` ma pod sobą przypis: wiersz NIŻEJ na tej stronie
+    zaczyna się od „N)" na marginesie (numer przypisu). Współrzędne mówią już, że „N)" jest mniejsze i podniesione — to drugi,
+    niezależny warunek, żeby spacja nie zdjęła z tekstu niczego, co nie ma przypisu na tej stronie."""
+    wzor = re.compile(r"^ {0,3}" + n + r"(?:\)(?:\s|$)| *$)")      # „N" sam w wierszu: numer rozbity na „N" ⏎ „ )" (DU 2014/900)
+    return any(l is not None and wzor.match(l) for l in lines[i + 1:])
 
 
 def _pdf_oznacz_odsylacze(tekst, slowa):
@@ -774,16 +949,34 @@ def _pdf_oznacz_odsylacze(tekst, slowa):
     if not slowa:
         return tekst
     lines = tekst.split("\n")
-    for slowo, n, za_odsylaczem in _pdf_odsylacze_bbox(slowa):
+    for slowo, n, za_odsylaczem, sklejone, przypis_nizej in _pdf_odsylacze_bbox_pelne(slowa):
         if za_odsylaczem:   # „6) 7)" → oba oznaczone, bez spacji między nimi (znika razem z odsyłaczami)
-            wzor = re.compile("(" + _ODS_POTW + re.escape(slowo) + r") ?(" + n + r"\))")
+            # „1), 2)" → przecinek między odsyłaczami też znika („Art. 1. Kodeks…", nie „Art. 1., Kodeks…")
+            wzory = [re.compile("(" + _ODS_POTW + re.escape(slowo.rstrip(",")) + ")" + ("," if slowo.endswith(",") else "")
+                                + r" ?(" + n + r"\))")]
         else:
-            wzor = re.compile(r"(?<!\S)(" + re.escape(slowo) + r")(" + n + r"\))")
-        for i, l in enumerate(lines):
-            m = wzor.search(l) if l is not None else None
-            if m:
-                lines[i] = l[:m.end(1)] + _ODS_POTW + l[m.start(2):]
-                break
+            wzory = [re.compile(r"(?<!\S)(" + re.escape(slowo) + r")(" + n + r"\))")]
+            if sklejone and re.fullmatch(r"[.,;:)]+", slowo):
+                # kropka za indeksem górnym: „Art. 302[1].62)" (k.p. DU 2026/1245 s. 95) — w bbox osobne słowo „.", w `-layout`
+                # sklejone z „[1]"; dotąd odsyłacz 62 nie był potwierdzony, więc blok przypisów 60–62 tej strony nie był
+                # rozpoznany i jego treść zostawała w art. 302¹ § 7. Tak samo nawias za odsyłaczem: „zm.1))2)" (DU 2026/55 s. 2)
+                wzory.append(re.compile(r"(?<=\S)(" + re.escape(slowo) + r")(" + n + r"\))"))
+            # spacja w `-layout`, której w PDF nie ma: „Pożarnej 15)" (DU 2026/1473 s. 51 — w bbox „15)" zaczyna się 0,33 pt za
+            # „Pożarnej"); dotąd „15)" zostawało w tytule rozdziału, a przypis 15 był „bez odsyłacza". Tylko gdy niżej na stronie
+            # stoi numer przypisu N mniejszą czcionką (bbox) i wiersz zaczynający się od „N)" (`_pdf_spacja_przed_odsylaczem`)
+            if przypis_nizej:
+                wzory.append(re.compile(r"(?<!\S)(" + re.escape(slowo) + r")( +)(?=(" + n + r"\)))"))
+        for wzor in wzory:
+            for i, l in enumerate(lines):
+                m = wzor.search(l) if l is not None else None
+                if m and m.re.groups == 3 and not _pdf_spacja_przed_odsylaczem(lines, i, n):
+                    m = None
+                if m:
+                    lines[i] = l[:m.end(1)] + _ODS_POTW + l[m.end(2) if m.re.groups == 3 else m.start(2):]
+                    break
+            else:
+                continue
+            break
         else:
             if za_odsylaczem:
                 continue
@@ -836,7 +1029,7 @@ def _pdf_punkt_obwieszczenia(blok, numery, tresc_strony):
     return not any(_ODS_POTW + n + ")" in tresc_strony for n in numery)
 
 
-def _pdf_strona(page, pierwsza, info=None, notki_bbox=None, obwieszczenie=False):
+def _pdf_strona(page, pierwsza, info=None, notki_bbox=None, obwieszczenie=False, stopka=None, przypis_niedokonczony=False):
     """Jedna strona z `pdftotext -layout` → (linie treści [(wcięcie, tekst, notki)], przypisy {nr: treść}).
 
     Usuwa nagłówek („©Kancelaria Sejmu  s. 1/119", „Dziennik Ustaw – 22 – Poz. 795"), stopkę
@@ -847,7 +1040,9 @@ def _pdf_strona(page, pierwsza, info=None, notki_bbox=None, obwieszczenie=False)
     `notki_bbox` ({k: [notka]} z `_pdf_notki_z_bbox`; strona już przycięta do szerokości treści)
     zastępuje rozpoznawanie notek po odstępach w wierszu. `obwieszczenie` — strona obwieszczenia Marszałka Sejmu
     przed stroną „Załącznik do obwieszczenia": punkt jego wyliczenia na dole strony nie jest przypisem
-    (`_pdf_punkt_obwieszczenia`).
+    (`_pdf_punkt_obwieszczenia`). `stopka` — data wydruku w starym zapisie („18.01.2021"), którą `_pdf_data_stopki` potwierdziła
+    jako ostatni wiersz większości stron PDF: ostatni wiersz strony równy tej dacie jest stopką. `przypis_niedokonczony` — ostatni
+    przypis poprzedniej strony urywa się w pół zdania (`_pdf_dokonczenie_przypisu`).
     """
     # znak U+FEFF przed nagłówkiem strony („\ufeff Dziennik Ustaw –2– Poz. 712") — nagłówek nie był rozpoznawany i wchodził
     # w treść przepisu („…ryb 0,05 Dziennik Ustaw – 10 – Poz. 1016 1 2 3 4 DDT"); 13.11.2026: 9 z 58 tekstów (DU 2026/1391:
@@ -855,6 +1050,15 @@ def _pdf_strona(page, pierwsza, info=None, notki_bbox=None, obwieszczenie=False)
     lines = page.replace("\ufeff", "").split("\n")
     while lines and not lines[-1].strip():
         lines.pop()
+    # numer przypisu rozbity na dwa wiersze: „1" ⏎ „ )     Niniejszą ustawą zmienia się…" (DU 2014/900 s. 1 — w bbox „)" stoi
+    # 2 pt niżej niż „1"); dotąd blok przypisów nie był rozpoznany, a przypisy 1 i 2 szły do treści jako „1 ) Niniejszą…".
+    # Tylko na stronie z odsyłaczem potwierdzonym współrzędnymi — bez nich blok i tak nie byłby rozpoznany, a sklejone „1)"
+    # zaczynałoby nowy akapit, udając punkt wyliczenia
+    for k in range(len(lines) - 1 if _ODS_POTW in page else 0):
+        if lines[k] is not None and re.fullmatch(r" {0,3}\d{1,3}", lines[k]) and re.match(r" {0,3}\)\s", lines[k + 1]):
+            lines[k + 1] = lines[k] + lines[k + 1].lstrip(" ")
+            lines[k] = None
+    lines = [l for l in lines if l is not None]
     przypiete = {}
     if notki_bbox is not None:
         niepuste_idx = [k for k, l in enumerate(lines) if l.strip()]
@@ -875,8 +1079,8 @@ def _pdf_strona(page, pierwsza, info=None, notki_bbox=None, obwieszczenie=False)
     for k, v in przypiete.items():
         przesuniete.setdefault(max(k - i, pierwszy), []).extend(v)
     przypiete = przesuniete
-    # stopka: znacznik daty / numer strony na samym dole
-    while lines and (not lines[-1].strip() or _PDF_STOPKA.match(lines[-1])):
+    # stopka: znacznik daty / numer strony na samym dole; `stopka` — data wydruku „18.01.2021" potwierdzona na innych stronach
+    while lines and (not lines[-1].strip() or _PDF_STOPKA.match(lines[-1]) or stopka and lines[-1].strip() == stopka):
         d = re.match(r"^\s*(\d{4}-\d{2}-\d{2})\s*$", lines[-1])
         if d and info is not None:
             info.setdefault("data_wydruku", d.group(1))
@@ -962,7 +1166,11 @@ def _pdf_strona(page, pierwsza, info=None, notki_bbox=None, obwieszczenie=False)
                     przypisy[biezacy] = _doklej(przypisy[biezacy], t)
             wiersze = wiersze[:k]
             return [(w, t, n) for w, t, n in wiersze if t], przypisy
-    wiersze = _pdf_przypisy_po_odstepie(wiersze, przypisy)
+    wiersze = _pdf_przypisy_po_odstepie(wiersze, przypisy, przypis_niedokonczony)
+    if not przypisy:
+        wiersze = _pdf_przypisy_bez_odstepu(wiersze, przypisy)
+    if przypis_niedokonczony and not przypisy:
+        wiersze = _pdf_dokonczenie_przypisu(wiersze, przypisy)
     return [(w, t, n) for w, t, n in wiersze if t], przypisy
 
 
@@ -970,7 +1178,7 @@ _PDF_NAGLOWEK_JEDNOSTKI = re.compile(r"^[\[<„]?(Art\.\s*\d|§\s*\d|Rozdział\s
                                      r"Księga\s|KSIĘGA\s|Oddział\s|ODDZIAŁ\s|Załącznik)")
 
 
-def _pdf_przypisy_po_odstepie(wiersze, przypisy):
+def _pdf_przypisy_po_odstepie(wiersze, przypisy, ciag=False):
     """Blok przypisów, którego nie rozpoznała reguła „ostatni blok po pustej linii od „N)" na marginesie". Zweryfikowane
     13.11.2026 na obrazie strony: k.p.c. DU 2026/468 s. 14 — blok zaczyna się dokończeniem przypisu 5 z poprzedniej strony,
     a za nim „6)", „7)" (wyroki TK P 13/19, P 10/19); k.p. DU 2026/1245 s. 95 — pusty wiersz w środku przypisu 61; DU 2026/1315
@@ -980,7 +1188,12 @@ def _pdf_przypisy_po_odstepie(wiersze, przypisy):
     Blok = wiersze pod ostatnim odstępem co najmniej dwóch pustych wierszy, w których każdy niepusty wiersz to „N)" na
     marginesie (początek przypisu) albo wiersz wcięty (jego ciąg dalszy). Numery mają iść po kolei i KAŻDY musi mieć w treści
     strony nad blokiem odsyłacz potwierdzony współrzędnymi (`_ODS_POTW`) — bez współrzędnych (zeszyty 1990–2011, OCR) reguła
-    nie działa. Wcięte wiersze przed pierwszym „N)" to dokończenie ostatniego przypisu poprzedniej strony (klucz „+")."""
+    nie działa. Wcięte wiersze przed pierwszym „N)" to dokończenie ostatniego przypisu poprzedniej strony (klucz „+").
+
+    `ciag` — ostatni przypis poprzedniej strony urywa się w pół zdania: dokończenie może się wtedy zaczynać także od liczby
+    („1566, 1909, 2180 i 2494 oraz z 2018 r. poz. 138 i 379), która weszła w życie…" — k.p. DU 2018/917 s. 86, tekst
+    ujednolicony; dotąd przypis 9 tej strony był „nie odnaleziony", a cały blok szedł do art. 175¹ pkt 2), byle nie od numeru
+    ustępu albo punktu („2. …", „2) …")."""
     if not any(_ODS_POTW in t for _, t, _ in wiersze):
         return wiersze
     najlepszy = None
@@ -993,7 +1206,8 @@ def _pdf_przypisy_po_odstepie(wiersze, przypisy):
                         # wcięte pod numerem przypisu to wyliczenie W przypisie (CIT DU 2026/554 s. 2) — dozwolone
         # dokończenie przypisu z poprzedniej strony zaczyna się w środku zdania (małą literą); wcięty wiersz wielką literą
         # przed pierwszym „N)" to raczej treść (podpis, wyśrodkowany nagłówek) — takiego bloku nie bierzemy
-        if blok and blok[0][0] > 0 and not blok[0][1][:1].islower():
+        if blok and blok[0][0] > 0 and not blok[0][1][:1].islower() \
+                and not (ciag and blok[0][1][:1].isdigit() and not re.match(r"\d+[a-z]*[.)]\s", blok[0][1])):
             continue
         numery = [m.group(1) for w, t in blok if w == 0 for m in [_PDF_PRZYPIS.match(t)] if m]
         nad = "\n".join(t for _, t, _ in wiersze[:p])
@@ -1017,6 +1231,77 @@ def _pdf_przypisy_po_odstepie(wiersze, przypisy):
     if dalszy:
         przypisy["+"] = dalszy
     return wiersze[:najlepszy]
+
+
+def _pdf_przypisy_bez_odstepu(wiersze, przypisy):
+    """Blok przypisów, który stoi tuż pod tekstem, BEZ pustego wiersza. DU 2013/714 s. 1: „…wniesienia protestu." ⏎ „1)" ⏎
+    „     Zmiany tekstu jednolitego wymienionej ustawy…" — reguła „ostatni blok po pustej linii" brała cały akapit ust. 3 za
+    blok, więc przypis 1 szedł do ust. 3 („…protestu. 1) Zmiany tekstu…"), a przy art. 1 stało „nie odnaleziono".
+
+    Blok = od wiersza „N)" na marginesie do końca strony; dalej tylko wiersze wcięte (ciąg przypisu) i kolejne „M)" na
+    marginesie. Każdy numer musi mieć na stronie odsyłacz potwierdzony współrzędnymi (`_ODS_POTW`), numery idą po kolei,
+    a każdy przypis zaczyna się od samego „N)" w wierszu albo zawiera frazę przypisu (`_PDF_FRAZY_PRZYPISU`) — punkt
+    wyliczenia „1) projekt…" z wciętym ciągiem dalszym tego nie spełnia."""
+    niepuste = [i for i, (_, t, _) in enumerate(wiersze) if t]
+    if not niepuste or not any(_ODS_POTW in t for _, t, _ in wiersze):
+        return wiersze
+    najlepszy = None        # najwyższy początek bloku, który spełnia warunki — przypis nad przypisem nie może zostać w treści
+    for p in reversed(niepuste):
+        w, t, _ = wiersze[p]
+        if not (w == 0 and _PDF_PRZYPIS.match(t)):
+            if w == 0:
+                break       # wiersz treści na marginesie — wyżej bloku przypisów już nie ma
+            continue
+        blok = [(wiersze[i][0], wiersze[i][1]) for i in niepuste if i >= p]
+        if not all(w > 0 and not _PDF_NAGLOWEK_JEDNOSTKI.match(t) or w == 0 and _PDF_PRZYPIS.match(t) for w, t in blok):
+            break
+        przyp, biezacy = {}, None
+        for w, t in blok:
+            m = _PDF_PRZYPIS.match(t) if w == 0 else None
+            if m:
+                biezacy = m.group(1)
+                przyp[biezacy] = m.group(2) or ""
+                przyp[biezacy + "?"] = not m.group(2) or any(f in t for f in _PDF_FRAZY_PRZYPISU)
+            else:
+                przyp[biezacy] = _doklej(przyp[biezacy], t)
+                przyp[biezacy + "?"] = przyp[biezacy + "?"] or any(f in t for f in _PDF_FRAZY_PRZYPISU)
+        numery = [k for k in przyp if not k.endswith("?")]
+        nad = "\n".join(t for _, t, _ in wiersze[:p])
+        potw = set(re.findall(_ODS_POTW + r"(\d{1,3})\)", nad))
+        if numery and set(numery) <= potw and all(przyp[k + "?"] for k in numery) \
+                and all(int(b) == int(a) + 1 for a, b in zip(numery, numery[1:])):
+            najlepszy = (p, {k: przyp[k] for k in numery})
+    if najlepszy is None:
+        return wiersze
+    przypisy.update(najlepszy[1])
+    return wiersze[:najlepszy[0]]
+
+
+def _pdf_dokonczenie_przypisu(wiersze, przypisy):
+    """Strona bez własnych przypisów, na której dole stoi tylko DOKOŃCZENIE ostatniego przypisu poprzedniej strony. DU 2019/1500
+    s. 2–3 (obraz strony): przypis 1 urywa się na s. 2 w pół zdania („…weszła w życie z dniem 25 maja 2018"), a na s. 3 pod
+    odstępem stoi wcięte „r. Przepisy ustawy wymienione w zdaniu pierwszym utraciły moc z dniem 6 lutego 2019 r., …". Strona nie
+    ma żadnego odsyłacza, więc `_pdf_przypisy_po_odstepie` jej nie bierze, a dokończenie szło w środek art. 4 ust. 4b („…w dziale
+    6 rejestru r. Przepisy ustawy … przedsiębiorców wpisano…").
+
+    Warunki: ostatni przypis poprzedniej strony nie kończy się kropką ani innym znakiem końca zdania (sprawdza wywołujący);
+    blok stoi pod odstępem co najmniej dwóch pustych wierszy, wszystkie jego wiersze są wcięte, nie zaczynają się od „N)" ani od
+    nagłówka jednostki, a pierwszy zaczyna się małą literą (dalszy ciąg zdania). Wynik — jak w `_pdf_przypisy_po_odstepie`:
+    klucz „+", który `pdf_layout_do_tekstu` dokleja do ostatniego przypisu poprzedniej strony."""
+    p = len(wiersze)
+    while p > 0 and wiersze[p - 1][1]:
+        p -= 1
+    blok = [(w, t) for w, t, _ in wiersze[p:] if t]
+    if not blok or p < 2 or wiersze[p - 1][1] or wiersze[p - 2][1] or not any(t for _, t, _ in wiersze[:p]):
+        return wiersze
+    if not blok[0][1][:1].islower() or not all(w > 0 and not _PDF_PRZYPIS.match(t) and not _PDF_NAGLOWEK_JEDNOSTKI.match(t)
+                                               for w, t in blok):
+        return wiersze
+    dalszy = ""
+    for _, t in blok:
+        dalszy = _doklej(dalszy, t)
+    przypisy["+"] = dalszy
+    return wiersze[:p]
 
 
 def _zlacz_rozstrzelone(t):
@@ -1119,11 +1404,289 @@ _PDF_POCZATEK_JEDNOSTKI = re.compile(r"^[\[<]?(?:Art\.\s*\d|§\s*\d|\d+[a-z]*\.\
                                      r"Tytuł\s|TYTUŁ\s|Księga\s|KSIĘGA\s|Oddział\s|ODDZIAŁ\s|Załącznik)")
 
 
+# Data wydruku w stopce tekstu ujednoliconego Kancelarii Sejmu w starym zapisie: „18.01.2021" zamiast „2026-09-25". 13.11.2026,
+# 25 PDF typu U wygenerowanych w latach 2016–2026: stary zapis ma 11 (wygenerowane od 04.2018 do 01.2022, np. DU 2019/1500,
+# DU 2020/920), ISO — 14. `_PDF_STOPKA` znała tylko ISO, więc data zostawała w treści na każdej stronie: jako osobny wiersz
+# w środku zdania („…współpracy sądów ⏎ 18.01.2021 ⏎ w szczególności…"), doklejona do ostatniego przypisu strony („…str. 18.
+# 18.01.2021") albo zasłaniała blok przypisów (ostatni blok strony nie zaczynał się od „N)" — przypis 1 DU 2019/1500 „nie
+# odnaleziono"). Stopką jest tylko data, która stoi SAMA w ostatnim wierszu co najmniej połowy stron z treścią (i co najmniej
+# dwóch) — prawdziwa data w przepisie nie powtarza się na końcu kolejnych stron. W akcie jednostronicowym powtórzenia nie ma:
+# data zostaje (DU 2020/2374 — pod podpisem Prezydenta) i daje ostrzeżenie `_niepewne_miejsca_pdf`.
+_PDF_DATA_STOPKI = re.compile(r"\d{2}\.\d{2}\.\d{4}")
+# akapit, który jest SAMĄ datą — w treści aktu tak nie bywa; to stopka strony, której `_pdf_data_stopki` nie potwierdziła
+# (`_niepewne_miejsca_pdf`)
+_PDF_SAMA_DATA = re.compile(r"\d{1,2}\.\d{2}\.\d{4}|\d{4}-\d{2}-\d{2}")
+# treść przypisu w treści przepisu: „N) " + początek typowy dla przypisu tekstu jednolitego (wielką literą — punkt wyliczenia
+# zaczyna się małą). Tak wyglądał k.p. DU 2026/1245 art. 302¹ § 7 przed poprawką („60) Zmiany tekstu jednolitego…") i k.c.
+# art. 182 § 2 w wersji 2.3.0 („…kosztów. 2) Z dniem 15 lipca 2006 r. na podstawie wyroku…"); zaślepka „nie odnaleziono"
+# stoi przy odsyłaczu, często w innym artykule niż wklejona treść (`_niepewne_miejsca_pdf`)
+_PDF_PRZYPIS_W_TRESCI = re.compile(
+    r"(?:^|(?<=\s))(\d{1,3}) ?\) (?=(?:Zmiany tekstu jednolitego|Zmiany? wymienion|W brzmieniu ustalonym|Dodan[yae] przez|"
+    r"Uchylon[yae] przez|Ze zmianą wprowadzoną|Niniejsz[aą] ustaw|Niniejsze rozporządzenie|Obecnie minister|Z dniem \d|"
+    r"Utracił[ay]? moc)\b)")
+
+
+def _pdf_data_stopki(strony, wzor=_PDF_DATA_STOPKI):
+    """Strony z `-layout` → data wydruku w starym zapisie (`wzor`), która jest ostatnim wierszem większości stron (albo None)."""
+    ostatnie, z_trescia = {}, 0
+    for s in strony:
+        niepuste = [l.strip() for l in s.split("\n") if l.strip()]
+        if not niepuste:
+            continue
+        z_trescia += 1
+        if wzor.fullmatch(niepuste[-1]):
+            ostatnie[niepuste[-1]] = ostatnie.get(niepuste[-1], 0) + 1
+    if not ostatnie:
+        return None
+    data = max(ostatnie, key=ostatnie.get)
+    return data if ostatnie[data] >= 2 and ostatnie[data] * 2 >= z_trescia else None
+
+
+def _pdf_notka_pod_data(strona, data):
+    """Strona z `-layout` → (strona bez daty wydruku i bez urwanej notki pod nią, tekst notki albo None).
+
+    Notka marginesu na samym dole strony, POD datą wydruku w stopce, bywa w PDF urwana na krawędzi strony: DU 2026/1263 s. 25
+    „Zmiana (skreślenie wyrazów) w pkt 9" (pełna notka dopiero przy art. 13 na s. 28), DU 2022/1138 s. 47 „Nowe brzmienie § 1
+    i przepis" (dalszy ciąg „uchylający § 1a w" wystaje poza stronę, a na s. 48 go nie ma) — 13.11.2026, obraz stron. Strony
+    nie da się przyciąć przed kolumną notek (notka bez frazy „wejdzie w życie"), więc data i początek notki zostawały w treści
+    i rozcinały zdanie („…import takich towarów ⏎ 2026-11-12 ⏎ Zmiana ⏎ (skreślenie ⏎ wyrazów) w pkt 9 ⏎ z terytorium państwa
+    trzeciego…"). Warunki: data (ISO) równa dacie wydruku potwierdzonej na innych stronach (`data`), pod nią do końca strony
+    tylko wiersze wcięte co najmniej na 55% szerokości strony (kolumna notek)."""
+    if not data or data not in strona:
+        return strona, None
+    lines = strona.split("\n")
+    niepuste = [k for k, l in enumerate(lines) if l.strip()]
+    szer = max((len(l.rstrip()) for l in lines), default=0)
+    k = next((k for k in reversed(niepuste[-8:]) if lines[k].strip() == data), None)
+    pod = [i for i in niepuste if k is not None and i > k]
+    if k is None or not pod or any(len(lines[i]) - len(lines[i].lstrip(" ")) < 0.55 * szer for i in pod):
+        return strona, None
+    notka = ""
+    for i in pod:
+        notka = _doklej(notka, " ".join(lines[i].split()))
+    return "\n".join(lines[:k]), notka
+
+
 def _przypis_bez_odsylacza(n, tresc):
     return f"[przypis {n}) — {_PRZYPIS_BEZ_ODSYLACZA}] {tresc}"
 
 
-def pdf_layout_do_tekstu(raw, info=None, notki=None):
+# Obszary tekstu z PDF odczytane niepewnie, które nie mają w tekście własnej etykiety (jak „[przypis N)] (treści … nie
+# odnaleziono…)"): tabela z wielowierszowymi komórkami, strona z ukrytą warstwą tekstu, luka albo odwrócenie w numeracji jednostek.
+# `pdf_layout_do_tekstu` oznacza akapity takiego obszaru niewidocznymi znakami (prywatny zakres Unicode), a po złożeniu tekstu
+# zdejmuje je i zapisuje w `info["niepewne_obszary"]` pozycje (początek, koniec) w WYNIKOWYM tekście — bez żadnej zmiany samego
+# tekstu. `_niepewne_miejsca_pdf` ostrzega o obszarze, gdy zachodzi on na wypisany fragment (albo zawsze — przy pełnym tekście).
+_RODZAJE_OBSZAROW = ("tabela", "warstwa", "numeracja", "notka")
+_ZN_KONIEC = ""          # koniec oznaczonego akapitu
+_ZN_OBSZAR = 0xF0000           # + 0x1000 × rodzaj + strona (od 0): początek akapitu obszaru
+_ZN_STRONA = 0xF8000           # + strona (od 0): akapit zaczynający jednostkę — do stron luk w numeracji
+_ZNACZNIKI = re.compile("[\U000f0000-\U000fffff]")
+
+
+def _pdf_oznacz_obszar(t, flagi, strona=None):
+    """Akapit `t` → ten sam akapit ze znacznikami obszarów `flagi` ({(rodzaj, strona od 0)}) i strony (`_pdf_zdejmij_znaczniki`)."""
+    if not t.strip():
+        return t
+    pocz = "".join(chr(_ZN_OBSZAR + 0x1000 * _RODZAJE_OBSZAROW.index(r) + s) for r, s in sorted(flagi) if 0 <= s < 0x1000)
+    if strona is not None and 0 <= strona < 0x7000:
+        pocz = chr(_ZN_STRONA + strona) + pocz
+    return pocz + t + _ZN_KONIEC * sum(1 for c in pocz if ord(c) < _ZN_STRONA)
+
+
+def _pdf_zdejmij_znaczniki(t):
+    """Tekst ze znacznikami → (tekst bez nich, [(rodzaj, strona, początek, koniec)], [(pozycja, strona)] początków jednostek)."""
+    if not _ZNACZNIKI.search(t):
+        return t, [], []
+    out, obszary, strony, stos, poz = [], [], [], [], 0
+    for kawalek in re.split("([\U000f0000-\U000fffff])", t):
+        if not kawalek:
+            continue
+        if len(kawalek) == 1 and _ZNACZNIKI.match(kawalek):
+            k = ord(kawalek)
+            if kawalek == _ZN_KONIEC:
+                if stos:
+                    rodzaj, strona, start = stos.pop()
+                    obszary.append((rodzaj, strona, start, poz))
+            elif k >= _ZN_STRONA:
+                strony.append((poz, k - _ZN_STRONA))
+            else:
+                stos.append((_RODZAJE_OBSZAROW[(k - _ZN_OBSZAR) // 0x1000], (k - _ZN_OBSZAR) % 0x1000, poz))
+            continue
+        out.append(kawalek)
+        poz += len(kawalek)
+    return "".join(out), sorted(obszary, key=lambda o: o[2]), strony
+
+
+def _pdf_scal_obszary(obszary):
+    """Akapity jednego rodzaju na tej samej albo kolejnej stronie → jeden obszar [(rodzaj, strona od, strona do, początek, koniec)]."""
+    out = []
+    for rodzaj, strona, s, e in sorted(obszary, key=lambda o: (_RODZAJE_OBSZAROW.index(o[0]), o[1], o[2])):
+        if out and out[-1][0] == rodzaj and strona <= out[-1][2] + 1:
+            out[-1] = (rodzaj, out[-1][1], max(out[-1][2], strona), min(out[-1][3], s), max(out[-1][4], e))
+        else:
+            out.append((rodzaj, strona, strona, s, e))
+    return out
+
+
+# Tabela, której komórki `-layout` przeplata (13.11.2026, DU 2025/615 s. 10, VAT DU 2026/1263 s. 414, DU 2026/1252 s. 41 —
+# obraz strony): gdy w jednym wierszu tabeli zawija się więcej niż jedna komórka, `-layout` daje wiersz po wierszu strony
+# („13   bez względu   Wyroby medyczne w rozumieniu…" ⏎ „     na CN         medycznych (Dz. U.…"), a sklejanie akapitów —
+# „13 bez względu Wyroby medyczne w rozumieniu… na CN medycznych…". Komórka zawinięta tylko w jednej kolumnie (zwykły wiersz VAT
+# „poz. | PKWiU | nazwa") czyta się dobrze — takich tabel nie oznaczamy. Wiersz tabeli = co najmniej dwa segmenty oddzielone
+# ≥ 3 spacjami (numer punktu „1)   tekst" to jeden segment); rozstrzelony wiersz justowanej prozy („Powództwo     wzajemne
+# o ustalenie") — nie. Blok tabeli: ≥ 3 takie wiersze (przerwy do 2 wierszy) z kolumną zaczynającą się w tym samym miejscu
+# w ≥ 3 wierszach. Niepewny: zawiera wiersz ciągu dalszego komórki, który `-layout` stawia za tekstem kolumny bardziej na prawo
+# (`_pdf_wiersz_przemieszany`).
+_PDF_SEGMENT = re.compile(r"\S+(?: {1,2}\S+)*")
+_PDF_ZNAK_WYLICZENIA = re.compile(r"\d+[a-z]*\)|[a-z]\)|[–-]|\d+[a-z]*\.|§ ?\d+[a-z]*\.|Art\. ?\d+[a-z]*\.|\*+")
+
+
+def _pdf_segmenty(l):
+    out = []
+    for m in _PDF_SEGMENT.finditer(l):
+        if len(out) == 1 and _PDF_ZNAK_WYLICZENIA.fullmatch(out[0][1]):
+            out[0] = (out[0][0], out[0][1] + " " + m.group(0))
+        else:
+            out.append((m.start(), m.group(0)))
+    return out
+
+
+def _pdf_tabela_niepewna(lines):
+    """Wiersze strony → zbiór tekstów wierszy (spacje znormalizowane jak w `_pdf_strona`) z bloków tabeli, których komórki
+    `-layout` mógł przemieszać (patrz wyżej)."""
+    seg = [_pdf_segmenty(l) for l in lines]
+
+    def proza(s):
+        # ≥ 5 segmentów: wiersz tabeli z 4 kolumnami słów („4   Starszy terapeuta zajęciowy   VIII   według odrębnych przepisów"
+        # — DU 2021/1960 s. 58) to nie proza
+        return len(s) >= 5 and sum(1 for _, t in s if len(t.split()) <= 3 and t[:1].isalpha()) >= 0.75 * len(s)
+    wiele = [i for i, s in enumerate(seg) if len(s) >= 2 and not proza(s)]
+    bloki, biezacy = [], []
+    for i in wiele:
+        # między wierszami tabeli bywa wiele wierszy dalszego ciągu jednej komórki (nazwa towaru VAT na 9 wierszy — DU 2017/1221
+        # s. 310); blok przerywają dopiero 3 puste wiersze z rzędu
+        if biezacy and "\n\n\n\n" in "\n".join(l if l.strip() else "" for l in lines[biezacy[-1]:i + 1]):
+            bloki.append(biezacy)
+            biezacy = []
+        biezacy.append(i)
+    if biezacy:
+        bloki.append(biezacy)
+    out = set()
+    for b in bloki:
+        if len(b) < 3:
+            continue
+        kolumny = {}
+        for i in b:
+            for x, _ in seg[i][1:]:
+                kolumny[x] = kolumny.get(x, 0) + 1
+        wyrownane = {x for x in kolumny if kolumny[x] + kolumny.get(x - 1, 0) + kolumny.get(x + 1, 0) >= 3}
+        if not wyrownane:
+            continue
+        lewy = min(seg[i][0][0] for i in b)
+        koniec = min(b[-1] + 3, len(lines))       # dalszy ciąg ostatniego wiersza tabeli bywa jednym segmentem
+        if any(_pdf_wiersz_przemieszany(seg, i, lewy, b[0], wyrownane) for i in range(b[0] + 1, koniec)):
+            out.update(" ".join(lines[i].split()) for i in range(b[0], koniec) if lines[i].strip())
+    return out
+
+
+def _pdf_wiersz_przemieszany(seg, i, lewy, od=0, wyrownane=()):
+    """Czy wiersz `i` bloku tabeli to dalszy ciąg komórki, który `-layout` postawi ZA tekstem kolumny bardziej na prawo
+    z wiersza wyżej? Dalszy ciąg: pierwsza komórka pusta (pierwszy segment dalej niż lewy brzeg bloku). Tabela bez kolumny
+    „Lp.", w której zawija się pierwsza kolumna, tego warunku nie spełnia — takiego przemieszania reguła nie wykrywa.
+    Przemieszany: poprzedni niepusty wiersz (najwyżej 2 wiersze wyżej) ma segment zaczynający się na prawo od tego wiersza —
+    „Ścierka do wycierania na-   szt.   4   2   1" ⏎ „czyń" daje „…na- szt. 4 2 1 czyń" (DU 1998/1012).
+
+    Czytają się dobrze, więc nie są alarmem: zawinięta tylko OSTATNIA kolumna („Wyroby medyczne…" ⏎ „medycznych…"), wartość
+    w wierszu ciągu nazwy („z azbestem (torkret)…… 25" — DU 1998/895), wiersz zaczynający się od numeru z treścią
+    („2. Tynk…", „II …", „a) …") — nowy wiersz tabeli — i dalszy ciąg, który sięga za początek tamtej kolumny (objaśnienie
+    symbolu wzoru: „ZOr – minimalną … ro-" ⏎ „py naftowej wyrażoną…" — DU 2014/900). Sam wcięty numer („0" — podwiersz
+    M.P. 2023/1279 s. 6, którego wartości „110 110 110" `-layout` postawił wiersz wyżej, przy nazwie poz. 45) jest sprawdzany
+    jak dalszy ciąg."""
+    pierwszy = seg[i][0][1] if seg[i] else ""
+    numer = re.match(r"(?:\d+[a-z]?|[IVX]+|[a-z])[.)]?(?:\s|$)|[a-z]{1,3}\)", pierwszy)
+    sam_numer = numer and len(seg[i]) == 1 and re.fullmatch(r"(?:\d+[a-z]?|[IVX]+)[.)]?", pierwszy)
+    if not seg[i] or seg[i][0][0] <= lewy + 2 or pierwszy.startswith(("–", "-")) or numer and not sam_numer \
+            or " " not in pierwszy and len(pierwszy) <= 6 and not pierwszy[:1].islower() and len(seg[i]) > 1 \
+            or pierwszy.endswith(("–", ":")) or len(seg[i]) > 1 and seg[i][1][1].startswith("–") or _pdf_wzor(seg[i]):
+        return False        # numer wiersza z treścią, tiret, objaśnienie symbolu wzoru („R –", „n−i – rok…", „gdzie:")
+    j = next((k for k in (i - 1, i - 2) if k >= od and seg[k]), None)
+    if j is None or _pdf_wzor(seg[j]) or _PDF_NAGLOWEK.match(" ".join(t for _, t in seg[j])):
+        return False        # nad nim wzór, nagłówek strony („©Kancelaria Sejmu   s. 76/134") albo tytuł nad tabelą
+    koniec = seg[i][0][0] + len(seg[i][0][1])
+    # wiersz wyżej od tej kolumny w prawo to justowany tekst jednej komórki („Pozostałe usługi profesjonalne,   naukowe   i
+    # techniczne,   gdzie   indziej" ⏎ „niesklasyfikowane" — VAT DU 2026/1263 s. 442), nie kilka kolumn: same krótkie słowa, żadne
+    # nie zaczyna się w kolumnie wyrównanej w bloku (kolumna „VIII   według odrębnych przepisów" — DU 2021/1960 s. 58 — tak)
+    ogon = [(x, t) for x, t in seg[j] if x >= seg[i][0][0] - 2]
+    if len(ogon) >= 3 and sum(1 for _, t in ogon if len(t.split()) <= 3 and t[:1].isalpha()) >= 0.75 * len(ogon) \
+            and not any(abs(x - w) <= 1 for x, _ in ogon[1:] for w in wyrownane):
+        return False
+    return any(x > seg[i][0][0] + 2 and x > koniec for x, _ in seg[j])
+
+
+def _pdf_wzor(segmenty):
+    """Wiersz wzoru („DPITn = DPITn−i ∙   ∙", „𝐾𝑃 =", licznik ułamka „P−G–O" — DU 2014/900 s. 5): znak „=", znak działania
+    (minus U+2212, „×", „∙", „÷", „Σ", „√") albo litery matematyczne Unicode."""
+    t = " ".join(s for _, s in segmenty)
+    return any(c in t for c in "=−×∙÷Σ√") or any("\U0001d400" <= c <= "\U0001d7ff" for c in t)
+
+
+# Luki i odwrócenia w numeracji jednostek tekstu z zeszytu Dz.U./M.P. (1990–2011) i z OCR (13.11.2026): DU 1994/73 — „§ '0."
+# (OCR „1" jako „'") wklejone w § 9 ust. 2, „586." (OCR „§" jako „5") na stronie-skanie; DU 1996/78 — „34. 1. Pryzmy… §" (znak „§"
+# przesunięty w warstwie OCR); DU 2004/1453 — łamy przemieszane („wrze- § 2. Ustala się…"). Nagłówek „§ N." / „Art. N." na początku
+# wiersza (także „§ 11 .", „§ 40:", „§9." z OCR), poza cudzysłowem (akt zmieniający cytuje cudze jednostki). Paragrafy liczone
+# osobno w każdym artykule (i od nowa od „§ 1": załącznik, regulamin); numer z literą („§ 5a") to ta sama baza.
+# Zakres („Art. 139–144. (uchylone)") — tylko z nawiasem za nim: „§ 11—14." na początku wiersza to dalszy ciąg odesłania
+# („…stosując zasady określone w ⏎ § 11—14." — DU 1998/875), nie nagłówek.
+_NAGLOWEK_NUMERACJI = re.compile(r"(?m)^[\[<]?(Art\.|§)[ ]?(\d{1,4})[a-z]{0,4}(?:[ ]?[–—-][ ]?(\d{1,4})[a-z]{0,4}(?=[ ]?\.[ ]?\())?"
+                                 r"(?:[ ]\d{1,3}[a-z]{0,2})?[ ]?[.:,]")
+
+
+def _luki_numeracji(t):
+    """Tekst → [(opis, początek, koniec)]: luka („brak § 10") albo odwrócenie („§ 40 po § 48") w numeracji; obszar sięga od
+    nagłówka przed luką do końca wiersza nagłówka za nią.
+
+    Akt zmieniający (co najmniej dwa „otrzymuje brzmienie" / „dodaje się") nie jest sprawdzany: cytuje cudze artykuły, a w
+    OCR z lat 90. cudzysłów bywa odczytany jako „,," albo `"`, więc maska cytatów nie działa — DU 1995/504 dawał 6 fałszywych
+    luk („art. 2–33 brak…", bo „Art. 34b." z cytatu stał na początku wiersza; 13.11.2026)."""
+    if len(re.findall(r"(?i)otrzymuj\w*\s+brzmienie|dodaje\s+się", t)) >= 2:
+        return []
+    maska, _ = _maska_cytatow(t)
+    widziane = {"Art.": set(), "§": set()}
+    naglowki = []
+    for m in _NAGLOWEK_NUMERACJI.finditer(t):
+        if not maska[m.start():m.end()].strip():
+            continue        # w cudzysłowie
+        do = int(m.group(3)) if m.group(3) and int(m.group(3)) > int(m.group(2)) else int(m.group(2))     # „Art. 139–144."
+        naglowki.append((m.group(1), int(m.group(2)), do, m.start(), t.find("\n", m.start()) % (len(t) + 1)))
+    for rodzaj, n, do, _, _ in naglowki:
+        widziane[rodzaj].update(range(n, do + 1))
+    out, ostatni = [], {"Art.": None, "§": None}
+    for rodzaj, n, do, s, e in naglowki:
+        nazwa = "art." if rodzaj == "Art." else "§"
+        poprz = ostatni[rodzaj]
+        if poprz is not None:
+            p, ps = poprz[0], poprz[1]
+            if n > p + 1:
+                brak = range(p + 1, n)
+                zakres = f"{nazwa} {p + 1}" + (f"–{n - 1}" if n - 1 > p + 1 else "")
+                gdzie = ("stoi w innym miejscu odczytu — możliwy zły porządek łamów"
+                         if all(k in widziane[rodzaj] for k in brak) else "brak w odczycie")
+                out.append((f"{zakres} {gdzie} (między {nazwa} {p} a {nazwa} {n})", ps, e))
+            elif n < p and n != 1:
+                out.append((f"{nazwa} {n} po {nazwa} {p} — kolejność jednostek w odczycie", ps, e))
+        elif rodzaj == "§" and n > 2:
+            art = ostatni["Art."]
+            out.append((f"§ {n} jako pierwszy paragraf" + (f" art. {art[0]}" if art else "") + f" — § 1–{n - 1} "
+                        + ("stoją w innym miejscu odczytu" if all(k in widziane["§"] for k in range(1, n)) else "brak w odczycie"),
+                        art[1] if art else s, e))
+        ostatni[rodzaj] = (do, s)
+        if rodzaj == "Art.":
+            # „Art. 5. § 1. …" — § 1 w wierszu artykułu
+            ostatni["§"] = (1, s) if re.match(r"[\[<]?Art\.[ ]?\d+[a-z]*\.[ ]?§[ ]?1\.", t[s:e]) else None
+    return out
+
+
+def pdf_layout_do_tekstu(raw, info=None, notki=None, strony_flagi=None, strona0=0, numeracja=False):
     """Tekst z `pdftotext -layout` → tekst w układzie jak z text.html.
 
     Strony są czyszczone z nagłówków/stopek, zawinięte wiersze są sklejane w akapity (nowy akapit
@@ -1132,19 +1695,38 @@ def pdf_layout_do_tekstu(raw, info=None, notki=None):
     akapit jako „[przypis 3)] …", dokładnie jak w ścieżce HTML. Notki z prawego marginesu tekstu
     ujednoliconego wychodzą pod akapitem jako „[margines: …]"; `info` (dict) dostaje „podstawa"
     (notka „Opracowano na podstawie…") i „data_wydruku". `notki` — z `pdf_do_tekstu_z_notkami`.
+
+    Obszary niepewne (`_RODZAJE_OBSZAROW`) trafiają do `info["niepewne_obszary"]` jako (rodzaj, opis, strona PDF od, strona PDF
+    do, początek, koniec): tabele z przemieszanymi komórkami (`_pdf_tabela_niepewna`), strony z `strony_flagi` ({nr strony od 0:
+    [(rodzaj, opis)]} — ukryta warstwa tekstu z `pdf_do_tekstu_z_notkami`) i — z `numeracja` (zeszyt 1990–2011, OCR) — luki
+    w numeracji (`_luki_numeracji`). `strona0` — numer strony PDF (od 0) pierwszej strony `raw` (akt wycięty z zeszytu).
     """
     strony = raw.split("\f")
-    akapity = []        # [wcięcie_nagłówka(bool), tekst, {strony}, [notki marginesu]]
+    akapity = []        # [wcięcie_nagłówka(bool), tekst, {strony}, [notki marginesu], {(rodzaj obszaru, strona)}]
     przypisy = {}       # nr strony → {nr przypisu: treść}
     poprzedni_naglowek = False
     # strony obwieszczenia Marszałka Sejmu (przed stroną „Załącznik do obwieszczenia") — `_pdf_punkt_obwieszczenia`
     strona_zal = next((i for i, s in enumerate(strony) if re.search(r"(?im)^\W*Załącznik\s+do\s+obwieszczenia", s)), None)
     if strona_zal is not None and not re.search(r"jednolitego\s+tekstu", "\n".join(strony[:strona_zal + 1])):
         strona_zal = None
+    stopka = _pdf_data_stopki(strony)
+    if stopka and info is not None:
+        d, m, r = stopka.split(".")
+        info.setdefault("data_wydruku", f"{r}-{m}-{d}")
+    # data wydruku (ISO) potwierdzona jako ostatni wiersz większości stron — `_pdf_notka_pod_data`
+    data_iso = _pdf_data_stopki(strony, _PDF_DATA_WYDRUKU)
+    daty_w_tresci = set()       # indeksy akapitów: sama data, po której na tej stronie są jeszcze co najmniej 3 wiersze
+    strony_flagi = {k: list(v) for k, v in (strony_flagi or {}).items()}
     for nr, strona in enumerate(strony):
+        strona, urwana = _pdf_notka_pod_data(strona, data_iso)
+        if urwana:
+            strony_flagi.setdefault(nr, []).append(("notka", urwana))
+        poprzednie = przypisy.get(nr - 1)
+        urwany = bool(poprzednie) and not re.search(r"[.;:!?)”\"]$", poprzednie[max(poprzednie, key=int)].rstrip())
         wiersze, przyp = _pdf_strona(strona, pierwsza=(nr == 0), info=info,
                                      notki_bbox=(notki or {}).get(nr) if notki else None,
-                                     obwieszczenie=strona_zal is not None and nr < strona_zal)
+                                     obwieszczenie=strona_zal is not None and nr < strona_zal, stopka=stopka,
+                                     przypis_niedokonczony=urwany)
         dalszy = None
         if przyp.get("+") is not None:
             # dokończenie ostatniego przypisu poprzedniej strony (`_pdf_przypisy_po_odstepie`); gdy tamta strona nie ma
@@ -1156,35 +1738,51 @@ def pdf_layout_do_tekstu(raw, info=None, notki=None):
                 dalszy = None
         if przyp:
             przypisy[nr] = przyp
-        for wciecie, t, notki_wiersza in wiersze:
+        # tabela z przemieszanymi komórkami — na wierszach po zdjęciu notek marginesu (te bywają w `-layout` obok treści)
+        linie = strona.replace("﻿", "").split("\n")
+        tabela = _pdf_tabela_niepewna(linie if (notki or {}).get(nr) is not None and notki else _pdf_notki_marginesu(linie)[0])
+        flagi_strony = {(r, nr) for r, _ in (strony_flagi or {}).get(nr, [])}
+        szer_strony = max((w + len(t) for w, t, _ in wiersze), default=0)
+        for k, (wciecie, t, notki_wiersza) in enumerate(wiersze):
+            flagi = flagi_strony | ({("tabela", nr)} if t in tabela else set())
+            if _PDF_SAMA_DATA.fullmatch(t) and sum(1 for w, _, _ in wiersze[k + 1:] if w < 0.55 * szer_strony) >= 3:
+                daty_w_tresci.add(len(akapity))     # data w środku strony — komórka tabeli, nie stopka (patrz niżej)
             naglowek = wciecie >= _PDF_WCIECIE_NAGLOWKA and len(t) <= _PDF_MAKS_NAGLOWEK
             if naglowek:
                 t = _zlacz_rozstrzelone(t)
             nowy = (naglowek or poprzedni_naglowek or not akapity
                     or (wciecie > 0 and _PDF_NOWY_AKAPIT.match(t)) or _PDF_JEDNOSTKA.match(t))
             if nowy:
-                akapity.append([naglowek, t, {nr}, list(notki_wiersza)])
+                akapity.append([naglowek, t, {nr}, list(notki_wiersza), flagi])
             else:
                 akapity[-1][1] = _doklej(akapity[-1][1], t)
                 akapity[-1][2].add(nr)
                 akapity[-1][3].extend(notki_wiersza)
+                akapity[-1][4] |= flagi
             poprzedni_naglowek = naglowek
         if dalszy:
-            akapity.append([False, dalszy, {nr}, []])
+            akapity.append([False, dalszy, {nr}, [], set(flagi_strony)])
+        if urwana and akapity:
+            akapity[-1][3].append(f"{urwana} … (notka urwana na dole strony {nr + 1 + strona0} PDF — dalszej części na tej "
+                                  "stronie nie ma)")
     if any(a[3] for a in akapity):
         _przypnij_notki(akapity)
     # Tekst jednolity zaczyna się od OBWIESZCZENIA Marszałka Sejmu (z cytowanymi przepisami
     # przejściowymi: „Art. 3. Ustawa wchodzi w życie…"). To nie jest treść aktu, a na początku
     # linii udawałoby nagłówek artykułu — wiersze obwieszczenia dostają znacznik „» ".
     zal = next((i for i, a in enumerate(akapity[:400]) if a[1].lower().startswith("załącznik do obwieszczenia")), None)
+    przesuniecie = 0        # o tyle przesunęły się indeksy akapitów (`daty_w_tresci`)
     if zal and any("jednolitego tekstu" in a[1] for a in akapity[:zal]):
+        przesuniecie = 1
         for a in akapity[:zal]:
             a[1] = "» " + a[1]
-        akapity.insert(0, [True, "[obwieszczenie Marszałka Sejmu sprzed załącznika — wiersze ze znakiem » NIE są treścią aktu]", set(), []])
+        akapity.insert(0, [True, "[obwieszczenie Marszałka Sejmu sprzed załącznika — wiersze ze znakiem » NIE są treścią aktu]",
+                           set(), [], set()])
     out, w_zalaczniku = [], False
+    niepewne = []       # (rodzaj, numer przypisu albo data, strona PDF od 1) — `_niepewne_miejsca_pdf`
     uzyte, koniec_strony = set(), {}      # (strona, nr) przypisów wypisanych przy odsyłaczu; strona → indeks w `out`
     jednostki = []      # (indeks w `out` przed akapitem, najniższa strona akapitu) — akapity zaczynające jednostkę
-    for naglowek, t, na_stronach, notki_akapitu in akapity:
+    for nr_akapitu, (naglowek, t, na_stronach, notki_akapitu, flagi) in enumerate(akapity):
         if re.match(r"(?i)załącznik(?!\s+do\s+obwieszczenia)", t):
             w_zalaczniku = True
         t = _pdf_normalizuj_indeksy(t)
@@ -1194,7 +1792,15 @@ def pdf_layout_do_tekstu(raw, info=None, notki=None):
             jednostki.append((len(out), min(na_stronach)))
         if naglowek or re.match(r"^[\[<]?Art\.\s*\d", t):
             out.append("")
-        out.append(t)
+        out.append(_pdf_oznacz_obszar(t, flagi, min(na_stronach) if numeracja and na_stronach else None))
+        # sama data w środku strony to komórka tabeli z datą (termin w wykazie), nie stopka — stopka stoi na dole strony
+        # (13.11.2026: test syntetyczny — w próbie takiej tabeli nie było; dotąd każda taka komórka dawała „samodzielną datę")
+        if na_stronach and _PDF_SAMA_DATA.fullmatch(t.replace(_ODS_POTW, "").replace(_ODS_NIE, "").strip()) \
+                and nr_akapitu - przesuniecie not in daty_w_tresci:
+            niepewne.append(("data", t.strip(), min(na_stronach) + 1 + strona0))
+        if na_stronach and not t.startswith(("[", "» ")):
+            niepewne.extend(("przypis_w_tresci", m.group(1), min(na_stronach) + 1 + strona0)
+                            for m in _PDF_PRZYPIS_W_TRESCI.finditer(t.replace(_ODS_POTW, "").replace(_ODS_NIE, "")))
         for n in odsylacze:
             tresc = None
             for s in sorted(na_stronach) + [max(na_stronach) + 1, min(na_stronach) - 1]:
@@ -1219,6 +1825,8 @@ def pdf_layout_do_tekstu(raw, info=None, notki=None):
                 tresc = inne.pop() if len(inne) == 1 else None
                 uzyte.update((s, n) for s, p in przypisy.items() if tresc and p.get(n) == tresc)
             out.append(f"[przypis {n})] {tresc}" if tresc else f"[przypis {n})] (treści przypisu nie odnaleziono na tej stronie PDF)")
+            if not tresc and na_stronach:
+                niepewne.append(("brak_tresci", n, min(na_stronach) + 1 + strona0))
         for n in notki_akapitu:
             out.append(f"[margines: {_pdf_normalizuj_indeksy(n)}]")
         if na_stronach:
@@ -1240,15 +1848,29 @@ def pdf_layout_do_tekstu(raw, info=None, notki=None):
         strona = nr if nr in koniec_strony else max((s for s in koniec_strony if s < nr), default=None)
         if not osierocone or strona is None:
             continue
+        niepewne.extend(("bez_odsylacza", n, nr + 1 + strona0) for n, tresc in przypisy[nr].items()
+                        if (nr, n) not in uzyte and tresc)
         poz = koniec_strony[strona]
         # indeks jednostki wskazuje pusty wiersz przed „Art."/nagłówkiem albo sam akapit „§ 2."/„3." — przypis idzie przed nie
         dalej = next((i for i, s in jednostki if i >= poz and s <= strona + 1), None)
         wstawki.append((poz if dalej is None else dalej, nr, osierocone))
     for poz, _, osierocone in sorted(wstawki, reverse=True):
         out[poz:poz] = osierocone
+    if info is not None and niepewne:
+        info["niepewne_miejsca"] = niepewne
     t = "\n".join(out).replace(_ODS_POTW, "").replace(_ODS_NIE, "")
-    t = re.sub(r"\n{3,}", "\n\n", t)
-    return t.strip()
+    t = re.sub(r"\n{3,}", "\n\n", t).strip()
+    t, obszary, poczatki = _pdf_zdejmij_znaczniki(t)
+    opisy = {(nr, r): o for nr, flagi in (strony_flagi or {}).items() for r, o in flagi}
+    wynik = [(r, opisy.get((od, r), ""), od + 1 + strona0, do + 1 + strona0, s, e)
+             for r, od, do, s, e in _pdf_scal_obszary(obszary)]
+    if numeracja:
+        for opis, s, e in _luki_numeracji(t):
+            od, do = ([nr for p, nr in poczatki if p <= x] or [0] for x in (s, e - 1))
+            wynik.append(("numeracja", opis, od[-1] + 1 + strona0, max(od[-1], do[-1]) + 1 + strona0, s, e))
+    if info is not None and wynik:
+        info["niepewne_obszary"] = sorted(wynik, key=lambda o: o[4])
+    return t
 
 
 # Dz.U. i M.P. 1990–2011: PDF ogłoszonego aktu (typ O) to strony całego zeszytu, złożone w dwóch łamach, więc
@@ -1288,6 +1910,10 @@ def _pdf_bez_znaku_wodnego(raw):
     return "\n".join(out)
 
 
+# okruch OCR: wiersz z samej drobnej interpunkcji (bez liter, cyfr, „§", myślników i gwiazdek)
+_PDF_OKRUCH_OCR = re.compile(r"[.,:;'`\"·•~^°„”’‘]{1,8}")
+
+
 def _pdf_lamy(strona, luz=0):
     """Strona z `pdftotext -layout` złożona w dwóch łamach → najpierw lewy łam, potem prawy.
 
@@ -1300,8 +1926,15 @@ def _pdf_lamy(strona, luz=0):
     `luz` (OCR skanów z lat 90.): łamy jednego aktu bywają przesunięte o kilka znaków względem rynny strony
     („…Układu Europejs-       1991 r." wchodzi lewym łamem w rynnę). Wiersz przecinający rynnę, który ma przerwę
     ≥3 spacji najwyżej `luz` znaków od niej, dzieli się w tej przerwie zamiast zamykać blok.
+
+    Przy `luz` wiersz z samych okruchów OCR („'. :", „." . .") jest pusty: dotąd taki okruch w środku strony, daleko od lewego
+    marginesu, uchodził za wyśrodkowany tytuł i zamykał blok — DU 1994/73 s. 4: prawy łam nad okruchem (§ 46–48) wychodził
+    przed resztą lewego (§ 39 pkt 3, § 40–45; 13.11.2026, obraz strony).
     """
     lines = strona.split("\n")
+    if luz:
+        lines = [("\f" if l.startswith("\f") else "") if _PDF_OKRUCH_OCR.fullmatch(re.sub(r"[\s\f]", "", l)) else l
+                 for l in lines]
     niepuste = [l for l in lines if l.strip()]
     if len(niepuste) < 8:
         return strona
@@ -1448,10 +2081,11 @@ def _pdf_numer_pozycji(lines, i, n=None):
     return bool(re.match(r"(?:Rej|Sygn)\s?\.", dalej)) or bool(litery) and sum(c.isupper() for c in litery) >= 0.8 * len(litery)
 
 
-def _pdf_wytnij_akt(raw, poz, ocr=False):
+def _pdf_wytnij_akt(raw, poz, ocr=False, start=None):
     """Tekst zeszytu → tylko akt poz. `poz`: od wiersza z samym numerem pozycji (nad tytułem aktu) do
     wiersza z numerem następnej pozycji albo do końca. Bez znalezionego numeru tekst wraca bez zmian.
-    `ocr` (lata 90.): numer następnej pozycji może mieć jedną cyfrę źle odczytaną („600" zamiast „500")."""
+    `ocr` (lata 90.): numer następnej pozycji może mieć jedną cyfrę źle odczytaną („600" zamiast „500").
+    `start` (lista) dostaje numer strony PDF (od 0), na której zaczyna się wycięty tekst — strony wyniku liczone od niej."""
     lines = raw.split("\n")
     od = next((i for i in range(len(lines)) if _pdf_numer_pozycji(lines, i, poz)), None)
     if od is None:
@@ -1465,6 +2099,8 @@ def _pdf_wytnij_akt(raw, poz, ocr=False):
         return ocr and len(t) == len(nast) and t != str(poz) and sum(a != b for a, b in zip(t, nast)) == 1 \
             and _pdf_numer_pozycji(lines, i)
     do = next((i for i in range(od + 1, len(lines)) if nastepny(i)), len(lines))
+    if start is not None:
+        start.append("\n".join(lines[:od]).count("\f"))
     return "\n".join(lines[od:do])
 
 
@@ -1572,6 +2208,15 @@ def _pdf_bez_naglowkow_stron(raw):
                     linie[j] = ""
                 smieci, naglowek = [], True
                 continue
+            # nagłówek rozbity przez OCR tesseracta na trzy krótkie wiersze: „Dziennik Ustaw Nr 21 —" ⏎ „274 —" ⏎ „Poz. 73"
+            # (DU 1994/73 s. 7 — skan bez warstwy tekstowej; dotąd wchodził w treść § 85 ust. 2)
+            dalej = [j for j in range(k, len(linie)) if linie[j].strip()][:3]
+            if not naglowek and len(dalej) == 3 and all(len(linie[j].strip()) <= 30 for j in dalej) \
+                    and re.match(r"(?:Dz\S{2,8}Ustaw|MonitorPolski)", t) \
+                    and _PDF_NAGLOWEK_OCR.match("".join(re.sub(r"\s", "", linie[j]) for j in dalej)):
+                for j in smieci + dalej:
+                    linie[j] = ""
+                break
             if len(t) <= 2 and not naglowek:
                 smieci.append(k)
                 continue
@@ -1599,7 +2244,7 @@ def _pdf_bez_spisu_tresci(raw):
     return "\f".join(strony)
 
 
-def pdf_zeszyt_do_aktu(raw, rok, poz):
+def pdf_zeszyt_do_aktu(raw, rok, poz, start=None):
     """`pdftotext -layout` PDF-u ogłoszonego aktu Dz.U./M.P. 1990–2011 → tekst tylko tego aktu, łam po łamie,
     z polskimi literami (2000–2009), bez nagłówków stron, spisu treści i stopki zeszytu. Dla lat 90. (OCR skanu)
     także nagłówki zniekształcone przez OCR, łamy przesunięte względem rynny strony i ogłoszenia wydawcy przed
@@ -1616,7 +2261,7 @@ def pdf_zeszyt_do_aktu(raw, rok, poz):
     # sam numer strony zeszytu („— 3052 —") na stronie bez nagłówka „Dziennik Ustaw Nr …"
     raw = re.sub(r"(?m)^[ \f]*[—–]\s*\d{1,5}\s*[—–][ ]*$", lambda m: "\f" if "\f" in m.group(0) else "", raw)
     raw = "\f".join(_pdf_lamy(s, luz=_PDF_LUZ_OCR if rok < 2000 else 0) for s in raw.split("\f"))
-    return _pdf_wytnij_akt(raw, poz, ocr=rok < 2000) if poz else raw
+    return _pdf_wytnij_akt(raw, poz, ocr=rok < 2000, start=start) if poz else raw
 
 
 def _wybierz_pdf(meta):
@@ -3581,8 +4226,9 @@ _OCR_8_PARAGRAF = re.compile(r"(?m)^([ \t]*)8([ ]?)([1-9]\d{0,2})\.(?=[ \t]+(?:\
 # — DU 1998 poz. 875; „. 817. 1. Urządzenie" — DU 1993 poz. 58), przecinek zamiast kropki („„8 12,"), inna cyfra zamiast
 # „§" („5 2, Ilekroć" i „3 16. Dopuszczalne" — DU 2000 poz. 313). Zamiana TYLKO wtedy, gdy numer N potwierdzają oba
 # sąsiednie pewne nagłówki: tuż przed nim § N−1 (albo „co następuje" dla N = 1), tuż za nim § N+1. Sklejony („817.") —
-# tylko z „8"; z „3"/„5" („317.") nie, bo to zwykle numer ustępu albo liczba.
-_OCR_8_WARIANT = re.compile(r"(?m)^([ \t]*)([„\".,'][ \t]?)?(?:([358])[ ]|(8))([1-9]\d{0,2})([.,])"
+# z „8", a z „3"/„5" tylko przy numerze dwucyfrowym („586. 1. Kwas siarkowy" między § 85 a § 87 — DU 1994 poz. 73 s. 7, skan
+# odczytany przez tesseract, obraz strony: „§ 86."; dotąd § 86 znikał z numeracji); „317." przy § 2 i § 4 nie jest § 17.
+_OCR_8_WARIANT = re.compile(r"(?m)^([ \t]*)([„\".,'][ \t]?)?(?:([358])[ ]|(8)|([35])(?=[1-9]\d[.,]))([1-9]\d{0,2})([.,])"
                             r"(?=[ \t]+(?:\d{1,2}\.[ \t]+)?[A-ZĄĆĘŁŃÓŚŹŻ])")
 # świadectwa numeracji: nagłówek paragrafu „§ N." na początku wiersza, początek aktu („zarządza się, co następuje:"
 # — przed § 1), nagłówek artykułu (rozdziela ciągi; nie świadczy o numerze paragrafu)
@@ -3632,8 +4278,8 @@ def _ocr_popraw_paragrafy_raz(strony, ocr_idx, stali):
                   for m in _OCR_8_PARAGRAF.finditer(s)]
         znaczniki += zwykle
         poczatki = {z[1] for z in zwykle}
-        znaczniki += [(i, m.start(), "wariant", int(m.group(5)), m) for m in _OCR_8_WARIANT.finditer(s)
-                      if m.start() not in poczatki and (m.group(2) or m.group(3) != "8" or m.group(6) == ",")]
+        znaczniki += [(i, m.start(), "wariant", int(m.group(6)), m) for m in _OCR_8_WARIANT.finditer(s)
+                      if m.start() not in poczatki and (m.group(2) or m.group(3) != "8" or m.group(7) == ",")]
         znaczniki += _ocr_swiadkowie(i, s)
     znaczniki.sort(key=lambda z: (z[0], z[1]))
     przyjete = set()
@@ -3767,6 +4413,7 @@ def _tekst_z_pdf(path, label, meta, info=None, ocr=None):
     rok = meta.get("year")
     zeszyt = pick["type"] == "O" and meta.get("publisher") in ("DU", "MP") and isinstance(rok, int) and 1990 <= rok <= 2011
     raw, notki, info_pdf = pdf_do_tekstu_z_notkami(data, zeszyt=zeszyt, indeksy=not (zeszyt and rok < 2000))
+    strony_flagi = info_pdf.pop("strony_flagi", None)
     info.update(info_pdf)
     info["typ"] = pick["type"]
     # strony bez warstwy tekstowej (skany: DU 2010 poz. 1 ma 564 z 566) — ich treści w wyniku nie będzie
@@ -3801,11 +4448,22 @@ def _tekst_z_pdf(path, label, meta, info=None, ocr=None):
     puste = len(puste_idx)
     if raw and puste:
         info["puste_strony"] = (puste, len(strony))
+    start = []
     if raw and zeszyt:
-        raw = pdf_zeszyt_do_aktu(raw, rok, meta.get("pos"))
+        raw = pdf_zeszyt_do_aktu(raw, rok, meta.get("pos"), start=start)
         if rok < 2000:
             info["ocr"] = True      # warstwa tekstowa zeszytów z lat 90. to OCR skanu
-    txt = pdf_layout_do_tekstu(raw, info, notki) if raw else ""
+    # strony zeszytu po wycięciu aktu liczone od strony PDF, na której akt się zaczyna (dotąd numer strony był pomijany jako mylący);
+    # luki w numeracji jednostek — w tekście zeszytu i w PDF odczytanym przez OCR co najmniej w połowie (jedna strona-skan w tekście
+    # ujednoliconym VAT nie czyni z niego tekstu z OCR, a uchylone „Art. 139–144." dawały fałszywą lukę)
+    txt = pdf_layout_do_tekstu(raw, info, notki, strony_flagi=strony_flagi, strona0=start[0] if start else 0,
+                               numeracja=zeszyt or bool(info.get("ocr_strony"))
+                               and 2 * info["ocr_strony"][0] >= info["ocr_strony"][1]) if raw else ""
+    if zeszyt and not start and info.get("niepewne_miejsca"):
+        # numeru pozycji nie znaleziono — strony wyniku nie są stronami PDF
+        info["niepewne_miejsca"] = [(r, n, None) for r, n, _ in info["niepewne_miejsca"]]
+    if zeszyt and not start and info.get("niepewne_obszary"):
+        info["niepewne_obszary"] = [(r, o, None, None, s, e) for r, o, _, _, s, e in info["niepewne_obszary"]]
     if not txt:
         rada = (f"; odczyt OCR: tekst {label} --ocr (ok. {info['ocr_pominiete'][1] // 60 + 1} min)"
                 if info.get("ocr_pominiete") else "")
@@ -3819,6 +4477,102 @@ _UWAGA_BEZ_WSPOLRZEDNYCH = ("pdftotext -bbox nie zwrócił współrzędnych sł�
                             "i odsyłacze do przypisów NIE zostały potwierdzone współrzędnymi — rozpoznano je tylko po kształcie "
                             "tekstu: liczby stojące tuż przed przypisem mogą być obcięte („152,61” z odsyłaczem „3)” → „152,”), "
                             "a indeks górny może być sklejony z numerem („art. 131” zamiast 13¹).")
+
+
+# Miejsca tekstu z PDF, których odczyt nie jest pewny, a które dotąd nie dawały żadnego ostrzeżenia (13.11.2026):
+# - „[przypis N)] (treści przypisu nie odnaleziono…)" — odsyłacz jest, a treści przypisu pod tekstem strony nie znaleziono;
+#   bywa, że została w treści przepisu jako akapit „N) Zmiany tekstu…" (k.p. DU 2026/1245 art. 302¹ § 7 przed poprawką);
+# - przypis „bez odsyłacza w treści tej strony" — jego odsyłacz mógł zostać w treści jako „N)", udając punkt wyliczenia
+#   (DU 2026/1473: „…Państwowej Straży Pożarnej 15)" w tytule rozdziału przed poprawką);
+# - akapit, który jest samą datą — stopka strony wklejona w treść (DU 2019/1500: „18.01.2021" w środku zdania).
+_RODZAJ_NIEPEWNY = (
+    ("brak_tresci", re.compile(r"(?m)^\[przypis (\d+[a-z]?)\)\] \(treści przypisu nie odnaleziono"),
+     "przypis {n}) bez treści{gdzie} — treści nie znaleziono pod tekstem strony; mogła zostać w treści przepisu jako akapit "
+     "„{n}) …”"),
+    ("bez_odsylacza", _PRZYPIS_BEZ_ODSYLACZA_LINIA,
+     "przypis {n}) bez odsyłacza{gdzie} — odsyłacz mógł zostać w treści jako „{n})” i udawać punkt wyliczenia"),
+    ("data", re.compile(r"(?m)^(" + _PDF_SAMA_DATA.pattern + r")$"),
+     "samodzielna data „{n}”{gdzie} — prawdopodobnie stopka strony PDF w treści; zdanie wokół niej może być rozcięte"),
+    ("przypis_w_tresci", _PDF_PRZYPIS_W_TRESCI,
+     "„{n}) …” w treści przepisu{gdzie} — to najpewniej przypis z dołu strony PDF wklejony w przepis, nie jego część"),
+)
+
+
+_WIERSZ_TRESCI = re.compile(r"(?m)^(?!\[|» ).+$")
+
+
+def _trafienia_niepewne(rodzaj, wzor, txt, s, e):
+    """Trafienia wzorca rodzaju w txt[s:e]; „przypis_w_tresci" — tylko w wierszach treści (nie w „[przypis …]",
+    „[margines: …]" ani w wierszach obwieszczenia „» …")."""
+    if rodzaj != "przypis_w_tresci":
+        return list(wzor.finditer(txt, s, e))
+    out = []
+    for w in _WIERSZ_TRESCI.finditer(txt, s, e):
+        out.extend(wzor.finditer(txt, w.start(), w.end()))
+    return out
+
+
+_NA_SUP_LITERY = str.maketrans("abcdefghijklmnoprstuvwxyz", _SUPS_LITERY)
+_ZALACZNIK_W_TEKSCIE = re.compile(r"(?m)^Załącznik(?!\s+do\s+obwieszczenia)")
+
+# Obszary niepewne (`pdf_layout_do_tekstu`, info „niepewne_obszary") — opis ostrzeżenia dla każdego rodzaju
+_OPIS_OBSZARU = {
+    "tabela": "tabela{gdzie} — komórki zawinięte na kilka wierszy są czytane wiersz po wierszu strony, więc słowa sąsiednich "
+              "kolumn mogą być przemieszane (tak samo wygląda tekst w dwóch łamach, których nie udało się rozdzielić); liczby "
+              "i przypisanie wartości do pozycji sprawdź w PDF",
+    "warstwa": "strona z ukrytą warstwą tekstu{gdzie} — wiersz „{opis}” jest w PDF dwa razy (jedna kopia niewidoczna), więc "
+               "tekst bywa tu zdublowany albo przemieszany",
+    "numeracja": "{opis}{gdzie} — numeracja jednostek w odczycie się nie zgadza (OCR albo kolejność łamów); treść sąsiednich "
+                 "jednostek może być sklejona albo przestawiona",
+    "notka": "strona z notką na marginesie, której nie dało się odciąć od treści{gdzie} — słowa notki („{opis}…”) mogą być "
+             "wtrącone w tekst przepisu albo przypisu",
+}
+
+
+def _jednostka_w_miejscu(txt, pos):
+    """Artykuł, w którym leży pozycja `pos` („art. 302¹" — indeks górny czytelny, jak w PDF), „załącznik" za ostatnim artykułem
+    aktu albo ""."""
+    m = _ART_NAGLOWEK.match(_artykul_nad(txt, pos))
+    art = ""
+    if m:
+        baza, _, idx = _id_art(m).partition(" ")
+        art = "art. " + baza + idx.translate(_NA_SUP).translate(_NA_SUP_LITERY)
+    zal = None
+    for z in _ZALACZNIK_W_TEKSCIE.finditer(txt, 0, pos):
+        zal = z
+    if zal and zal.start() > txt.rfind("\nArt.", 0, pos):
+        art = "załącznik"       # za ostatnim artykułem aktu — nie „art. 176"
+    return art
+
+
+def _niepewne_miejsca_pdf(txt, spans, niepewne, obszary=None):
+    """Opisy miejsc z `_RODZAJ_NIEPEWNY` w tekście z PDF (`spans` — tylko te fragmenty; None — cały tekst). `niepewne` — lista
+    (rodzaj, numer, strona PDF) z `pdf_layout_do_tekstu` (info „niepewne_miejsca"): k-te wystąpienie etykiety o danym numerze
+    w tekście to k-ty wpis tej listy. Każdy opis podaje stronę PDF (gdy znana) i artykuł, w którym stoi etykieta.
+    `obszary` — info „niepewne_obszary" (rodzaj, opis, strona od, strona do, początek, koniec): opis, gdy obszar zachodzi na
+    któryś z `spans` (przy pełnym tekście — zawsze)."""
+    if spans is not None and not spans:
+        return []
+    strony = {}
+    for r, n, st in niepewne or []:
+        strony.setdefault((r, n), []).append(st)
+    opisy = []
+    for s, e in spans or [(0, len(txt))]:
+        for rodzaj, wzor, szablon in _RODZAJ_NIEPEWNY:
+            for m in _trafienia_niepewne(rodzaj, wzor, txt, s, e):
+                n = m.group(1)
+                k = sum(1 for x in _trafienia_niepewne(rodzaj, wzor, txt, 0, m.start()) if x.group(1) == n)
+                lista = strony.get((rodzaj, n), [])
+                st = lista[k] if k < len(lista) else None
+                gdzie = ", ".join(x for x in ((f"s. {st} PDF" if st else ""), _jednostka_w_miejscu(txt, m.start())) if x)
+                opisy.append((m.start(), szablon.format(n=n, gdzie=f" ({gdzie})" if gdzie else "")))
+    for rodzaj, opis, od, do, s, e in obszary or []:
+        if spans is not None and not any(s < fe and fs < max(e, s + 1) for fs, fe in spans):
+            continue
+        strona = (f"s. {od} PDF" if od == do else f"s. {od}–{do} PDF") if od else ""
+        gdzie = ", ".join(x for x in (strona, _jednostka_w_miejscu(txt, s)) if x)
+        opisy.append((s, _OPIS_OBSZARU[rodzaj].format(opis=opis, gdzie=f" ({gdzie})" if gdzie else "")))
+    return [o for _, o in sorted(opisy)]
 
 
 def _odmowa_nadpisania(plik):
@@ -4024,6 +4778,22 @@ def cmd_tekst(a):
             ostrz.insert(0, f"UWAGA: w {'tym fragmencie' if a.fragment else 'tym tekście'} {brakujace}× zamiast treści stoi "
                             "odsyłacz API „patrz oryginał” — tej części (zwykle tabeli, wzoru albo rysunku w załączniku) NIE MA "
                             f"poniżej. Jest tylko w PDF: tekst {label} --pdf plik.pdf")
+    if zrodlo.startswith("z urzędowego PDF"):
+        # miejsca odczytane z PDF niepewnie (`_niepewne_miejsca_pdf`) — dotąd tylko etykieta w tekście, bez ostrzeżenia i bez
+        # blokady --strict; z --fragment liczą się tylko te w wypisanym fragmencie
+        miejsca = _niepewne_miejsca_pdf(txt, _fragmenty(txt, a.fragment) if a.fragment else None,
+                                        info_pdf.get("niepewne_miejsca"), info_pdf.get("niepewne_obszary"))
+        if miejsca:
+            gdzie = "tym fragmencie" if a.fragment else "tym tekście"
+            n = len(miejsca)
+            lista = "; ".join(miejsca[:12]) + (f"; … i {n - 12} innych" if n > 12 else "")
+            if strict:
+                sys.exit(f"BŁĄD (strict): {label} — w {gdzie} są miejsca odczytane z PDF niepewnie ({n}): {lista}. Tryb "
+                         "strict blokuje taki wynik; bez --strict zostanie wypisany z ostrzeżeniem, a wiążący jest PDF: "
+                         f"tekst {label} --pdf plik.pdf")
+            ostrz.insert(2 if ostrz and ostrz[0].startswith("ELI_TEXT_SOURCE_PDF=") else 0,
+                         f"UWAGA: w {gdzie} są miejsca odczytane z PDF niepewnie ({n}) — przed cytatem porównaj je z PDF "
+                         f"(tekst {label} --pdf plik.pdf): {lista}.")
     print(f"# {label} — tekst ({zrodlo}; do dosłownego cytatu zweryfikuj z PDF urzędowym)\n")
     for w in ostrz:
         print(w)
