@@ -589,7 +589,7 @@ def losing(total, lost, good_round=None):
 
 
 class AllPages20261113(unittest.TestCase):
-    """--wszystkie: pełna lista z kontrolą kompletu (limit 200 trafień, najwyżej 3 rundy = 60 zapytań)."""
+    """--wszystkie: pełna lista z kontrolą kompletu (limit 200 trafień i 60 zapytań na wywołanie)."""
 
     def run_all(self, portal, *argv):
         return ms.run(ms.parser().parse_args(['szukaj', '--sad', '15051510', '--wszystkie'] + list(argv)), portal)
@@ -627,19 +627,22 @@ class AllPages20261113(unittest.TestCase):
         self.run_all(portal, '--kierunek', 'ascending')
         self.assertEqual({c[:2] for c in portal.calls}, {('data', 'ascending')})
 
-    def test_incomplete_after_three_rounds_is_unknown_without_list(self):
+    def test_stall_stops_after_three_rounds_without_new_item(self):
+        # Do 2.3.0: stałe 3 rundy (9 zapytań). Teraz rundy ogranicza budżet 60 zapytań, a zatrzymanie
+        # następuje po 3 rundach z rzędu bez nowej pozycji: runda 1 daje 24 z 25, rundy 2–4 nic → 12 zapytań.
         portal = FakePortal(losing(25, 15))
         with self.assertRaises(ms.Unknown) as ctx:
             self.run_all(portal)
-        self.assertEqual(len(portal.calls), 9)
-        self.assertIn('zebrano 24 z 25 unikalnych pozycji', str(ctx.exception))
+        self.assertEqual(len(portal.calls), 12)
+        self.assertIn('po 4 rundach (12 zapytań) zebrano 24 z 25 unikalnych pozycji', str(ctx.exception))
+        self.assertIn('(3 rundy z rzędu bez nowej pozycji)', str(ctx.exception))
         self.assertIn('Niepełnej listy nie wypisano', str(ctx.exception))
         stdout, stderr = io.StringIO(), io.StringIO()
         portal = FakePortal(losing(25, 15))
         with patch.object(ms.Client, 'get', lambda self, url: portal.get(url)), redirect_stdout(stdout), redirect_stderr(stderr):
             self.assertEqual(ms.main(['szukaj', '--sad', '15051510', '--wszystkie', '--json']), 2)
         self.assertEqual(stdout.getvalue(), '')
-        self.assertIn('BŁĄD (UNKNOWN): --wszystkie: po 3 rundach (9 zapytań) zebrano 24 z 25', stderr.getvalue())
+        self.assertIn('BŁĄD (UNKNOWN): --wszystkie: po 4 rundach (12 zapytań) zebrano 24 z 25', stderr.getvalue())
 
     def test_limit_200_stops_after_one_request(self):
         portal = FakePortal(lambda rnd, d, page: (201, list(range(10))))
@@ -704,9 +707,11 @@ class AllPages20261113(unittest.TestCase):
 
     def test_request_count_never_exceeds_60(self):
         portal = FakePortal(losing(200, 15))  # 20 stron, komplet nigdy
-        with self.assertRaises(ms.Unknown):
+        with self.assertRaises(ms.Unknown) as ctx:
             self.run_all(portal)
-        self.assertEqual(len(portal.calls), 60)
+        self.assertEqual(len(portal.calls), 60)  # 20 stron: nadal dokładnie 3 rundy
+        self.assertIn('po 3 rundach (60 zapytań) zebrano 199 z 200', str(ctx.exception))
+        self.assertIn('wyczerpany limit 60 zapytań', str(ctx.exception))
         self.assertEqual(ms.MAX_REQUESTS, 60)
         counter = iter(range(10 ** 6))  # liczba trafień zmienia się przy KAŻDYM zapytaniu
         portal = FakePortal(lambda rnd, d, page: (11 + next(counter) % 150, list(range((page - 1) * 10, page * 10))))
@@ -775,6 +780,165 @@ class AllPages20261113(unittest.TestCase):
         self.assertEqual(portal.calls[0][:2], ('score', 'descending'))
         self.assertNotIn('kompletna', r)
 
+
+
+def transport_error():
+    return ms.TransportError("Błąd dostępu do portalu (niekompletna lub przerwana odpowiedź): TimeoutError('timed out')")
+
+
+class Flaky:
+    """Klient: przed oddaniem strony FakePortal zgłasza błąd sieci dla wybranych wywołań (numerowanych od 1).
+
+    Błąd zgłaszany jest PRZED FakePortal.get, więc nieudana próba nie przesuwa licznika rund portalu.
+    """
+
+    def __init__(self, portal, failing=(), error=transport_error):
+        self.portal, self.failing, self.error, self.attempts = portal, set(failing), error, []
+
+    def get(self, url):
+        self.attempts.append(url)
+        if len(self.attempts) in self.failing:
+            raise self.error()
+        return self.portal.get(url)
+
+
+class RoundsAndRetry20261113(unittest.TestCase):
+    """Rundy ograniczone budżetem 60 zapytań, stop po 3 rundach bez postępu, jedno ponowienie po błędzie sieci."""
+
+    def setUp(self):
+        pause = patch.object(ms, 'retry_pause')
+        self.pause = pause.start()
+        self.addCleanup(pause.stop)
+
+    def run_all(self, client, *argv):
+        return ms.run(ms.parser().parse_args(['szukaj', '--sad', '15051510', '--wszystkie'] + list(argv)), client)
+
+    def test_complete_only_in_fifth_round_of_small_query(self):
+        # 25 trafień (3 strony). Unikalne po rundach: 22, 23, 23, 24, 25 — runda bez postępu (3.) nie
+        # zatrzymuje, bo następna znów coś wnosi; komplet w 5. rundzie, w środku (strona 2).
+        lost = {1: {15, 16, 17}, 2: {16, 17}, 3: {16, 17}, 4: {17}, 5: set()}
+
+        def layout(rnd, direction, page):
+            numbers = list(range((page - 1) * 10, min(25, page * 10)))
+            return 25, [9 if n in lost[rnd] else n for n in numbers]
+        portal = FakePortal(layout)
+        r = self.run_all(portal)
+        self.assertEqual((len(r['wyniki']), r['rundy'], r['zapytania'], r['ponowienia']), (25, 5, 14, 0))
+        self.assertEqual(len(portal.calls), 14)
+        self.assertTrue(any('rundy: 5, zapytania: 14.' in u for u in r['uwagi']))
+        self.pause.assert_not_called()
+
+    def test_budget_never_exceeded_with_retries(self):
+        # 20 stron, komplet nigdy, co 7. próba to błąd sieci (ponowienie się udaje): ponowienia zjadają
+        # budżet, więc trzecia runda jest niepełna — łącznie dokładnie 60 prób, nie więcej.
+        flaky = Flaky(FakePortal(losing(200, 15)), failing=range(7, 61, 7))
+        with self.assertRaises(ms.Unknown) as ctx:
+            self.run_all(flaky)
+        self.assertEqual(len(flaky.attempts), 60)
+        self.assertEqual(len(flaky.portal.calls), 60 - self.pause.call_count)
+        self.assertIn('wyczerpany limit 60 zapytań', str(ctx.exception))
+        self.assertIn('po 3 rundach (60 zapytań, w tym ', str(ctx.exception))
+        # Błąd sieci na 60. próbie: bez ponowienia (budżet), kod 2 z wyjaśnieniem.
+        flaky = Flaky(FakePortal(losing(200, 15)), failing={60})
+        with self.assertRaises(ms.Unknown) as ctx:
+            self.run_all(flaky)
+        self.assertEqual(len(flaky.attempts), 60)
+        self.assertIn('nie ponowiono — wyczerpany limit 60 zapytań', str(ctx.exception))
+
+    def test_retry_after_transport_error_succeeds(self):
+        flaky = Flaky(FakePortal(stable(25)), failing={2})
+        r = self.run_all(flaky)
+        self.assertEqual((len(r['wyniki']), r['rundy'], r['zapytania'], r['ponowienia']), (25, 1, 4, 1))
+        self.pause.assert_called_once_with(ms.RETRY_DELAY)
+        self.assertGreaterEqual(ms.RETRY_DELAY, 3)
+        self.assertEqual(flaky.attempts[1], flaky.attempts[2])  # ponowiona ta sama strona
+        self.assertTrue(any('zapytania: 4 (w tym ponowienia po błędzie sieci: 1)' in u for u in r['uwagi']))
+        # Błąd sieci na stronie 1: po ponowieniu zero trafień to nadal kod 1 (brak wyników), nie „zmiana listy”.
+        with self.assertRaises(ms.Empty):
+            self.run_all(Flaky(FakePortal(lambda rnd, d, page: (0, [])), failing={1}))
+
+    def test_two_transport_errors_on_same_page_exit_2_without_list(self):
+        flaky = Flaky(FakePortal(stable(25)), failing={3, 4})
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with patch.object(ms.Client, 'get', lambda self, url: flaky.get(url)), redirect_stdout(stdout), redirect_stderr(stderr):
+            self.assertEqual(ms.main(['szukaj', '--sad', '15051510', '--wszystkie', '--json']), 2)
+        self.assertEqual(stdout.getvalue(), '')
+        self.assertEqual(len(flaky.attempts), 4)
+        self.pause.assert_called_once_with(ms.RETRY_DELAY)
+        self.assertIn('BŁĄD (UNKNOWN): --wszystkie: strona 3 nie pobrana także po ponowieniu (przerwa 5 s)', stderr.getvalue())
+        self.assertIn('Stan: runda 1 (4 zapytania, w tym 1 ponowienie po błędzie sieci) zebrano 20 z 25', stderr.getvalue())
+
+    def test_no_retry_after_tspd_portal_error_or_unrecognised_page(self):
+        errors = [lambda: ms.Unknown('Portal odrzucił dostęp (F5/TSPD). Ponów później lub otwórz portal w przeglądarce.'),
+                  lambda: ms.PortalError(400, 'Błąd danych', 'u'), lambda: ms.PortalError(404, 'Strona o podanym adresie nie istnieje', 'u')]
+        for error in errors:
+            with self.subTest(error=error()):
+                flaky = Flaky(FakePortal(stable(25)), failing={2}, error=error)
+                with self.assertRaises(ms.Unknown):
+                    self.run_all(flaky)
+                self.assertEqual(len(flaky.attempts), 2)
+        client = unittest.mock.Mock()  # nierozpoznana strona na stronie 2
+        client.get.side_effect = [list_page(25, [item(n) for n in range(10)]), '<html><body>inna strona</body></html>']
+        with self.assertRaises(ms.Unknown):
+            self.run_all(client)
+        self.assertEqual(client.get.call_count, 2)
+        self.pause.assert_not_called()
+
+    def test_client_classifies_transport_errors(self):
+        import http.client
+        import socket
+        response = unittest.mock.MagicMock()
+        response.__enter__.return_value = response
+        response.read.side_effect = http.client.IncompleteRead(b'<html>', 5000)
+        transient = [urllib.error.URLError('offline'), socket.timeout('timed out'), TimeoutError('timed out'),
+                     ConnectionResetError(54, 'Connection reset by peer')]
+        for case in transient + [response]:
+            client = ms.Client()
+            kwargs = {'return_value': case} if case is response else {'side_effect': case}
+            with self.subTest(case=case), patch.object(client.opener, 'open', **kwargs):
+                with self.assertRaises(ms.TransportError) as ctx:
+                    client.get(ms.BASE)
+                self.assertIsInstance(ctx.exception, ms.Unknown)  # nadal kod 2
+        tspd = unittest.mock.MagicMock()
+        tspd.__enter__.return_value = tspd
+        tspd.read.return_value = fixture('tspd.html').encode()
+        client = ms.Client()
+        with patch.object(client.opener, 'open', return_value=tspd), self.assertRaises(ms.Unknown) as ctx:
+            client.get(ms.BASE)
+        self.assertNotIsInstance(ctx.exception, ms.TransportError)
+        for code, name in [(400, 'error400.html'), (404, 'error404.html')]:
+            client = ms.Client()
+            with patch.object(client.opener, 'open', side_effect=http_error(code, name)), self.assertRaises(ms.PortalError) as ctx:
+                client.get(ms.BASE)
+            self.assertNotIsInstance(ctx.exception, ms.TransportError)
+
+    def test_end_to_end_timeout_then_success_through_real_client(self):
+        import socket
+        pages = [list_page(12, [item(n) for n in range(10)]), list_page(12, [item(n) for n in range(10, 12)])]
+
+        def response(text):
+            r = unittest.mock.MagicMock()
+            r.__enter__.return_value = r
+            r.read.return_value = text.encode()
+            return r
+        stdout, stderr = io.StringIO(), io.StringIO()
+        side = [response(pages[0]), socket.timeout('timed out'), response(pages[1])]
+        with patch.object(urllib.request.OpenerDirector, 'open', side_effect=side) as opened, \
+                patch.object(ms.time, 'sleep'), redirect_stdout(stdout), redirect_stderr(stderr):
+            self.assertEqual(ms.main(['szukaj', '--sad', '15051510', '--wszystkie', '--json']), 0)
+        self.assertEqual(opened.call_count, 3)
+        out = json.loads(stdout.getvalue())
+        self.assertEqual((out['liczba_wynikow'], len(out['wyniki']), out['zapytania'], out['ponowienia']), (12, 12, 3, 1))
+        self.pause.assert_called_once_with(ms.RETRY_DELAY)
+
+    def test_default_mode_never_retries(self):
+        flaky = Flaky(FakePortal(stable(25)), failing={1})
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with patch.object(ms.Client, 'get', lambda self, url: flaky.get(url)), redirect_stdout(stdout), redirect_stderr(stderr):
+            self.assertEqual(ms.main(['szukaj', '--sad', '15051510', '--json']), 2)
+        self.assertEqual((len(flaky.attempts), stdout.getvalue()), (1, ''))
+        self.assertIn('BŁĄD (UNKNOWN): Błąd dostępu do portalu', stderr.getvalue())
+        self.pause.assert_not_called()
 
 if __name__ == '__main__':
     unittest.main()

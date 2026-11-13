@@ -18,8 +18,10 @@ Komendy:
 Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
            --strict  (blokuje wynik PRZED emisją, gdy nie udało się zweryfikować aktualności lub
                       kompletności: nowszy t.j., awaria kontroli, tekst ze STARSZEGO t.j. zamiast własnego
-                      PDF, niepełna lista nowelizacji, tekst z OCR, strony PDF bez warstwy tekstowej;
-                      NIE wykrywa zmian przepisu po stanie prawnym t.j.)
+                      PDF, niepełna lista nowelizacji, tekst z OCR, strony PDF bez warstwy tekstowej,
+                      obowiązująca zmiana po stanie tekstu, której tekst nie zawiera (przy --fragment — gdy
+                      dotyczy tego artykułu albo nie da się tego ustalić), utrata mocy po wyroku TK)
+Kod wyjścia: 0 = wynik; 1 = zweryfikowany brak (zero trafień, frazy nie ma w tekście); 2 = wszystko inne.
 """
 import sys, json, re, time, argparse, shutil, subprocess, tempfile, os, datetime, hashlib
 import concurrent.futures
@@ -27,7 +29,7 @@ import urllib.request, urllib.parse, urllib.error
 from html.parser import HTMLParser
 from html import unescape as _unescape
 
-__version__ = "2.3.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "2.4.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://api.sejm.gov.pl/eli"
 CONTENT_HOSTS = ("api.sejm.gov.pl",)
 # Pamięć podręczna udanych GET-ów bez parametrów (metadane, odniesienia) w obrębie jednego
@@ -38,6 +40,14 @@ _CACHE = {}
 
 class VerificationUnknown(RuntimeError):
     """Zapytanie nie pozwoliło ustalić, czy dane istnieją."""
+
+
+class BrakWynikow(SystemExit):
+    """ZWERYFIKOWANY brak wyników: zapytanie wykonane poprawnie, API odpowiedziało, zero trafień (albo frazy
+    nie ma w pobranym tekście) — kod wyjścia 1. Każde inne zakończenie z komunikatem (błąd sieci/HTTP,
+    nieoczekiwana odpowiedź, zła sygnatura, blokada --strict, VerificationUnknown) daje kod 2 — tak jak
+    w orzeczenia_ms.py. Dotąd `sys.exit("…")` dawało 1 w obu sytuacjach, więc skrypt nie odróżniał
+    „sprawdzone, nic nie ma" od awarii (ujednolicenie 2026-11)."""
 
 
 def _nie_zweryfikowano(co, blad):
@@ -319,13 +329,16 @@ _PDF_FRAZY_PRZYPISU = ("przez art.", "weszła w życie", "wszedł w życie", "wc
 # początek NOWEGO akapitu (jednostki redakcyjnej) — tylko to nie jest doklejane do poprzedniej linii
 # „[" / „<" przed jednostką: tekst ujednolicony Kancelarii Sejmu (PDF typu U) otacza brzmienie zastępowane
 # nawiasem kwadratowym, a brzmienie, które dopiero wejdzie w życie — ostrym („[§ 1[1]. …]", „<§ 1[1]. …>")
+# Numer punktu/litery bywa sklejony z odsyłaczem do przypisu („2b)25) przeciwdziałać…", „6)14) przebieg…" — k.p. DU 2026/1245;
+# 13.11.2026): bez `(?:\d{1,3}\))?` taki punkt doklejał się do poprzedniego („…tempie; 2b) przeciwdziałać…").
 _PDF_NOWY_AKAPIT = re.compile(
     r"^[„\"\[<]?(Art\.\s*\d|§\s*\d|Rozdział\s|ROZDZIAŁ\s|Dział\s|DZIAŁ\s|Tytuł\s|TYTUŁ\s|Księga\s|KSIĘGA\s|"
-    r"Oddział\s|ODDZIAŁ\s|Załącznik|Część\s|CZĘŚĆ\s|Preambuła|PREAMBUŁA|\d+[a-z]?\)\s|[a-z]\)\s|–\s|\d+[a-z]?\.\s)")
+    r"Oddział\s|ODDZIAŁ\s|Załącznik|Część\s|CZĘŚĆ\s|Preambuła|PREAMBUŁA|\d+[a-z]?\)(?:\u2063?\d{1,3}\))?\s|[a-z]\)(?:\u2063?\d{1,3}\))?\s|–\s|"
+    r"\d+[a-z]?\.\s)")
 # jednostka na LEWYM marginesie (pkt/lit./tiret mają wysunięty numer; „Art."/„§" bywają niewcięte)
 _PDF_JEDNOSTKA = re.compile(
-    r"^[\[<]?(Art\.\s*\d|§\s*\d|\d+[a-z]?\)\s|[a-z]\)\s|–\s|Rozdział\s|ROZDZIAŁ\s|Dział\s|DZIAŁ\s|Tytuł\s|TYTUŁ\s|"
-    r"Księga\s|KSIĘGA\s|Oddział\s|Załącznik)")
+    r"^[\[<]?(Art\.\s*\d|§\s*\d|\d+[a-z]?\)(?:\u2063?\d{1,3}\))?\s|[a-z]\)(?:\u2063?\d{1,3}\))?\s|–\s|Rozdział\s|ROZDZIAŁ\s|Dział\s|"
+    r"DZIAŁ\s|Tytuł\s|TYTUŁ\s|Księga\s|KSIĘGA\s|Oddział\s|Załącznik)")
 _PDF_WCIECIE_NAGLOWKA = 16   # krótki wiersz wcięty co najmniej tyle = wyśrodkowany nagłówek (DZIAŁ IV)
 _PDF_MAKS_NAGLOWEK = 70
 
@@ -591,20 +604,27 @@ def pdf_do_tekstu_z_notkami(pdf_bytes, zeszyt=False, indeksy=True):
     długości („222¹" — `_pdf_oznacz_indeksy(w_miejscu=True)`), żeby nie przesunąć łamów; `indeksy=False` (OCR skanów
     z lat 90.: współrzędne słów z OCR są niepewne) — bez oznaczania indeksów.
 
-    Zwraca (surowy tekst, {nr strony: {k: [notka]}}, info) — patrz `_pdf_margines`."""
+    Zwraca (surowy tekst, {nr strony: {k: [notka]}}, info) — patrz `_pdf_margines`.
+
+    Gdy `-layout` dał tekst, a `-bbox` nie dał tyle samo stron (awaria `pdftotext -bbox` — `_pdftotext` zwraca wtedy pusty
+    napis), indeksy górne i odsyłacze NIE są oznaczane (strony mogłyby się rozjechać), a `info` dostaje
+    „bez_wspolrzednych" = (stron bbox, stron -layout). Działa wtedy dawna reguła kształtu `_PDF_ODSYLACZ`, która zjada cyfry
+    liczby przed przypisem („152,61" + „3)" → „152,") — dotąd po cichu; `cmd_tekst` ostrzega, a `--strict` blokuje."""
     raw = pdf_do_tekstu_layout(pdf_bytes)
     if not raw or zeszyt and not indeksy:
         return raw, {}, {}
-    if zeszyt:
-        strony = _pdf_slowa(_pdftotext(["-bbox", "-enc", "UTF-8"], pdf_bytes))
-        caly = raw.split("\f")
-        if len(strony) <= len(caly):
-            for nr, (_, _, slowa) in enumerate(strony):
-                caly[nr] = _pdf_oznacz_indeksy(caly[nr], slowa, w_miejscu=True)
-        return "\f".join(caly), {}, {}
     strony = _pdf_slowa(_pdftotext(["-bbox", "-enc", "UTF-8"], pdf_bytes))
+    caly = raw.split("\f")
+    stron_layout = len(caly) - 1 if raw.endswith("\f") else len(caly)
+    if len(strony) != stron_layout:
+        info = {"bez_wspolrzednych": (len(strony), stron_layout)}
+        return raw, {}, info
+    if zeszyt:
+        for nr, (_, _, slowa) in enumerate(strony):
+            caly[nr] = _pdf_oznacz_indeksy(caly[nr], slowa, w_miejscu=True)
+        return "\f".join(caly), {}, {}
     _, marg, info = _pdf_margines(strony)
-    caly, notki, przyciecie = raw.split("\f"), {}, {}
+    notki, przyciecie = {}, {}
     if marg:
         wys = max(h for _, h, _ in strony)
         for szer in sorted({p for p, _ in marg.values()}):
@@ -615,10 +635,10 @@ def pdf_do_tekstu_z_notkami(pdf_bytes, zeszyt=False, indeksy=True):
             for nr, (p, strona) in marg.items():
                 if p == szer:
                     caly[nr], notki[nr], przyciecie[nr] = ciete[nr], strona, p
-    if len(strony) <= len(caly):
-        for nr, (w, h, slowa) in enumerate(strony):
-            na_stronie = [s for s in slowa if s[0] < przyciecie.get(nr, w + 1)]
-            caly[nr] = _pdf_rozstrzelone(_pdf_oznacz_indeksy(caly[nr], na_stronie), na_stronie)
+    for nr, (w, h, slowa) in enumerate(strony):
+        na_stronie = [s for s in slowa if s[0] < przyciecie.get(nr, w + 1)]
+        caly[nr] = _pdf_oznacz_odsylacze(_pdf_rozstrzelone(_pdf_oznacz_indeksy(caly[nr], na_stronie), na_stronie),
+                                         na_stronie)
     return "\f".join(caly), notki, info
 
 
@@ -679,7 +699,144 @@ def _pdf_notki_marginesu(lines):
     return out, notki
 
 
-def _pdf_strona(page, pierwsza, info=None, notki_bbox=None):
+# Odsyłacz do przypisu to indeks górny: mniejsza czcionka, podniesiony. `-layout` gubi tę informację, więc
+# `_PDF_ODSYLACZ` zgaduje go po kształcie „cyfry + )" — i myli się (13.11.2026, 40 losowych tekstów jednolitych 2025–2026
+# i 18 kodeksów i ustaw; współrzędne słów z `-bbox`, obraz strony obejrzany dla DU 2026/218 s. 13 i DU 2025/1016 s. 9):
+# - zabiera cyfry liczby: „0,01" + odsyłacz „2)" to w `-layout` „0,012)", a wynik miał „0," (DU 2025/1016 — najwyższe
+#   dopuszczalne zawartości w paszach); „152,61" + „3)" → „152," (DU 2026/218 — kwota); „2.4" + „12)" → „2." (DU 2025/615);
+# - bierze za odsyłacz zwykły tekst: „SpO2)," → „SpO," (DU 2026/1391), „(E561)" → „(E" (DU 2025/1016), „(WGS84)" → „(WGS";
+# - nie widzi odsyłacza wydrukowanego w OSOBNYM wierszu nad wierszem, do którego należy: „                2)" nad
+#   „Art. 179. (utracił moc)" (k.c. DU 2026/795) i „      14)" nad „6)          przebieg…" (k.p. DU 2026/1245, art. 22¹
+#   § 1 pkt 6). Wiersz „2)" doklejał się do poprzedniego akapitu, a przypis z dołu strony — bez odsyłacza w treści i bez
+#   frazy przypisu — szedł jako tekst do OSTATNIEGO przepisu strony: k.c. art. 182 § 2 kończył się przypisem o wyroku TK
+#   K 9/04, który należy do art. 179; w k.p. art. 22¹ znikał przypis 14, a „14)" zostawało w pkt 5.
+# Dlatego na stronach z warstwą tekstową odsyłacz bierzemy ze współrzędnych słów (`pdftotext -bbox`): osobne słowo „N)"
+# (albo „N" + „)"), niższe od słowa tuż z lewej i podniesione — pdftotext zaczyna nowe słowo przy zmianie wielkości
+# czcionki. Taki odsyłacz dostaje znacznik `_ODS_POTW` przed cyframi, więc `_PDF_ODSYLACZ` zabiera DOKŁADNIE jego cyfry.
+# Kandydat, którego cyfry i „)" leżą w jednym słowie bbox razem z poprzedzającym znakiem („SpO2),", „(E561)"), to tekst
+# o jednej wielkości czcionki — dostaje `_ODS_NIE` między cyfry a „)", więc zostaje w tekście. Gdy współrzędne milczą
+# (brak pary słów, strona z OCR, zeszyt 1990–2011), działa dawna reguła `_PDF_ODSYLACZ`. Znaczniki znikają z wyniku
+# w `pdf_layout_do_tekstu`.
+_ODS_POTW = "\u2063"     # przed cyframi odsyłacza potwierdzonego współrzędnymi
+_ODS_NIE = "\u2064"      # między cyframi a „)" — to zwykły tekst, nie odsyłacz
+_PDF_SAM_ODSYLACZ = re.compile(r"^( *)(\d{1,3}\)) *$")
+
+
+def _pdf_odsylacze_bbox(slowa):
+    """Słowa bbox strony → [(słowo tuż z lewej, numer, czy to słowo jest odsyłaczem)] odsyłaczy-indeksów górnych, w kolejności
+    słów bbox. Dwa odsyłacze obok siebie („§ 1." „6)" „7)" — k.p.c. DU 2026/468 art. 49, w `-layout` „§ 1.6) 7) Niezależnie"):
+    drugi stoi za pierwszym, a nie za wyższym słowem — dotąd „7)" zostawało w tekście i udawało punkt 7.
+
+    Drugi odsyłacz: ta sama wysokość co pierwszy (±0,5 pt), ta sama góra (±1 pt), przerwa do 12 pt. Odstęp bywa szeroki
+    w wierszu justowanym: k.p.c. art. 1 („Art. 1." „2)" „3)" „Kodeks…") — 5,84 pt, a próg 5 pt zostawiał „3)" w treści
+    („Art. 1. 3) Kodeks…"), przypis 3 (wyrok TK K 10/17) był bez odsyłacza i lądował przy art. 2. 13.11.2026, 30 PDF
+    Dz.U. 2025–2026 (głównie t.j.): par „N)" „N)" tej samej wysokości na jednej linii są dwie (3,44 i 5,84 pt, obie
+    w k.p.c.); „7)" „7)" na dole strony DU 2026/1044 s. 4 (14,76 pt, wysokości 7,88 i 8,73) to nie para. Warunek
+    wysokości odrzuca też punkt „1)" zwykłą czcionką tuż za odsyłaczem (górę ma prawie tę samą)."""
+    out, potw = [], set()
+    for k, o in enumerate(slowa):
+        mm = re.fullmatch(r"(\d{1,3})(\)?)", o[4])
+        if not mm:
+            continue
+        gora, dol = o[1], o[3]
+        if not mm.group(2):     # „23" + „)" jako dwa słowa (DU 2025/609 s. 10: „karnego" „23" „)")
+            nast = slowa[k + 1] if k + 1 < len(slowa) else None
+            if not (nast and nast[4].startswith(")") and -1 < nast[0] - o[2] < 1 and abs(nast[1] - o[1]) < 3):
+                continue
+            dol = max(dol, nast[3])
+        wys = dol - gora
+        lewe = [w for w in slowa if w is not o and abs(w[1] - gora) < 6 and -1.5 < o[0] - w[2] < 4
+                and wys < 0.85 * (w[3] - w[1]) and dol < w[3] - 0.5]
+        if lewe:
+            slowo, za_odsylaczem = min(lewe, key=lambda w: abs(o[0] - w[2]))[4], False
+        else:
+            # za innym odsyłaczem tej samej wysokości (przerwa do 12 pt — patrz wyżej)
+            lewe = [w for w in slowa if id(w) in potw and abs(w[1] - gora) < 1 and abs((w[3] - w[1]) - wys) < 0.5
+                    and -1.5 < o[0] - w[2] < 12]
+            if not lewe or not o[4].endswith(")"):
+                continue
+            slowo, za_odsylaczem = lewe[0][4], True
+        # jak w `_PDF_ODSYLACZ`: po cudzysłowie, nawiasie, „<", „±", myślniku i ukośniku nie usuwamy — obwieszczenie t.j.
+        # cytuje przypis z jego numerem („które stanowią: „2) Tekst Programu…" — DU 2025/151)
+        if slowo[-1:] not in "[(„\"'«<±–+/-":
+            out.append((slowo, mm.group(1), za_odsylaczem))
+            potw.add(id(o))
+    return out
+
+
+def _pdf_oznacz_odsylacze(tekst, slowa):
+    """Strona z `-layout` + słowa bbox tej strony → strona z odsyłaczami oznaczonymi wg współrzędnych (patrz wyżej).
+    Potwierdzony odsyłacz dostaje `_ODS_POTW` przed cyframi („moc)" + znacznik + „2)"); samotny wiersz z odsyłaczem nad
+    wierszem jest doklejony do słowa, za którym odsyłacz stoi w PDF („6)" + znacznik + „14)    przebieg…"). Zaprzeczony
+    kandydat dostaje `_ODS_NIE` między cyfry a „)". Każdy odsyłacz z bbox oznacza jedno miejsce w tekście, tylko tuż za
+    swoim słowem (bez spacji). Samotny odsyłacz, którego słowa nie ma w następnym wierszu (przypis formularza w DU 2025/609
+    stoi wiersz wyżej), i numer przypisu pod kreską (nie ma słowa z lewej) zostają bez zmian."""
+    if not slowa:
+        return tekst
+    lines = tekst.split("\n")
+    for slowo, n, za_odsylaczem in _pdf_odsylacze_bbox(slowa):
+        if za_odsylaczem:   # „6) 7)" → oba oznaczone, bez spacji między nimi (znika razem z odsyłaczami)
+            wzor = re.compile("(" + _ODS_POTW + re.escape(slowo) + r") ?(" + n + r"\))")
+        else:
+            wzor = re.compile(r"(?<!\S)(" + re.escape(slowo) + r")(" + n + r"\))")
+        for i, l in enumerate(lines):
+            m = wzor.search(l) if l is not None else None
+            if m:
+                lines[i] = l[:m.end(1)] + _ODS_POTW + l[m.start(2):]
+                break
+        else:
+            if za_odsylaczem:
+                continue
+            for i in range(len(lines) - 1):
+                m = _PDF_SAM_ODSYLACZ.match(lines[i] or "")
+                nast = lines[i + 1] or ""
+                if not (m and m.group(2) == n + ")" and nast.strip()
+                        and len(m.group(1)) > len(nast) - len(nast.lstrip(" "))):
+                    continue
+                konce = [w.end() for w in re.finditer(r"(?<!\S)" + re.escape(slowo) + r"(?!\S)", nast)]
+                if konce:
+                    q = min(konce, key=lambda k: abs(k - len(m.group(1))))
+                    lines[i], lines[i + 1] = None, nast[:q] + _ODS_POTW + n + ")" + nast[q:]
+                    break
+    lines = [l for l in lines if l is not None]
+    teksty = [w[4] for w in slowa]
+    for i, l in enumerate(lines):
+        if not _PDF_ODSYLACZ.search(l):
+            continue
+        kawalki, poz = [], 0
+        for m in _PDF_ODSYLACZ.finditer(l):
+            if l[m.start() - 1] == _ODS_POTW:
+                continue
+            przed = re.search(r"\S{1,3}$", l[:m.start()]).group(0)
+            if any(przed + m.group(0) in t for t in teksty):
+                kawalki += [l[poz:m.end(1)], _ODS_NIE]
+                poz = m.end(1)
+        if kawalki:
+            lines[i] = "".join(kawalki) + l[poz:]
+    return "\n".join(lines)
+
+
+def _pdf_punkt_obwieszczenia(blok, numery, tresc_strony):
+    """Czy „blok przypisów" z dołu strony obwieszczenia Marszałka Sejmu to w rzeczywistości punkt jego wyliczenia („5) art. 48
+    ustawy z dnia … (Dz. U. poz. 1123), który stanowi: „Art. 48. …”")? Pozycja listy przepisów przejściowych stoi na dole
+    strony po pustym wierszu, zaczyna się od „N)" na marginesie i zawiera frazę przypisu („wchodzi w życie"), więc reguła
+    bloku przypisów brała ją za przypis N. Dawny silnik gubił taki punkt bez śladu, nowszy drukował go jako „[przypis 5)]"
+    i karmił nim listę „PRZEPISY, KTÓRE JESZCZE NIE OBOWIĄZUJĄ" (DU 2026/1473: fałszywe „od 2028-01-01: przepis z przypisem
+    5)"). 13.11.2026, 23 PDF Dz.U. 2025–2026 (t.j. i obwieszczenia ministrów): tak było w DU 2026/795 (pkt 4), 1315
+    (pkt 3), 1342 (pkt 4), 1395 (pkt 3), 1473 (pkt 5), w k.p. DU 2026/1245 (pkt 6 i podpis — ginęły bez śladu, bo na
+    stronie nie było innej treści) oraz w DU 2025/1016 i 2026/1391 (pkt 4); prawdziwego przypisu nad „Załącznik do
+    obwieszczenia" bez potwierdzonego odsyłacza w tej próbie nie było (przypis „1)" przy tytule ministra — wielką literą).
+
+    Punkt wyliczenia: tekst pierwszego „N)" zaczyna się małą literą albo „§" (dalszy ciąg zdania „…przepisów: 1) art. …"),
+    a żaden numer bloku nie ma na stronie odsyłacza potwierdzonego współrzędnymi. Przypis zaczyna się wielką literą
+    („Zmiany tekstu jednolitego…", „Niniejsza ustawa…") albo ma potwierdzony odsyłacz."""
+    pierwszy = next((m.group(2) or "" for w, t, _ in blok if w == 0 for m in [_PDF_PRZYPIS.match(t)] if m), "")
+    if not (pierwszy[:1].islower() or pierwszy.startswith("§")):
+        return False
+    return not any(_ODS_POTW + n + ")" in tresc_strony for n in numery)
+
+
+def _pdf_strona(page, pierwsza, info=None, notki_bbox=None, obwieszczenie=False):
     """Jedna strona z `pdftotext -layout` → (linie treści [(wcięcie, tekst, notki)], przypisy {nr: treść}).
 
     Usuwa nagłówek („©Kancelaria Sejmu  s. 1/119", „Dziennik Ustaw – 22 – Poz. 795"), stopkę
@@ -688,9 +845,14 @@ def _pdf_strona(page, pierwsza, info=None, notki_bbox=None):
     Notki z prawego marginesu (tekst ujednolicony) wychodzą osobno przy wierszu, obok którego stoją;
     „Opracowano na podstawie…" i data wydruku trafiają do `info` („podstawa", „data_wydruku").
     `notki_bbox` ({k: [notka]} z `_pdf_notki_z_bbox`; strona już przycięta do szerokości treści)
-    zastępuje rozpoznawanie notek po odstępach w wierszu.
+    zastępuje rozpoznawanie notek po odstępach w wierszu. `obwieszczenie` — strona obwieszczenia Marszałka Sejmu
+    przed stroną „Załącznik do obwieszczenia": punkt jego wyliczenia na dole strony nie jest przypisem
+    (`_pdf_punkt_obwieszczenia`).
     """
-    lines = page.split("\n")
+    # znak U+FEFF przed nagłówkiem strony („\ufeff Dziennik Ustaw –2– Poz. 712") — nagłówek nie był rozpoznawany i wchodził
+    # w treść przepisu („…ryb 0,05 Dziennik Ustaw – 10 – Poz. 1016 1 2 3 4 DDT"); 13.11.2026: 9 z 58 tekstów (DU 2026/1391:
+    # 111 razy). Ten znak nie jest treścią (niewidoczna spacja zerowej szerokości).
+    lines = page.replace("\ufeff", "").split("\n")
     while lines and not lines[-1].strip():
         lines.pop()
     przypiete = {}
@@ -788,7 +950,8 @@ def _pdf_strona(page, pierwsza, info=None, notki_bbox=None):
         tresc_strony = "\n".join(t for w, t, _ in wiersze[:k])
         odsylacze = set(_PDF_ODSYLACZ.findall(tresc_strony))
         tekst_bloku = " ".join(t for w, t, _ in blok)
-        if (set(numery) & odsylacze) or any(f in tekst_bloku for f in _PDF_FRAZY_PRZYPISU):
+        if ((set(numery) & odsylacze) or any(f in tekst_bloku for f in _PDF_FRAZY_PRZYPISU)) \
+                and not (obwieszczenie and _pdf_punkt_obwieszczenia(blok, numery, tresc_strony)):
             biezacy = None
             for w, t, _ in blok:
                 m = _PDF_PRZYPIS.match(t) if w == 0 else None
@@ -798,7 +961,62 @@ def _pdf_strona(page, pierwsza, info=None, notki_bbox=None):
                 elif biezacy is not None:
                     przypisy[biezacy] = _doklej(przypisy[biezacy], t)
             wiersze = wiersze[:k]
+            return [(w, t, n) for w, t, n in wiersze if t], przypisy
+    wiersze = _pdf_przypisy_po_odstepie(wiersze, przypisy)
     return [(w, t, n) for w, t, n in wiersze if t], przypisy
+
+
+_PDF_NAGLOWEK_JEDNOSTKI = re.compile(r"^[\[<„]?(Art\.\s*\d|§\s*\d|Rozdział\s|ROZDZIAŁ\s|Dział\s|DZIAŁ\s|Tytuł\s|TYTUŁ\s|"
+                                     r"Księga\s|KSIĘGA\s|Oddział\s|ODDZIAŁ\s|Załącznik)")
+
+
+def _pdf_przypisy_po_odstepie(wiersze, przypisy):
+    """Blok przypisów, którego nie rozpoznała reguła „ostatni blok po pustej linii od „N)" na marginesie". Zweryfikowane
+    13.11.2026 na obrazie strony: k.p.c. DU 2026/468 s. 14 — blok zaczyna się dokończeniem przypisu 5 z poprzedniej strony,
+    a za nim „6)", „7)" (wyroki TK P 13/19, P 10/19); k.p. DU 2026/1245 s. 95 — pusty wiersz w środku przypisu 61; DU 2026/1315
+    s. 85 — przypisy 20–24 (wyroki TK) z pustymi wierszami. Treść tych przypisów szła do OSTATNIEGO przepisu strony: k.p.c.
+    art. 50 § 2 kończył się zdaniami o utracie mocy art. 49 („6) Utracił moc z dniem 9 czerwca 2020 r. …").
+
+    Blok = wiersze pod ostatnim odstępem co najmniej dwóch pustych wierszy, w których każdy niepusty wiersz to „N)" na
+    marginesie (początek przypisu) albo wiersz wcięty (jego ciąg dalszy). Numery mają iść po kolei i KAŻDY musi mieć w treści
+    strony nad blokiem odsyłacz potwierdzony współrzędnymi (`_ODS_POTW`) — bez współrzędnych (zeszyty 1990–2011, OCR) reguła
+    nie działa. Wcięte wiersze przed pierwszym „N)" to dokończenie ostatniego przypisu poprzedniej strony (klucz „+")."""
+    if not any(_ODS_POTW in t for _, t, _ in wiersze):
+        return wiersze
+    najlepszy = None
+    for p in range(len(wiersze) - 1, 1, -1):
+        if not (wiersze[p][1] and wiersze[p - 1][1] == "" and wiersze[p - 2][1] == ""):
+            continue
+        blok = [(w, t) for w, t, _ in wiersze[p:] if t]
+        if not all(w > 0 and not _PDF_NAGLOWEK_JEDNOSTKI.match(t) or w == 0 and _PDF_PRZYPIS.match(t) for w, t in blok):
+            break       # wyżej byłby blok z treścią przepisu (artykuł, paragraf, nagłówek jednostki); punkty „8) dyrektywy…"
+                        # wcięte pod numerem przypisu to wyliczenie W przypisie (CIT DU 2026/554 s. 2) — dozwolone
+        # dokończenie przypisu z poprzedniej strony zaczyna się w środku zdania (małą literą); wcięty wiersz wielką literą
+        # przed pierwszym „N)" to raczej treść (podpis, wyśrodkowany nagłówek) — takiego bloku nie bierzemy
+        if blok and blok[0][0] > 0 and not blok[0][1][:1].islower():
+            continue
+        numery = [m.group(1) for w, t in blok if w == 0 for m in [_PDF_PRZYPIS.match(t)] if m]
+        nad = "\n".join(t for _, t, _ in wiersze[:p])
+        potw = set(re.findall(_ODS_POTW + r"(\d{1,3})\)", nad))
+        if numery and all(int(b) == int(a) + 1 for a, b in zip(numery, numery[1:])) and set(numery) <= potw:
+            najlepszy = p
+    if najlepszy is None:
+        return wiersze
+    biezacy, dalszy = None, ""
+    for w, t, _ in wiersze[najlepszy:]:
+        if not t:
+            continue
+        m = _PDF_PRZYPIS.match(t) if w == 0 else None
+        if m:
+            biezacy = m.group(1)
+            przypisy[biezacy] = m.group(2) or ""
+        elif biezacy is not None:
+            przypisy[biezacy] = _doklej(przypisy[biezacy], t)
+        else:
+            dalszy = _doklej(dalszy, t)
+    if dalszy:
+        przypisy["+"] = dalszy
+    return wiersze[:najlepszy]
 
 
 def _zlacz_rozstrzelone(t):
@@ -890,6 +1108,21 @@ def _przypnij_notki(akapity):
         a[3] = zostaja
 
 
+# Przypis spod tekstu strony, którego odsyłacza w treści nie ustalono (`pdf_layout_do_tekstu`): etykieta mówi wprost, że
+# NIE wiadomo, której jednostki dotyczy. Ostrzeżenia o przypisach fragmentu (wyrok TK, przepisy, które jeszcze nie
+# obowiązują, przypis przy nagłówku rozdziału) nie biorą go za przypis tej jednostki — podają go osobno z zastrzeżeniem.
+_PRZYPIS_BEZ_ODSYLACZA = "bez odsyłacza w treści tej strony; nie przypisuj go do sąsiedniego przepisu"
+_NIEPRZYPISANY = "przypis nieprzypisany do jednostki"      # tak go nazywają ostrzeżenia
+_PRZYPIS_BEZ_ODSYLACZA_LINIA = re.compile(r"(?m)^\[przypis (\d+[a-z]?)\) — " + re.escape(_PRZYPIS_BEZ_ODSYLACZA) + r"\] (.*)$")
+# akapit zaczynający jednostkę (artykuł, paragraf, ustęp, nagłówek) — przed nim stawiamy przypis bez odsyłacza
+_PDF_POCZATEK_JEDNOSTKI = re.compile(r"^[\[<]?(?:Art\.\s*\d|§\s*\d|\d+[a-z]*\.\s|Rozdział\s|ROZDZIAŁ\s|Dział\s|DZIAŁ\s|"
+                                     r"Tytuł\s|TYTUŁ\s|Księga\s|KSIĘGA\s|Oddział\s|ODDZIAŁ\s|Załącznik)")
+
+
+def _przypis_bez_odsylacza(n, tresc):
+    return f"[przypis {n}) — {_PRZYPIS_BEZ_ODSYLACZA}] {tresc}"
+
+
 def pdf_layout_do_tekstu(raw, info=None, notki=None):
     """Tekst z `pdftotext -layout` → tekst w układzie jak z text.html.
 
@@ -904,9 +1137,23 @@ def pdf_layout_do_tekstu(raw, info=None, notki=None):
     akapity = []        # [wcięcie_nagłówka(bool), tekst, {strony}, [notki marginesu]]
     przypisy = {}       # nr strony → {nr przypisu: treść}
     poprzedni_naglowek = False
+    # strony obwieszczenia Marszałka Sejmu (przed stroną „Załącznik do obwieszczenia") — `_pdf_punkt_obwieszczenia`
+    strona_zal = next((i for i, s in enumerate(strony) if re.search(r"(?im)^\W*Załącznik\s+do\s+obwieszczenia", s)), None)
+    if strona_zal is not None and not re.search(r"jednolitego\s+tekstu", "\n".join(strony[:strona_zal + 1])):
+        strona_zal = None
     for nr, strona in enumerate(strony):
         wiersze, przyp = _pdf_strona(strona, pierwsza=(nr == 0), info=info,
-                                     notki_bbox=(notki or {}).get(nr) if notki else None)
+                                     notki_bbox=(notki or {}).get(nr) if notki else None,
+                                     obwieszczenie=strona_zal is not None and nr < strona_zal)
+        dalszy = None
+        if przyp.get("+") is not None:
+            # dokończenie ostatniego przypisu poprzedniej strony (`_pdf_przypisy_po_odstepie`); gdy tamta strona nie ma
+            # przypisów, tekst zostaje w treści — jak dotąd, nic nie ginie
+            dalszy, poprzednie = przyp.pop("+"), przypisy.get(nr - 1)
+            if poprzednie:
+                ostatni = max(poprzednie, key=int)
+                poprzednie[ostatni] = _doklej(poprzednie[ostatni], dalszy)
+                dalszy = None
         if przyp:
             przypisy[nr] = przyp
         for wciecie, t, notki_wiersza in wiersze:
@@ -922,6 +1169,8 @@ def pdf_layout_do_tekstu(raw, info=None, notki=None):
                 akapity[-1][2].add(nr)
                 akapity[-1][3].extend(notki_wiersza)
             poprzedni_naglowek = naglowek
+        if dalszy:
+            akapity.append([False, dalszy, {nr}, []])
     if any(a[3] for a in akapity):
         _przypnij_notki(akapity)
     # Tekst jednolity zaczyna się od OBWIESZCZENIA Marszałka Sejmu (z cytowanymi przepisami
@@ -932,11 +1181,17 @@ def pdf_layout_do_tekstu(raw, info=None, notki=None):
         for a in akapity[:zal]:
             a[1] = "» " + a[1]
         akapity.insert(0, [True, "[obwieszczenie Marszałka Sejmu sprzed załącznika — wiersze ze znakiem » NIE są treścią aktu]", set(), []])
-    out = []
+    out, w_zalaczniku = [], False
+    uzyte, koniec_strony = set(), {}      # (strona, nr) przypisów wypisanych przy odsyłaczu; strona → indeks w `out`
+    jednostki = []      # (indeks w `out` przed akapitem, najniższa strona akapitu) — akapity zaczynające jednostkę
     for naglowek, t, na_stronach, notki_akapitu in akapity:
+        if re.match(r"(?i)załącznik(?!\s+do\s+obwieszczenia)", t):
+            w_zalaczniku = True
         t = _pdf_normalizuj_indeksy(t)
         odsylacze = []
         t = _PDF_ODSYLACZ.sub(lambda m: odsylacze.append(m.group(1)) or "", t)
+        if na_stronach and (naglowek or _PDF_POCZATEK_JEDNOSTKI.match(t)):
+            jednostki.append((len(out), min(na_stronach)))
         if naglowek or re.match(r"^[\[<]?Art\.\s*\d", t):
             out.append("")
         out.append(t)
@@ -945,15 +1200,53 @@ def pdf_layout_do_tekstu(raw, info=None, notki=None):
             for s in sorted(na_stronach) + [max(na_stronach) + 1, min(na_stronach) - 1]:
                 if n in przypisy.get(s, {}):
                     tresc = przypisy[s][n]
+                    uzyte.add((s, n))
                     break
             if tresc is None:
-                # treść na dalszej stronie (przypis łamu/akapitu przeniesiony przez skład): tylko gdy jednoznaczna
-                inne = {p[n] for p in przypisy.values() if p.get(n)}
+                # treść na innej stronie: przypis łamu/akapitu przeniesiony przez skład, przypisy tabeli pod jej końcem,
+                # a w treści aktu także odsyłacz powtórzony na dalszych stronach (k.p. przypis 46 „Obecnie minister
+                # właściwy do spraw pracy…" — treść tylko przy pierwszym odsyłaczu). Tylko gdy jednoznaczna. W ZAŁĄCZNIKU
+                # — tylko z najwyżej 3 stron DALEJ: formularz i tabela mają własne przypisy „1)", „2)", a dotąd odsyłacz
+                # z formularza („Grupa krwi i czynnik Rh1)", DU 2026/1391 s. 42) albo tabeli („0,01" + „2)", DU 2025/1016
+                # s. 9) dostawał przypis o tym numerze z początku aktu („Minister Zdrowia kieruje działem…", „Przepisy
+                # rozporządzenia wdrażają…"). 13.11.2026: na 40 losowych t.j. 2025–2026 przypisów branych z dalekiej
+                # strony wstecz było 67; obejrzane DU 2026/1391 s. 42, DU 2025/609 s. 11–12, DU 2026/1197 s. 11 (układ
+                # `-layout`: formularz ma własne „1) Jeżeli oznaczono…", „Niepotrzebne skreślić", „Wpisać…") i DU 2025/1016
+                # s. 9 (obraz strony: objaśnienia pod tabelą) — wszystkie te w załącznikach błędne; w treści aktu odsyłacz
+                # powtórzony dalej bywa prawidłowy, dlatego tam reguła zostaje. Lepiej „nie odnaleziono" niż cudzy przypis.
+                inne = {p[n] for s, p in przypisy.items() if p.get(n)
+                        and (not w_zalaczniku or max(na_stronach) < s <= max(na_stronach) + 3)}
                 tresc = inne.pop() if len(inne) == 1 else None
+                uzyte.update((s, n) for s, p in przypisy.items() if tresc and p.get(n) == tresc)
             out.append(f"[przypis {n})] {tresc}" if tresc else f"[przypis {n})] (treści przypisu nie odnaleziono na tej stronie PDF)")
         for n in notki_akapitu:
             out.append(f"[margines: {_pdf_normalizuj_indeksy(n)}]")
-    t = "\n".join(out)
+        if na_stronach:
+            koniec_strony[max(na_stronach)] = len(out)
+    # Przypis rozpoznany pod tekstem strony, do którego żaden odsyłacz nie trafił (odsyłacz w komórce tabeli albo
+    # formularza, którego `-layout` nie skleił ze słowem), nie może zniknąć. 13.11.2026: DU 2025/609 (formularz) gubił
+    # „9) Załączany dokument należy zaznaczyć X." i „15) Ustawa … – Kodeks karny", gdy blok przypisów zaczął być rozpoznawany.
+    # Nie wiadomo jednak, której jednostki dotyczy — dotąd wychodził pod ostatnim akapitem strony w tej samej postaci co
+    # przypis dopasowany, więc wyglądał na przypis tego akapitu: k.p.c. DU 2026/468 — przypis 3 (wyrok TK K 10/17, należy
+    # do art. 1) stał między § 2 a § 3 art. 2, a `--fragment "art. 2"` dawał „UWAGA — WYROK TK W PRZYPISIE TEGO FRAGMENTU";
+    # DU 2026/1473 — „Tytuł rozdziału w brzmieniu…" między pkt 2 a pkt 3 ustępu. Teraz ma etykietę `_przypis_bez_odsylacza`
+    # (ostrzeżenia o przypisach fragmentu traktują go osobno) i stoi przed najbliższą jednostką (artykuł, paragraf, ustęp,
+    # nagłówek) zaczynającą się na tej albo następnej stronie — nie rozcina wyliczenia; bez takiej jednostki — pod ostatnim
+    # akapitem strony. Strona bez akapitów (sam blok przypisów) — pod ostatnim akapitem wcześniejszej strony.
+    wstawki = []
+    for nr in sorted(przypisy):
+        osierocone = [_przypis_bez_odsylacza(n, tresc) for n, tresc in sorted(przypisy[nr].items(), key=lambda x: int(x[0]))
+                      if (nr, n) not in uzyte and tresc]
+        strona = nr if nr in koniec_strony else max((s for s in koniec_strony if s < nr), default=None)
+        if not osierocone or strona is None:
+            continue
+        poz = koniec_strony[strona]
+        # indeks jednostki wskazuje pusty wiersz przed „Art."/nagłówkiem albo sam akapit „§ 2."/„3." — przypis idzie przed nie
+        dalej = next((i for i, s in jednostki if i >= poz and s <= strona + 1), None)
+        wstawki.append((poz if dalej is None else dalej, nr, osierocone))
+    for poz, _, osierocone in sorted(wstawki, reverse=True):
+        out[poz:poz] = osierocone
+    t = "\n".join(out).replace(_ODS_POTW, "").replace(_ODS_NIE, "")
     t = re.sub(r"\n{3,}", "\n\n", t)
     return t.strip()
 
@@ -1342,7 +1635,10 @@ _GRANICE = r"(?m)^[\[<]?(Art\.\s*\d|Tytuł\s|TYTUŁ\s|Dział\s|DZIAŁ\s|Rozdzia�
 
 # unicodowe indeksy górne (art. 21¹) — do rozpoznania w zapytaniu i przełożenia na cyfry ASCII
 _SUPS = "¹²³⁴⁵⁶⁷⁸⁹⁰"
-_SUP = str.maketrans(_SUPS, "1234567890")
+# litera indeksu górnego we frazie („art. 130¹ᵃ", „art. 18³ᵉ" k.p.) — dotąd fraza z taką literą nie była rozpoznawana
+# jako oznaczenie artykułu i kończyła się „Nie znaleziono frazy" (13.11.2026, k.p.c. DU 2026/468 art. 130¹ᵃ)
+_SUPS_LITERY = "ᵃᵇᶜᵈᵉᶠᵍʰⁱʲᵏˡᵐⁿᵒᵖʳˢᵗᵘᵛʷˣʸᶻ"
+_SUP = str.maketrans(_SUPS + _SUPS_LITERY, "1234567890" + "abcdefghijklmnoprstuvwxyz")
 _NA_SUP = str.maketrans("1234567890", _SUPS)
 
 # Warianty myślnika (w tekstach ELI trafia się m.in. U+2012) — ujednolicane WYŁĄCZNIE na potrzeby
@@ -1369,7 +1665,7 @@ _KONIEC_ART = r"(?:\.|\s+\d+\))"
 # Oznaczenie jednostki we frazie: baza + opcjonalny INDEKS GÓRNY (art. 21¹: unicode "21¹", nawiasowy "21(1)"/"21[1]"/
 # "21^1", z /struct "21_1") + opcjonalny SUFIKS LITEROWY (art. 1a, art. 168e)
 _NUMER_FRAZY = (r"(\d+[a-z]*?)"                                           # (1) baza (też z literą przed indeksem: „6b^3")
-                r"(?:[\(\[\^_]\s*(\d+[a-z]?)\s*[\)\]]?|([" + _SUPS + r"]+))?"   # (2) nawiasowy | (3) unicode indeks
+                r"(?:[\(\[\^_]\s*(\d+[a-z]?)\s*[\)\]]?|([" + _SUPS + r"]+[" + _SUPS_LITERY + r"]?))?"   # (2) nawiasowy | (3) unicode
                 r"([a-z]*)\.?")                                          # (4) sufiks literowy
 
 
@@ -1472,6 +1768,27 @@ def _artykul_nad(txt, pos):
     for m in re.finditer(r"(?m)^[\[<]?(Art\.[ ]*\d+[a-z]*(?:[ ]+\d+[a-z]*)?[ ]*\.)", txt[:pos]):
         ostatni = m
     return ostatni.group(1) if ostatni else ""
+
+
+def _naglowek_poza_numeracja(txt, fraza):
+    """Fraza „art. N" (bez indeksu i litery), nagłówka nie ma, a między „Art. N−1." i najbliższym dalszym artykułem stoi
+    nagłówek, którego numer nie pasuje do ciągu → ten nagłówek („Art. 1522."), inaczej "". Dane API bywają błędne:
+    13.11.2026 k.p.c. t.j. DU 2024/1568 (HTML i /struct) — art. 15 („Sąd właściwy w chwili wniesienia pozwu…") ma nagłówek
+    „Art. 1522.", a PDF tego t.j. — „Art. 15."; `--fragment "art. 15"` pokazywał wtedy tylko odesłania."""
+    m = re.match(r"(?i)^art\.?\s*(\d+)$", (fraza or "").strip())
+    if not m or int(m.group(1)) < 2:
+        return ""
+    n = int(m.group(1))
+    naglowki = [(h.start(), h.group(1), h.group(2)) for h in re.finditer(r"(?m)^[\[<]?Art\.\s*(\d+)([a-z]*(?:\s+\d+[a-z]*)?)\s*\.", txt)]
+    for i, (_, num, reszta) in enumerate(naglowki[:-2]):
+        if int(num) == n - 1 and not reszta.strip():
+            for _, num2, reszta2 in naglowki[i + 1:i + 40]:
+                if int(num2) == n - 1:
+                    continue            # art. N−1 z indeksem (14¹, 14a)
+                if int(num2) > n and not (int(num2) == n + 1 and not reszta2.strip()) and int(num2) > 10 * n:
+                    return f"Art. {num2}{reszta2}."
+                break
+    return ""
 
 
 def _fragmenty(txt, fraza, maks=8):
@@ -1588,9 +1905,13 @@ def _zmiany_w_tekscie(txt, dzis=None):
         else:
             # przypis: najważniejsze jest ZDANIE z datą (bywa na końcu długiego przypisu) + początek przypisu
             n = re.match(r"^\[przypis (\d+)\)\]\s*(.*)$", l)
+            bez = _PRZYPIS_BEZ_ODSYLACZA_LINIA.match(l)
             ostatnie = (list(_WEJDZIE.finditer(l)) or list(_WEJDZIE_BEZ_DATY.finditer(l)))[-1]
-            poczatek = n.group(2) if n else l
-            opis = (f"przepis z przypisem {n.group(1) if n else '?'}) {ostatnie.group(0)}"
+            poczatek = n.group(2) if n else bez.group(2) if bez else l
+            kto = (f"przepis z przypisem {n.group(1)})" if n else
+                   f"{_NIEPRZYPISANY} {bez.group(1)}) — nie wiadomo, którego przepisu dotyczy; sprawdź w PDF —" if bez else
+                   "przepis z przypisem ?)")
+            opis = (f"{kto} {ostatnie.group(0)}"
                     + (" r." if d not in _BEZ_DATY else "") + " — "
                     + (poczatek if len(poczatek) <= 140 else poczatek[:137] + "…"))
         opis = opis if len(opis) <= 260 else opis[:257] + "…"
@@ -1606,6 +1927,10 @@ def _ostrzezenie_przyszle(txt, ujednolicony, dzis=None, maks=15):
     — i, w tekście ujednoliconym, o zmianach, które od jego wydruku zdążyły już wejść w życie."""
     dzis = dzis or _dzis()
     przyszle, minione = _zmiany_w_tekscie(txt, dzis)
+    # przypis bez odsyłacza (`_przypis_bez_odsylacza`) nie mówi, KTÓRY przepis jeszcze nie obowiązuje — osobny blok
+    nieprzypisane = [(d, o) for d, o in przyszle + (minione if ujednolicony else []) if o.startswith(_NIEPRZYPISANY)]
+    przyszle = [(d, o) for d, o in przyszle if not o.startswith(_NIEPRZYPISANY)]
+    minione = [(d, o) for d, o in minione if not o.startswith(_NIEPRZYPISANY)]
     out = []
     if przyszle:
         bez_daty = sum(d in _BEZ_DATY for d, _ in przyszle)
@@ -1621,6 +1946,13 @@ def _ostrzezenie_przyszle(txt, ujednolicony, dzis=None, maks=15):
                        " < … >); brzmienie w < … > zacznie obowiązywać w podanym dniu. Nie cytuj go jako obowiązującego.")
         else:
             out.append("  Przepis, przy którym stoi taki przypis, jeszcze NIE obowiązuje — nie cytuj go jako obowiązującego.")
+    if nieprzypisane:
+        out.append(f"UWAGA — PRZYPIS O WEJŚCIU W ŻYCIE BEZ ODSYŁACZA ({_NIEPRZYPISANY}): {len(nieprzypisane)} — odsyłacza "
+                   "w treści nie ustalono, więc NIE wiadomo, którego przepisu dotyczy; nie przypisuj go przepisowi, przy "
+                   "którym stoi. Sprawdź w PDF (--pdf plik.pdf):")
+        for d, opis in nieprzypisane[:maks]:
+            out.append(f"  - {_BEZ_DATY[d]}: {opis}" if d in _BEZ_DATY else
+                       f"  - od {d}{' (już obowiązuje)' if d <= dzis else ''}: {opis}")
     if ujednolicony and minione:
         out.append(f"UWAGA: od wydruku tekstu ujednoliconego weszły już w życie zmiany ({len(minione)}) — dla nich obowiązuje"
                    " brzmienie w < … >, a brzmienie w [ … ] jest NIEAKTUALNE:")
@@ -1692,6 +2024,8 @@ def _naglowki_nadrzedne(txt, pos):
         przy = []
         for l in linie[i + 1:i + 6]:
             t = l.strip().lstrip("<[")
+            if _PRZYPIS_BEZ_ODSYLACZA_LINIA.match(l):
+                continue        # przypis bez odsyłacza nie należy do nagłówka, pod którym stoi
             if l.startswith(("[przypis ", "[margines: ")):
                 przy.append(l)
             elif _poziom(t) is not None:
@@ -1816,11 +2150,15 @@ _BRAK_TRESCI = "(treści przypisu nie odnaleziono"
 
 
 def _przypisy_aktu(txt):
-    """Linie „[przypis N)] treść" całego tekstu → {N: treść} (pierwsza znaleziona treść każdego numeru)."""
+    """Linie „[przypis N)] treść" całego tekstu → {N: treść} (pierwsza znaleziona treść każdego numeru). Przypis bez
+    odsyłacza (`_przypis_bez_odsylacza`) też — tylko gdy numeru nie ma wśród dopasowanych: odesłanie „…w odnośniku 15"
+    musi znaleźć jego treść, choć nie wiadomo, przy którym przepisie stoi."""
     out = {}
     for m in _PRZYPIS_LINIA.finditer(txt):
         if not m.group(2).startswith(_BRAK_TRESCI):
             out.setdefault(m.group(1), m.group(2))
+    for m in _PRZYPIS_BEZ_ODSYLACZA_LINIA.finditer(txt):
+        out.setdefault(m.group(1), m.group(2))
     return out
 
 
@@ -1894,6 +2232,11 @@ def _cytat(d):
     return f"{pub} z {m.group(2)} r. " + (f"Nr {m.group(3)}, " if m.group(3) else "") + f"poz. {m.group(4)}"
 
 
+# typy pozycji, które same nie „wchodzą w życie" (puste entryIntoForce jest dla nich normalne)
+_TYPY_BEZ_WEJSCIA = ("Obwieszczenie", "Komunikat", "Oświadczenie rządowe", "Orzeczenie", "Postanowienie", "Ogłoszenie",
+                     "Informacja", "Sprostowanie", "Dokument wypowiedzenia", "Apel", "Deklaracja", "Wyrok", "Uchwała")
+
+
 def _jeszcze_nie_obowiazuje(d, dzis=None):
     """Ostrzeżenia dla aktu w vacatio legis / z jednostkami wchodzącymi w życie później (lista linii)."""
     dzis = dzis or _dzis()
@@ -1903,6 +2246,18 @@ def _jeszcze_nie_obowiazuje(d, dzis=None):
         out.append(f"UWAGA: akt jeszcze NIE WSZEDŁ W ŻYCIE — wejście w życie {eif} (dziś {dzis}). Status API "
                    f"„{d.get('status', '')}” znaczy tylko, że akt nie został uchylony; do tego dnia jego przepisy nie obowiązują.")
     komentarz = " ".join(str(d.get("comments") or "").split())
+    if not eif and d.get("type") not in _TYPY_BEZ_WEJSCIA:
+        # entryIntoForce puste (próba 2026-11-13, DU 2000–2026): przy rozporządzeniach i ustawach z terminem
+        # „określonym w komunikacie / decyzji Komisji Europejskiej" (DU 2026/1218, 2025/267, 2024/1688) API nie podaje
+        # ani daty, ani tego, czy zdarzenie nastąpiło; przy DU 2025/845, 2024/635, 2017/1972 data stoi tylko w
+        # przepisie o wejściu w życie. Status „obowiązujący" niczego tu nie potwierdza.
+        if re.search(r"(?i)wchodzi\s+w\s+życie\s+z\s+dniem\s+(?:określonym|wystąpienia|wdrożenia|ogłoszenia\s+komunikatu)", komentarz):
+            out.append("UWAGA: API nie podaje daty wejścia w życie, a termin zależy od zdarzenia (komunikat, decyzja, "
+                       "wdrożenie — patrz „Uwagi”). API nie mówi, czy zdarzenie nastąpiło; status „"
+                       f"{d.get('status', '')}” tego nie potwierdza. Sprawdź komunikat / decyzję, zanim uznasz akt za obowiązujący.")
+        else:
+            out.append("UWAGA: API nie podaje daty wejścia w życie (entryIntoForce puste). Ustal ją z przepisu "
+                       "o wejściu w życie: tekst <sygnatura> --fragment \"wchodzi w życie\".")
     pozniej = sorted({x for x in (_iso(a, _MIESIACE[b], c) for a, b, c in re.findall(_DATA_SLOWNIE, komentarz)) if x > dzis})
     if pozniej:
         out.append("UWAGA: część przepisów wchodzi w życie PÓŹNIEJ (" + ", ".join(pozniej) + ") — patrz „Uwagi”; "
@@ -2007,6 +2362,8 @@ def _fmt_ref(ref, kind=None):
         extra.append(f"art. {ref['art']}")
     if extra:
         line += "  (" + ", ".join(extra) + ")"
+    if act and _czy_tk(act) and (kind or "").lower().startswith("akty zmieniające"):
+        line += _ZNACZNIK_TK
     return line
 
 
@@ -2031,28 +2388,54 @@ def _zmiany_bazowe_po(base_eli, stan_prawny):
     for r in _lista(base_refs, "akty zmieniające"):
         _, ogloszono = _daty_aktu(r["act"])
         wejscie = r.get("date") or ""
-        if (ogloszono and ogloszono > stan_prawny) or (wejscie and wejscie > stan_prawny):
+        # ogłoszenie „>=", nie „>": obwieszczenie bywa sformułowane „zmian … ogłoszonych PRZED dniem X" (DU 2024/18,
+        # 2024/499, 2022/1575 — API podaje wtedy legalStatusDate = X), więc akt ogłoszony w dniu X NIE jest w t.j.
+        # Zmiana wchodząca w życie w dniu X jest w stanie prawnym „na dzień X" — tu „>" wystarcza; gdy obwieszczenie
+        # podaje wcześniejszy dzień niż API (k.p.c. DU 2026/468: API 2026-03-25, obwieszczenie „24 marca 2026 r.",
+        # sprawdzone 2026-11-13), listę uzupełnia `_sprawdz_stan_obwieszczenia`. Pozycję ujętą w t.j. oznacza obwieszczenie.
+        if (ogloszono and ogloszono >= stan_prawny) or (wejscie and wejscie > stan_prawny):
             out.append(r)
     return out
+
+
+def _stan_zastepczy(refs, path):
+    """Data odcięcia listy zmian, gdy t.j. NIE MA legalStatusDate (DU 2023/2631, DU 2026/1055, starsze t.j. —
+    sprawdzone 2026-11-13): data obwieszczenia POPRZEDNIEGO t.j. tego aktu, a bez niego — data aktu bazowego.
+    Wcześniejsza data daje dłuższą listę; pozycje ujęte w t.j. oznacza potem obwieszczenie. Zwraca (data, opis)
+    albo ("", ""). Może rzucić VerificationUnknown."""
+    base = _akt_bazowy(refs)
+    if not (base and base.get("ELI")):
+        return "", ""
+    base_refs = _get(f"/acts/{base['ELI']}/references", soft=True)
+    m = re.match(r"^/acts/(?:DU|MP)/(\d+)/(\d+)$", path or "")
+    wlasne = (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+    starsze = [a for a in (_tj_acts(base_refs) if isinstance(base_refs, dict) else []) if _eli_rok_poz(a) < wlasne]
+    if starsze:
+        d = starsze[0].get("announcementDate") or starsze[0].get("promulgation") or ""
+        if d:
+            return d, f"data poprzedniego t.j. {_akt_opis(starsze[0])}"
+    d = base.get("announcementDate") or base.get("promulgation") or ""
+    return (d, f"data aktu bazowego {_akt_opis(base)}") if d else ("", "")
 
 
 _MAKS_DOPYTAN = 10
 
 
-def _nowelizacje_po_tj(refs, path, strict=False):
+def _nowelizacje_po_tj(refs, path, strict=False, wynik=None):
     """Nowelizacje po tekście jednolitym: własna kategoria t.j. UZUPEŁNIONA o „Akty zmieniające"
     aktu bazowego po `legalStatusDate` t.j. (Sejm nie synchronizuje obu list — audyt 2026-08:
     k.p.c. t.j. 2026/468 wykazywał 2 z 5, k.s.h. 2024/18 — 1 z 4). Zwraca (linie, uwagi).
 
     Każda pozycja ma daty opisane jednoznacznie: data aktu / ogłoszono / wejście w życie zmiany.
     Awaria dopytań: w strict → VerificationUnknown, inaczej uwaga o możliwej niekompletności.
+    `wynik` (dict) dostaje „pozycje" (lista słowników jak w środku funkcji), „stan" (data odcięcia) i „baza".
     """
     wlasne = _lista(refs, "nowelizacje po tekście jednolit")
     base = _akt_bazowy(refs)
     if not (wlasne or base):
         return [], []
     uwagi = []
-    stan_prawny = ""
+    stan_prawny, opis_stanu = "", ""
     zrodla = ["odniesienia t.j."] if wlasne else []
     pozycje = {}   # ELI → {act, data_aktu, ogloszono, wejscie, etykieta}
     for r in wlasne:
@@ -2064,6 +2447,13 @@ def _nowelizacje_po_tj(refs, path, strict=False):
         try:
             meta = _get(path, soft=True) if path else None
             stan_prawny = (meta or {}).get("legalStatusDate") or "" if isinstance(meta, dict) else ""
+            if not stan_prawny:
+                # bez legalStatusDate lista nie mogła być uzupełniona — a to dokładnie przypadek, w którym
+                # wyrok TK SK 90/22 (2024) po t.j. DU 2023/2631 nie był wymieniony wcale (sprawdzone 2026-11-13)
+                stan_prawny, opis_stanu = _stan_zastepczy(refs, path)
+                if stan_prawny:
+                    uwagi.append(f"UWAGA: brak legalStatusDate w metadanych {path} — listę zmian liczę od {stan_prawny} "
+                                 f"({opis_stanu}); zmiany ujęte w tym t.j. wskazuje jego obwieszczenie.")
             if stan_prawny:
                 for r in _zmiany_bazowe_po(base["ELI"], stan_prawny):
                     act = r["act"]
@@ -2072,7 +2462,7 @@ def _nowelizacje_po_tj(refs, path, strict=False):
                                                               "ogloszono": ogloszono, "wejscie": "", "etykieta": ""})
                     poz["wejscie"], poz["etykieta"] = r.get("date") or "", "wejście w życie zmiany"
                 zrodla.append(f"„Akty zmieniające\" aktu bazowego {_akt_opis(base)} ogłoszone lub "
-                              f"wchodzące w życie po {stan_prawny}")
+                              f"wchodzące w życie od {stan_prawny}")
             else:
                 uwagi.append(f"UWAGA: brak legalStatusDate w metadanych {path} — listy nowelizacji nie "
                              "uzupełniono z aktu bazowego (może być niepełna).")
@@ -2107,27 +2497,76 @@ def _nowelizacje_po_tj(refs, path, strict=False):
         if poz["ogloszono"]:
             daty.append(f"ogłoszono {poz['ogloszono']}")
         daty.append(f"{poz['etykieta'] or 'wejście w życie'} {poz['wejscie'] or '— sprawdź: meta ' + (act.get('ELI') or '').replace('/', ' ')}")
-        linie.append(f"  - {_akt_opis(act)}  {act.get('title', '')}".rstrip() + "  (" + ", ".join(daty) + ")")
+        linie.append(f"  - {_akt_opis(act)}  {act.get('title', '')}".rstrip() + "  (" + ", ".join(daty) + ")"
+                     + (_ZNACZNIK_TK if _czy_tk(act) else ""))
         if poz.get("uwagi"):
             linie.append(f"      uwagi: {poz['uwagi']}")
     if linie:
-        naglowek = (f"UWAGA: po tym tekście jednolitym" + (f" (stan prawny na {stan_prawny})" if stan_prawny else "")
+        naglowek = (f"UWAGA: po tym tekście jednolitym" + ((f" (API nie podaje stanu prawnego — lista od {stan_prawny})"
+                                                            if opis_stanu else f" (stan prawny na {stan_prawny})")
+                                                           if stan_prawny else "")
                     + f" odnotowano zmiany ({len(linie) - sum(1 for l in linie if l.startswith('      uwagi'))})"
                     " — sprawdź ich wejście w życie" + (f" [źródła: {'; '.join(zrodla)}]" if zrodla else "") + ":")
         linie.insert(0, naglowek)
+    if wynik is not None:
+        wynik.update(pozycje=list(pozycje.values()), stan=stan_prawny, baza=base)
     return linie, uwagi
 
 
-def _ostrzezenia(refs, path=None, strict=False):
-    """Ostrzeżenia o aktualności (lista linii) na podstawie odniesień aktu."""
+_ZNACZNIK_TK = "  [WYROK TK — skutek dla przepisów: patrz sentencja]"
+
+
+def _czy_tk(act):
+    """Wyrok TK albo obwieszczenie Prezesa TK o utracie mocy (lata 90.) — pozycja „Akty zmieniające" bez nowego brzmienia."""
+    t = (act or {}).get("title") or ""
+    return t.startswith("Wyrok Trybunału Konstytucyjnego") or "Prezesa Trybunału Konstytucyjnego" in t \
+        or (act or {}).get("type") == "Orzeczenie"
+
+
+def _zmiany_aktu_bez_tj(refs, path, wynik=None):
+    """Akt BEZ tekstu jednolitego: text.html i PDF to brzmienie OGŁOSZONE, a każda pozycja jego „Akty zmieniające"
+    jest zmianą, której w tym tekście nie ma. Dotąd `tekst` takiego aktu nie ostrzegał wcale — np. DU 2006/550
+    (zmieniana 4 razy, ostatnio DU 2026/1340 od 2026-10-30) wychodził z pierwotnym art. 13 ust. 3 i kodem 0
+    także w --strict (sprawdzone 2026-11-13). Zwraca linie ostrzeżenia; `wynik` dostaje pozycje i stan."""
+    if _tj_acts(refs) or _akt_bazowy(refs):
+        return []
+    zmiany = _lista(refs, "akty zmieniające")
+    if not zmiany:
+        return []
+    pozycje = []
+    for r in zmiany:
+        act = r["act"]
+        data_aktu, ogloszono = _daty_aktu(act)
+        pozycje.append({"act": act, "data_aktu": data_aktu, "ogloszono": ogloszono, "wejscie": r.get("date") or "",
+                        "etykieta": "wejście w życie zmiany"})
+    pozycje.sort(key=lambda x: (x["wejscie"] or x["ogloszono"] or ""), reverse=True)
+    linie = [f"UWAGA: ten akt NIE MA tekstu jednolitego, a jego text.html i PDF ogłoszony to brzmienie PIERWOTNE. Akt "
+             f"zmieniano ({len(pozycje)}) — tych zmian nie ma w tekście ogłoszonym (wyjątek: tekst ujednolicony, patrz "
+             "oznaczenia przy pozycjach); przed cytatem nanieś je albo sprawdź artykuł przez --fragment (narzędzie "
+             "wskaże, czy dana zmiana go dotyczy):"]
+    for p in pozycje:
+        daty = [f"data aktu {p['data_aktu']}"] if p["data_aktu"] else []
+        if p["ogloszono"]:
+            daty.append(f"ogłoszono {p['ogloszono']}")
+        daty.append(f"wejście w życie zmiany {p['wejscie'] or '— sprawdź: meta ' + (p['act'].get('ELI') or '').replace('/', ' ')}")
+        linie.append(f"  - {_akt_opis(p['act'])}  {p['act'].get('title', '')}".rstrip() + "  (" + ", ".join(daty) + ")"
+                     + (_ZNACZNIK_TK if _czy_tk(p["act"]) else ""))
+    if wynik is not None:
+        wynik.update(pozycje=pozycje, stan="", baza={"ELI": path[len("/acts/"):]} if path else None, bez_tj=True)
+    return linie
+
+
+def _ostrzezenia(refs, path=None, strict=False, wynik=None):
+    """Ostrzeżenia o aktualności (lista linii) na podstawie odniesień aktu. `wynik` (dict) dostaje pozycje zmian
+    po stanie tekstu (dla analizy imiennej przy --fragment)."""
     out = []
     tj = _tj_acts(refs)
     if tj:
         a = tj[0]
         out.append(f"UWAGA: ten akt ma TEKST JEDNOLITY — cytuj z najnowszego: "
                    f"{a.get('displayAddress') or a.get('ELI', '')} (ELI {a.get('ELI', '')}).")
-    linie, uwagi = _nowelizacje_po_tj(refs, path, strict)
-    return out + uwagi + linie
+    linie, uwagi = _nowelizacje_po_tj(refs, path, strict, wynik)
+    return out + uwagi + linie + _zmiany_aktu_bez_tj(refs, path, wynik)
 
 
 def _tj_z_tekstem(path, refs):
@@ -2167,12 +2606,715 @@ def _tj_z_tekstem(path, refs):
     return None
 
 
+# ---------------------------------------------------------------------------------------------
+# Imienna analiza zmian po stanie tekstu: KTÓRE artykuły zmienia akt zmieniający i których dotyczy
+# wyrok TK — z TREŚCI aktu zmieniającego / sentencji wyroku (text.html albo urzędowy PDF).
+# Dotąd ostrzeżenie było tylko ogólne (lista nowelizacji aktu), a --strict przepuszczał stare
+# brzmienie: `--strict tekst DU 2024 499 --fragment "art. 5b"` (radcy prawni, t.j. ze stanem na
+# 2024-03-14) dawał kod 0 i art. 5b sprzed zmiany DU 2026/731 (w życie od 2026-06-18).
+# ---------------------------------------------------------------------------------------------
+_MAKS_ANALIZ = 8          # tyle aktów zmieniających / wyroków TK pobieramy przy jednym wywołaniu
+# numer jednostki w tekście: „5b", „4 1" (indeks górny art. 4¹ — HTML i PDF rozdzielają go spacją), „477 6a"
+_NUM_JEDN = r"\d+[a-z]*(?:[ ]\d+[a-z]*)?"
+_SEP_JEDN = r"(?:\s*,\s*|\s+i\s+|\s+oraz\s+|\s*[–—-]\s*)"
+_ART_LISTA = re.compile(r"(?i)(\bpo\s+)?\bart\.\s*(" + _NUM_JEDN + r"(?:" + _SEP_JEDN + r"(?:art\.\s*)?" + _NUM_JEDN + r")*)")
+_PAR_LISTA = re.compile(r"(\bpo\s+)?§\s*(" + _NUM_JEDN + r"(?:" + _SEP_JEDN + r"(?:§\s*)?" + _NUM_JEDN + r")*)")
+_NAGLOWEK_ZMIANY = re.compile(r"(?m)^[ \t]*(Art\.|§)\s*(\d+[a-z]*)\.\s*(?:\d+\.\s*)?W\s+(?:ustawie|rozporządzeniu|uchwale|"
+                              r"kodeksie|dekrecie|zarządzeniu|obwieszczeniu)\b")
+_NAGLOWEK_ARTYKULU_ZM = re.compile(r"(?m)^[ \t]*(?:Art\.|§)\s*\d+[a-z]*\.")
+# uchylenie albo nowe brzmienie całej jednostki wyższej — artykuły, które w niej były, nie są wymienione z numeru
+_JEDNOSTKA_WYZSZA = re.compile(r"(?i)uchyla\s+się\s+(?:rozdział|dział|oddział|tytuł|księg|część)|"
+                               r"(?:rozdział|dział|oddział|tytuł)\s+[0-9IVXLa-z]+\s+otrzymuje\s+brzmienie")
+_CALA_USTAWA = re.compile(r"(?i)w\s+całej\s+(?:ustawie|rozporządzeniu)|użyt\w*\s+w\s+(?:całej\s+)?(?:ustawie|rozporządzeniu)"
+                          r"|w\s+(?:ustawie|rozporządzeniu)\s+(?:w\s+różnej\s+liczbie\s+i\s+przypadku\s+)?wyraz")
+
+
+def _klucz(numer):
+    """Numer jednostki → wspólny klucz z tekstu i z frazy: „5b" → „5b", „4 1" → „4^1", „477 6 a" → „477^6a"."""
+    cz = (numer or "").lower().split()
+    return "" if not cz else cz[0] if len(cz) == 1 else cz[0] + "^" + "".join(cz[1:])
+
+
+def _klucz_frazy(fraza):
+    """„art. 5b" / „art. 4(1)" / „art. 4¹" / „art. 130(1a)" → klucz jak `_klucz`, inaczej ""."""
+    m = re.match(r"(?i)^art\.?\s*" + _NUMER_FRAZY, (fraza or "").strip())
+    if not m:
+        return ""
+    base, idx, sup, letter = m.group(1), m.group(2), m.group(3), m.group(4) or ""
+    idx = idx or (sup.translate(_SUP) if sup else "")
+    return (base + "^" + idx + letter if idx else base + letter).lower()
+
+
+def _klucz_naglowka(naglowek):
+    """„Art. 4 1." / „Art. 5b." (wynik `_artykul_nad`) → klucz."""
+    m = re.match(r"Art\.[ ]*(\d+[a-z]*(?:[ ]+\d+[a-z]*)?)", naglowek or "")
+    return _klucz(m.group(1)) if m else ""
+
+
+def _baza_numeru(klucz):
+    m = re.match(r"\d+", klucz or "")
+    return int(m.group(0)) if m else None
+
+
+def _rozwin_liste(lista):
+    """„5, 6 i 8" / „5–7" / „459-478" / „4 1 i 4 2" → (klucze, zakresy niedające się rozwinąć [(od, do)])."""
+    tokeny = re.split(r"(" + _SEP_JEDN + r")", re.sub(r"(?i)(?:art\.|§)\s*", "", lista))
+    klucze, zakresy = set(), []
+    poprzedni, myslnik = None, False
+    for t in tokeny:
+        if re.fullmatch(_SEP_JEDN, t):
+            myslnik = bool(re.search(r"[–—-]", t))
+            continue
+        k = _klucz(t)
+        if not k:
+            continue
+        if myslnik and poprzedni:
+            if re.fullmatch(r"\d+", poprzedni) and re.fullmatch(r"\d+", k) and 0 < int(k) - int(poprzedni) <= 400:
+                klucze |= {str(n) for n in range(int(poprzedni), int(k) + 1)}
+            else:
+                zakresy.append((poprzedni, k))
+        klucze.add(k)
+        poprzedni, myslnik = k, False
+    return klucze, zakresy
+
+
+def _w_zakresie(klucz, zakresy):
+    """Czy klucz MOŻE leżeć w nierozwiniętym zakresie (np. „art. 479 88a–479 88j" a art. 479⁸⁸ᶜ)."""
+    b = _baza_numeru(klucz)
+    return b is not None and any(_baza_numeru(od) is not None and _baza_numeru(do) is not None
+                                 and _baza_numeru(od) <= b <= _baza_numeru(do) for od, do in zakresy)
+
+
+_MAKS_CYTAT_ZMIANY = 200000   # cytat w akcie zmieniającym bywa długi: DU 2026/1296 dodaje rozdziały 4a–4f (ok. 30 tys. znaków)
+
+
+def _maska_cytatow(txt):
+    """Tekst z treścią cudzysłowów „…” zastąpioną spacjami (pozycje i znaki nowej linii bez zmian) + lista obszarów
+    niepewnych [(od, do)]. W akcie zmieniającym cytat to NOWE brzmienie, nie polecenie: „Art. 5c. 1. …” w DU 2026/731
+    nie jest artykułem aktu zmieniającego, a „po wyrazach „art. 87 § 3”" nie zmienia art. 87. Cudzysłowy bywają
+    zagnieżdżone („…o „pracowniku”…”), więc liczymy głębokość; cudzysłów otwarty dłużej niż `_MAKS_CYTAT_ZMIANY`
+    albo niezamknięty do końca tekstu to zgubione zamknięcie — w tym obszarze analiza jest niepewna (nie wolno z niej
+    wnosić, że artykułu nie zmieniono)."""
+    out, glebokosc, start, niepewne = [], 0, 0, []
+    for i, ch in enumerate(txt):
+        if ch in _OTWARCIE:
+            if glebokosc == 0:
+                start = i
+            glebokosc += 1
+            out.append(" ")
+        elif glebokosc and ch in _ZAMKNIECIE:
+            glebokosc -= 1
+            out.append(" ")
+        elif glebokosc:
+            if i - start > _MAKS_CYTAT_ZMIANY:
+                glebokosc = 0
+                niepewne.append((start, i))
+                out.append(ch)
+            else:
+                out.append("\n" if ch == "\n" else " ")
+        else:
+            out.append(ch)
+    if glebokosc:
+        niepewne.append((start, len(txt)))
+    return "".join(out), niepewne
+
+
+def _cytowane_pozycje(glowa):
+    """PIERWSZA pozycja Dz.U. z pierwszego nawiasu „(Dz. U. …)" w nagłówku przepisu zmieniającego / punkcie
+    sentencji — to akt albo jego t.j.; dalsze pozycje to jego wcześniejsze NOWELIZACJE. Wszystkich brać nie wolno:
+    DU 1996/646 art. 2 zmienia k.c. „(Dz. U. Nr 16, poz. 93, … z 1993 r. Nr 17, poz. 78 …)" — a 1993/78 to ustawa
+    o planowaniu rodziny, którą zmienia art. 1 (sprawdzone 2026-11-13). Zwraca zbiór 0–1 elementów."""
+    m = re.search(r"\((Dz\.\s*U\.[^()]*)\)", glowa)
+    if not m:
+        return set()
+    pierwsza = re.match(r"(Dz\.\s*U\.\s*(?:z\s+\d{4}\s*r\.\s*)?(?:Nr\s*\d+\s*,\s*)?poz\.\s*\d+)", m.group(1))
+    if not pierwsza:
+        return set()
+    wn = pierwsza.group(1)
+    if not re.search(r"z\s+\d{4}\s*r\.", wn):
+        # „(Dz. U. Nr 16, poz. 93, …)" / „(Dz. U. poz. 550, …)" bez roku — rok aktu z „z dnia … RRRR r." przed nawiasem
+        lata = re.findall(r"\b(\d{4})\s*r\.", glowa[:m.start()])
+        if not lata:
+            return set()
+        wn = re.sub(r"^Dz\.\s*U\.\s*", f"Dz. U. z {lata[-1]} r. ", wn)
+    return _podstawa_ujednolicenia(wn)
+
+
+def _tytul_bazy(base):
+    """Rdzeń tytułu aktu bazowego („Kodeks postępowania cywilnego", „o radcach prawnych") — małe litery, bez kropki."""
+    t = re.sub(r"(?i)^.*?\bz\s+dnia\s+\d{1,2}\s+\w+\s+\d{4}\s*r\.\s*[-–—]?\s*", "", (base or {}).get("title") or "", count=1)
+    return _norm(" ".join(t.split())).rstrip(". ")
+
+
+def _data_slownie(iso):
+    try:
+        r, m, d = (int(x) for x in iso.split("-"))
+    except (ValueError, AttributeError):
+        return ""
+    nazwa = next((k for k, v in _MIESIACE.items() if v == m), "")
+    return f"{d} {nazwa} {r}" if nazwa else ""
+
+
+def _segmenty_dla_aktu(txt, cele, base):
+    """Przepisy aktu zmieniającego, które zmieniają AKT BAZOWY. Rozpoznanie po cytacie publikatora w nagłówku
+    („W ustawie z dnia … (Dz. U. z 2024 r. poz. 499, …)") — pozycja aktu bazowego albo któregoś jego t.j. (`cele`);
+    sama data nie wystarcza: k.k., k.k.w. i k.p.k. są „z dnia 6 czerwca 1997 r.". Bez cytatu — data i rdzeń
+    tytułu. Zwraca (maska, oryginał, [(start, koniec, numer przepisu)], obszary niepewne)."""
+    maska, niepewne = _maska_cytatow(txt)
+    naglowki = list(_NAGLOWEK_ZMIANY.finditer(maska))
+    granice = [m.start() for m in _NAGLOWEK_ARTYKULU_ZM.finditer(maska)]
+    data = _data_slownie((base or {}).get("announcementDate") or "")
+    tytul = _tytul_bazy(base)
+    seg = []
+    for m in naglowki:
+        glowa = maska[m.start():m.start() + 900]
+        poz = _cytowane_pozycje(glowa)
+        g = " ".join(glowa.split())
+        g = g[:g.find("(Dz. U.")] if "(Dz. U." in g else g      # tytuł stoi przed cytatem publikatora
+        g = re.split(r"\s(?:wprowadza\s|w\s+art\.|po\s+art\.|art\.\s*\d|uchyla\s|dodaje\s|w\s+§|§\s*\d)", g)[0]
+        g = re.sub(r"^(?:Art\.|§)\s*\d+[a-z]*\.\s*(?:\d+\.\s*)?W\s+", "", g)
+        # cytat zaczyna się od aktu albo jego t.j.; bez cytatu albo z t.j. spoza listy API — data i tytuł z granicą
+        # wyrazu (k.k. a „Kodeks karny wykonawczy" — oba „z dnia 6 czerwca 1997 r.")
+        trafia = bool(poz & cele) or bool(data and tytul and _ten_akt(g, base, data) and f"z dnia {data} r." in _norm(g))
+        if trafia:
+            koniec = next((g for g in granice if g > m.start() + 3), len(maska))
+            seg.append((m.start(), koniec, ("art. " if m.group(1) == "Art." else "§ ") + m.group(2)))
+    return maska, txt, seg, niepewne
+
+
+def _zmiany_w_akcie(txt, cele, base):
+    """Treść aktu zmieniającego → dict: „klucze" (artykuły zmienione, dodane albo uchylone w akcie bazowym),
+    „zakresy" (nierozwinięte), „calosc" (zmiana „w całej ustawie"), „przepisy" (numery przepisów zmieniających),
+    „wejscie" (zdanie o wejściu w życie), „blad" (gdy nie ustalono)."""
+    maska, orig, seg, niepewne = _segmenty_dla_aktu(txt, cele, base)
+    wynik = {"klucze": set(), "zakresy": [], "calosc": False, "przepisy": [s[2] for s in seg], "wejscie": "",
+             "blad": "", "paragrafy": set()}
+    if not seg:
+        wynik["blad"] = "nie znalazłem w nim przepisu zmieniającego ten akt"
+    # niedomknięty cudzysłów PRZED przepisem albo w nim mógł ukryć polecenie zmiany albo nagłówek przepisu
+    if any(od < e for od, do in niepewne for s, e, _ in seg) or (niepewne and not seg):
+        wynik["blad"] = wynik["blad"] or "niedomknięty cudzysłów w tekście — analiza niepewna"
+    for s, e, _ in seg:
+        instr = maska[s:e]
+        # pierwszy wiersz nagłówka zawiera tytuł i cytat aktu bazowego — żadnych numerów jednostek tego aktu
+        cyt = re.search(r"\(Dz\.\s*U\.[^()]*\)", instr)
+        # bez nagłówka „Art. 1." przepisu zmieniającego — to nie jest numer jednostki aktu bazowego
+        instr_bez = instr[cyt.end():] if cyt else re.sub(r"^\s*(?:Art\.|§)\s*\d+[a-z]*\.", "", instr)
+        for m in _ART_LISTA.finditer(instr_bez):
+            k, z = _rozwin_liste(m.group(2))
+            if m.group(1):          # „po art. 5c dodaje się art. 5d" — art. 5c to tylko miejsce wstawienia
+                k = set()
+            wynik["klucze"] |= k
+            wynik["zakresy"] += z
+        for m in _PAR_LISTA.finditer(instr_bez):
+            if not m.group(1):
+                k, _ = _rozwin_liste(m.group(2))
+                wynik["paragrafy"] |= k
+        # nowe brzmienie / dodane artykuły — nagłówki „Art. N." na początku cytatu
+        for m in re.finditer(r"(?m)^[ \t]*[„]?\s*(Art\.|§)\s*(" + _NUM_JEDN + r")\.", orig[s:e]):
+            if maska[s + m.start(2)] == " ":     # leży w cytacie
+                (wynik["klucze"] if m.group(1) == "Art." else wynik["paragrafy"]).add(_klucz(m.group(2)))
+        if _CALA_USTAWA.search(instr_bez):
+            wynik["calosc"] = True
+        if _JEDNOSTKA_WYZSZA.search(instr_bez):
+            wynik["calosc"] = True
+            wynik["jednostka"] = True
+    w = list(re.finditer(r"(?:Ustawa|Rozporządzenie|Uchwała|Zarządzenie)\s+wchodzi\s+w\s+życie[^\n]{0,400}", maska))
+    if w:
+        wynik["wejscie"] = " ".join(orig[w[-1].start():w[-1].end()].split())[:400]
+    return wynik
+
+
+_WERDYKT = re.compile(r"(?i)\b(nie\s+(?:jest|są)\s+niezgodn|(?:jest|są)\s+zgodn|(?:jest|są)\s+nie\s*-?\s*zgodn|"
+                      r"(?:jest|są)\s+niezgodn|tra(?:ci|cą)\s+moc)")
+# wyrok zakresowy / interpretacyjny: brzmienie zostaje, przepis nie obowiązuje tylko w pewnym zakresie. „w zakresie"
+# bywa ZA rozstrzygnięciem („…jest niezgodny … w zakresie, w którym odnosi się do spadków otwartych od tego dnia" —
+# SK 4/99), więc szukamy w całym punkcie; „w brzmieniu" i „w związku z art." — tylko w przedmiocie (we wzorcach
+# kontroli „w związku z art. 31 ust. 3 Konstytucji" to nie zakres).
+_ZAKRESOWY = re.compile(r"(?i)w\s+zakresie|w\s+części,?\s+(?:w\s+jakiej|w\s+której|dotycz|obejmuj)|rozumian|"
+                        r"przez\s+to,?\s+że|wskutek\s+pominięcia|pomija")   # nie „Przepis wymieniony w części I traci moc"
+_ZAKRESOWY_PRZEDMIOT = re.compile(r"(?i)w\s+brzmieniu|w\s+związku\s+z\s+(?:art|§)")
+_ODESLANIE_AKTU = re.compile(r"(?i)ustawy\s+powołanej|tej\s+ustawy|tejże\s+ustawy|ustawy\s+wymienionej|rozporządzenia\s+"
+                             r"powołanego|tego\s+rozporządzenia|kodeksu\s+powołanego|powołan\w+\s+w\s+(?:pkt|punkcie|części)")
+_AKT_W_SENTENCJI = re.compile(r"(?i)\b(ustawy|rozporządzenia|kodeksu|dekretu|uchwały|ustawie)\b")
+# początek punktu sentencji: „orzeka: Art. …", „1. Art. …", „I § 31 …", „…; b) …" — NIE „Art. 673 § 3" (paragraf
+# w artykule) ani „w związku z § 5 rozporządzenia"
+_PUNKT_SENTENCJI = re.compile(r"(?:^|[:;]\s*|\.\s+|(?:^|\s)(?:[IVX]+|\d+\.|\d+\)|[a-z]\))\s+)$")
+_SLOWA_POMIJANE = {"z", "w", "o", "i", "oraz", "dnia", "r", "-", "–", "—"}
+
+
+def _rdzen_tytulu(slowa, n=4):
+    return [w[:4] for w in slowa if w not in _SLOWA_POMIJANE and not re.fullmatch(r"\d+\.?", w)][:n]
+
+
+def _ten_akt(fraza, base, data):
+    """Czy fraza aktu z sentencji („ustawy z dnia 23 kwietnia 1964 r. - Kodeks cywilny", „Kodeksu cywilnego") to akt
+    bazowy: data (gdy podana) i pierwsze wyrazy tytułu porównane po 4 literach (odmiana: „Kodeksu cywilnego"),
+    a za nimi nie może stać dalszy wyraz tytułu (k.k. a „Kodeksu karnego wykonawczego")."""
+    f = _norm(" ".join(fraza.split()))
+    dm = re.search(r"z dnia (\d{1,2} \w+ \d{4}) r\.", f)
+    if dm and data and dm.group(1) != data:
+        return False
+    reszta = re.sub(r"^.*?z dnia \d{1,2} \w+ \d{4} r\.\s*[-–—]?\s*", "", f, count=1) if dm else f
+    slowa_f = re.findall(r"[^\s,()]+", reszta.split("(")[0])
+    slowa_b = re.findall(r"[^\s,()]+", _tytul_bazy(base))
+    rb = _rdzen_tytulu(slowa_b)
+    if not rb:
+        return False
+    rf = _rdzen_tytulu(slowa_f, len(rb) + 1)
+    if rf[:len(rb)] != rb:
+        return False
+    # tytuł bazowy krótszy niż 4 znaczące wyrazy — następny wyraz frazy nie może go przedłużać
+    return len(_rdzen_tytulu(slowa_b, 99)) > len(rb) or len(rf) == len(rb) or not re.match(
+        r"[a-ząćęłńóśźż]", (slowa_f[len(rb):len(rb) + 1] or [""])[0]) or (slowa_f[len(rb):len(rb) + 1] or [""])[0] in (
+        "w", "jest", "są", "nie", "oraz", "i", "z", "dodany", "rozumiany", "rozumiane", "ze")
+
+
+def _sentencja_tk(txt, cele, base):
+    """Sentencja wyroku TK (od „orzeka:" do „Ponadto postanawia" itp.) → lista punktów: {„tekst", „klucze",
+    „paragrafy", „zakresy", „czesc" (wskazano ust./§/pkt/zdanie), „zakresowy", „werdykty" ({'niezgodny','zgodny'};
+    „traci moc" = niezgodny), „akt" ('ten' | 'inny' | '?')}. None, gdy sentencji nie rozpoznano. Przedmiot punktu
+    zaczyna się od „Art." WIELKĄ literą albo od „§" — małe „art." to wzorce kontroli („z art. 2 Konstytucji")
+    albo odesłania („w związku z art. 13"). Akt punktu: cytat publikatora tuż za nazwą aktu (pozycja aktu bazowego
+    albo jego t.j.), inaczej data i tytuł, inaczej odesłanie („ustawy powołanej w punkcie 1") do poprzedniego punktu."""
+    t = " ".join(txt.split())
+    m = re.search(r"(?i)\b(orzeka|ogłaszam)\s*:?\s*(.*?)(?:Ponadto\s+postanawia|\bpostanawia\s*:|Orzeczenie\s+zapadło|"
+                  r"Poświadczono|Uzasadnienie|UZASADNIENIE|Zdanie\s+odrębne|\Z)", t)
+    if not m:
+        return None
+    oper = m.group(2)
+    data = _data_slownie((base or {}).get("announcementDate") or "")
+    starty = [x.start() for x in re.finditer(r"(?:Art\.|§)\s*\d", oper) if _PUNKT_SENTENCJI.search(oper[:x.start()])]
+    if not starty or m.group(1).lower() == "ogłaszam":
+        starty = [0]
+    punkty, poprzedni_akt = [], "?"
+    for i, s in enumerate(starty):
+        tekst = oper[s:starty[i + 1] if i + 1 < len(starty) else len(oper)].strip()
+        wer = _WERDYKT.search(tekst)
+        przedmiot = tekst[:wer.start()] if wer else tekst
+        werdykty = set()
+        for w in _WERDYKT.finditer(tekst):
+            g = re.sub(r"\s+", " ", w.group(1).lower())
+            werdykty.add("zgodny" if g.startswith("nie ") or re.search(r"(?:jest|są) zgodn", g) else "niezgodny")
+        a = _AKT_W_SENTENCJI.search(przedmiot)
+        lista = przedmiot[:a.start()] if a else przedmiot
+        klucze, paragrafy, zakresy, czesc = set(), set(), [], False
+        for x in _ART_LISTA.finditer(lista):
+            k, z = _rozwin_liste(x.group(2))
+            klucze |= k
+            zakresy += z
+            czesc = czesc or bool(re.match(r"\s*(?:ust\.|§|pkt|zdani|lit\.)", lista[x.end():]))
+        if lista.lstrip().startswith("§"):
+            x = _PAR_LISTA.match(lista.lstrip())
+            if x:
+                paragrafy |= _rozwin_liste(x.group(2))[0]
+                czesc = czesc or bool(re.match(r"\s*(?:ust\.|pkt|zdani|lit\.)", lista.lstrip()[x.end():]))
+        # fraza aktu: od nazwy aktu do pierwszego zastrzeżenia zakresu / rozstrzygnięcia
+        fraza = przedmiot[a.start():] if a else ""
+        koniec = re.search(r"(?i)\s(?:w\s+brzmieniu|w\s+zakresie|w\s+części|rozumian|[a-z]\)\s|w\s+związku)", fraza)
+        fraza = fraza[:koniec.start()] if koniec else fraza
+        poz = _cytowane_pozycje(fraza) if fraza else set()
+        if not a and _AKT_W_SENTENCJI.search(tekst) is None and re.search(r"(?i)Kodeks\w*\s", przedmiot):
+            fraza = przedmiot
+        if poz:
+            akt = "ten" if poz & cele or _ten_akt(fraza, base, data) else "inny"
+        elif _ODESLANIE_AKTU.search(fraza or przedmiot):
+            akt = poprzedni_akt
+        elif fraza and _ten_akt(fraza, base, data):
+            akt = "ten"
+        elif fraza or re.search(r"(?i)\bKodeks", przedmiot):
+            kod = re.search(r"(?i)\bKodeks\w*(?:\s+[a-ząćęłńóśźż]+){1,3}", przedmiot)
+            akt = "ten" if kod and _ten_akt(kod.group(0), base, data) else ("inny" if fraza or kod else "?")
+        else:
+            akt = "?"
+        poprzedni_akt = akt
+        punkty.append({"tekst": tekst, "klucze": klucze, "paragrafy": paragrafy, "zakresy": zakresy, "czesc": czesc,
+                       "zakresowy": bool(_ZAKRESOWY.search(tekst) or _ZAKRESOWY_PRZEDMIOT.search(przedmiot)),
+                       "werdykty": werdykty, "akt": akt})
+    return punkty
+
+
+def _tekst_aktu_po_eli(eli_id):
+    """Tekst aktu do analizy (text.html, a bez niego urzędowy PDF przez pdftotext — bez OCR). Zwraca (tekst, błąd)."""
+    path = f"/acts/{eli_id}"
+    try:
+        html = _get(path + "/text.html", soft=True)
+        txt = html_to_text(html) if isinstance(html, str) else ""
+        if txt:
+            return txt, ""
+        meta = _get(path, soft=True)
+        if not isinstance(meta, dict):
+            return "", "brak metadanych aktu"
+        info = {}
+        txt, _, blad = _tekst_z_pdf(path, eli_id.replace("/", " "), meta, info, ocr=False)
+        if txt and (info.get("ocr") or info.get("puste_strony")):
+            # OCR skanu z lat 90. przekłamuje cudzysłowy i numery („,,", „art. 5 1") — z takiego tekstu nie wolno
+            # wnosić, że artykułu NIE zmieniono (ustawy 1991–2010 mają HTML; dotyczy to rzadkich rozporządzeń)
+            return "", "tekst aktu to OCR skanu albo ma strony bez warstwy tekstowej — analiza niepewna"
+        if txt and info.get("bez_wspolrzednych"):
+            # bez współrzędnych numery („art. 131" zamiast 13¹) i liczby przed przypisem mogą być przekłamane
+            return "", "pdftotext -bbox nie zwrócił współrzędnych słów (indeksy górne i odsyłacze niepotwierdzone) — analiza niepewna"
+        return txt, blad
+    except VerificationUnknown as e:
+        return "", str(e)
+    except Exception as e:      # analiza pomocnicza: awaria = „nie ustalono", nigdy ślad stosu zamiast tekstu
+        return "", f"{type(e).__name__}: {e}"
+
+
+def _stan_z_obwieszczenia(txt):
+    """Data z obwieszczenia o t.j.: („stan", ISO) dla „z uwzględnieniem stanu prawnego na dzień X" albo
+    („przed", ISO) dla „…zmian wynikających z przepisów ogłoszonych przed dniem X"; inaczej ("", "").
+    Pomiar 2026-11-13 na 15 t.j.: 9 z datą w PDF, w 8 zgodna z legalStatusDate, k.p.c. DU 2026/468 — API
+    2026-03-25, obwieszczenie „24 marca 2026 r."; 2 obwieszczenia rozporządzeń nie podają daty wcale."""
+    glowa = " ".join(re.sub(r"(?m)^» ", "", txt[:60000]).split())
+    for rodzaj, wzor in (("stan", r"stanu prawnego na dzień "), ("przed", r"ogłoszonych przed dniem ")):
+        m = re.search(wzor + _DATA_SLOWNIE, glowa)
+        if m:
+            return rodzaj, _iso(m.group(1), _MIESIACE[m.group(2)], m.group(3))
+    return "", ""
+
+
+def _cytowane_w_przypisach(txt):
+    """Pozycje Dz.U. cytowane w przypisach i notkach marginesu (wiersze „[przypis", „[margines:") — dowód, że tekst
+    zawiera zmianę z tej pozycji (k.p.c. DU 2026/468: poz. 26 tylko w notkach). Obwieszczenia („» ") tu nie bierzemy:
+    jego pkt 2 („nie obejmuje…") cytuje zmiany, których w tekście NIE ma — obwieszczenie ma własny parser."""
+    linie = "\n".join(l for l in txt.split("\n") if l.startswith(("[przypis", "[margines:")))
+    return _pozycje_dz_u(linie)
+
+
+def _cele_bazy(base_eli, base_refs):
+    cele = {_eli_rok_poz({"ELI": base_eli})} if base_eli else set()
+    if isinstance(base_refs, dict):
+        cele |= {_eli_rok_poz(a) for a in _tj_acts(base_refs)}
+    return {c for c in cele if c != (0, 0)}
+
+
+def _sygn_tk(act):
+    t = (act or {}).get("title") or ""
+    m = re.search(r"sygn\.\s*akt\s*(.+?)\.?$", t)
+    if m:
+        return m.group(1).strip()
+    if "Prezesa Trybunału Konstytucyjnego" in t:
+        return "obwieszczenie Prezesa TK" + (f" z {act['announcementDate']}" if act.get("announcementDate") else "")
+    return _akt_opis(act)
+
+
+def _orzeczenia_tk(base_refs):
+    """Wyroki TK z kategorii „Orzeczenie TK" aktu bazowego (najnowsze pierwsze), z datą skutku z „Akty zmieniające"
+    (tam API podaje datę utraty mocy, także odroczonej: SK 109/20 — ogłoszony 2023-12-28, skutek 2024-12-29).
+    Uwaga: kategoria obejmuje też wyroki „zgodny" i wyroki o INNYCH aktach powołujących ten akt (k.c.: P 46/09
+    dotyczy ustawy zmieniającej k.c.) — przynależność do listy nie znaczy, że przepis utracił moc."""
+    if not isinstance(base_refs, dict):
+        return []
+    skutki = {r["act"].get("ELI"): r.get("date") or "" for r in _lista(base_refs, "akty zmieniające") if _czy_tk(r["act"])}
+    out = []
+    for r in _lista(base_refs, "orzeczenie tk"):
+        out.append({"act": r["act"], "skutek": skutki.get(r["act"].get("ELI"), "")})
+    return sorted(out, key=lambda x: x["act"].get("promulgation") or x["act"].get("announcementDate") or "", reverse=True)
+
+
+def _linie_tk_meta(base_refs, maks=5):
+    tk = _orzeczenia_tk(base_refs)
+    if not tk:
+        return []
+    out = [f"Orzeczenia TK dotyczące aktu (API, kategoria „Orzeczenie TK”): {len(tk)} — lista obejmuje też wyroki "
+           "„zgodny” i wyroki o innych aktach; czy przepis utracił moc, mówi sentencja (tekst <sygnatura wyroku>):"]
+    for x in tk[:maks]:
+        a = x["act"]
+        out.append(f"  - {_sygn_tk(a)}  {_akt_opis(a)}  (ogłoszono {a.get('promulgation') or '—'}"
+                   + (f"; skutek dla tego aktu od {x['skutek']}" if x["skutek"] else "; API nie podaje skutku (utraty mocy)")
+                   + ")")
+    if len(tk) > maks:
+        out.append(f"  - … i {len(tk) - maks} starszych (pełna lista: odniesienia <akt bazowy>)")
+    return out
+
+
+def _opis_kluczy(klucze):
+    """[„5b", „4^1", „§31"] → „art. 5b, art. 4(1), § 31"."""
+    out = []
+    for k in klucze:
+        if k.startswith("§"):
+            out.append("§ " + k[1:].replace("^", "(") + (")" if "^" in k else ""))
+        else:
+            out.append("art. " + k.replace("^", "(") + (")" if "^" in k else ""))
+    return ", ".join(out)
+
+
+def _aktualnosc(wynik, txt, klucze, info, strict, dzis=None):
+    """Imienna analiza zmian po stanie tekstu. `wynik` — z `_ostrzezenia` (pozycje, stan, baza, bez_tj); `klucze` —
+    artykuły wypisywanego fragmentu (None = cały tekst); `info` — {podstawa, uwzgl, nieobj, przed, stan_obw}.
+    Zwraca (linie ostrzeżeń, powód blokady --strict albo "")."""
+    dzis = dzis or _dzis()
+    pozycje, stan, base = wynik.get("pozycje") or [], wynik.get("stan") or "", wynik.get("baza") or {}
+    base_eli = (base or {}).get("ELI") or ""
+    try:
+        base_refs = _get(f"/acts/{base_eli}/references", soft=True) if base_eli else None
+    except VerificationUnknown:
+        base_refs = None
+    cele = _cele_bazy(base_eli, base_refs)
+    linie, blokady = [], []
+    # wyroki TK ogłoszone po stanie tekstu, których API nie zapisało jako zmiany („zgodny" albo bez daty skutku)
+    znane = {p["act"].get("ELI") for p in pozycje}
+    for x in _orzeczenia_tk(base_refs):
+        ogl = x["act"].get("promulgation") or ""
+        if x["act"].get("ELI") not in znane and ogl and (wynik.get("bez_tj") or (stan and ogl >= stan)):
+            pozycje = pozycje + [{"act": x["act"], "ogloszono": ogl, "wejscie": x["skutek"] or ogl, "bez_skutku": True}]
+    podstawa, uwzgl, nieobj = info.get("podstawa") or set(), info.get("uwzgl") or set(), info.get("nieobj") or set()
+    przed, cytowane = info.get("przed") or "", _cytowane_w_przypisach(txt)
+    do_analizy = []
+    for p in pozycje:
+        act = p["act"]
+        k = _eli_rok_poz(act)
+        ogl, wej = p.get("ogloszono") or "", p.get("wejscie") or ""
+        if k in nieobj:
+            stan_wl = "brak"
+        elif k in podstawa or k in uwzgl or (przed and ogl and ogl < przed) or k in cytowane:
+            continue
+        elif wynik.get("bez_tj") or (ogl and stan and ogl >= stan):
+            stan_wl = "brak"
+        else:
+            stan_wl = "niepewne"
+        do_analizy.append(dict(p, wlaczenie=stan_wl, obowiazuje=not wej or wej <= dzis))
+    if not do_analizy:
+        return linie, ""
+    if base_eli and not base.get("title"):
+        # tytuł i data aktu bazowego — do rozpoznania go w akcie zmieniającym bez cytatu publikatora
+        try:
+            m = _get(f"/acts/{base_eli}", soft=True)
+            base = m if isinstance(m, dict) else base
+        except Exception:       # bez tytułu zostaje rozpoznanie po cytacie publikatora
+            pass
+    # najpierw zmiany już obowiązujące (od nich zależy blokada), w nich najnowsze — limit analiz obcina najstarsze
+    do_analizy.sort(key=lambda p: (p["obowiazuje"], p.get("wejscie") or ""), reverse=True)
+    tk_po = [p for p in do_analizy if _czy_tk(p["act"])]
+    if tk_po:
+        linie.append(f"UWAGA — WYROKI TK OGŁOSZONE PO STANIE TEGO TEKSTU" + (f" ({stan})" if stan else "") + f": {len(tk_po)} — "
+                     "ich skutków (utraty mocy przepisu albo jego części) NIE MA w tekście poniżej:")
+        for p in tk_po:
+            linie.append(f"  - {_sygn_tk(p['act'])}  {_akt_opis(p['act'])}  (ogłoszono {p.get('ogloszono') or '—'}; "
+                         + ("API nie podaje skutku dla tego aktu — możliwy wyrok „zgodny”" if p.get("bez_skutku")
+                            else f"skutek od {p.get('wejscie') or '—'}") + ")")
+    nazwa = "fragmentu" if klucze is not None else "tekstu"
+    analizy = 0
+    niezbadane = []
+    for p in do_analizy:
+        act, eli_id = p["act"], p["act"].get("ELI") or ""
+        opis = f"{_akt_opis(act)}" + (f" ({_sygn_tk(act)})" if _czy_tk(act) else "")
+        wej = p.get("wejscie") or "—"
+        tk = _czy_tk(act)
+        if klucze is None and not tk:
+            # cały tekst: każda zmiana w życiu, której tekst nie ma, to stare brzmienie gdzieś w akcie
+            if p["obowiazuje"]:
+                blokady.append(f"{opis} (wejście w życie zmiany {wej}) — "
+                               + ("NIE MA jej w tym tekście" if p["wlaczenie"] == "brak" else "nie ustaliłem, czy tekst ją zawiera"))
+            continue
+        if not klucze and klucze is not None:
+            if p["obowiazuje"] and not p.get("bez_skutku"):
+                niezbadane.append(f"{opis} (od {wej})")
+            continue
+        if analizy >= _MAKS_ANALIZ:
+            if p["obowiazuje"]:
+                niezbadane.append(f"{opis} (od {wej}; limit {_MAKS_ANALIZ} analiz)")
+            continue
+        analizy += 1
+        tekst_zm, blad = _tekst_aktu_po_eli(eli_id) if eli_id else ("", "brak ELI")
+        if not tekst_zm:
+            if p["obowiazuje"]:
+                niezbadane.append(f"{opis} (od {wej}; treści nie udało się pobrać: {blad})")
+            continue
+        if tk:
+            pkt = _sentencja_tk(tekst_zm, cele, base)
+            if not pkt:
+                if p["obowiazuje"]:
+                    niezbadane.append(f"{opis} (nie rozpoznałem sentencji)")
+                continue
+            trafiono = False
+            if not p.get("bez_skutku") and not any(x["akt"] in ("ten", "?") for x in pkt):
+                # API zapisało skutek wyroku dla TEGO aktu, a żaden punkt sentencji go nie wskazuje (wyrok o przepisie
+                # innej ustawy: SK 34/08 — art. 5 ustawy zmieniającej k.c.; SK 49/05; obwieszczenia Prezesa TK z lat 90.)
+                if p["obowiazuje"] or (p.get("wejscie") or "") > dzis:
+                    niezbadane.append(f"{opis} (skutek dla tego aktu od {wej} wg API, ale sentencja nie wskazuje go wprost "
+                                      "— przeczytaj ją: tekst " + eli_id.replace("/", " ") + ")")
+                continue
+            for x in pkt:
+                wszystkie = x["klucze"] | {"§" + k for k in x["paragrafy"]}
+                trafione = sorted(k for k in (klucze or set()) if k in wszystkie or _w_zakresie(k, x["zakresy"])) \
+                    if klucze is not None else sorted(wszystkie)
+                if not trafione or x["akt"] == "inny" or not x["werdykty"]:
+                    if trafione and x["akt"] != "inny" and not x["werdykty"] and p["obowiazuje"]:
+                        niezbadane.append(f"{opis} (nie rozpoznałem rozstrzygnięcia dla art. {', '.join(trafione)})")
+                    continue
+                trafiono = True
+                cytat = x["tekst"] if len(x["tekst"]) <= 500 else x["tekst"][:497] + "…"
+                arty = _opis_kluczy(trafione)
+                if x["werdykty"] == {"zgodny"}:
+                    linie.append(f"Informacja: wyrok TK {opis} uznał {arty} za zgodny z Konstytucją (bez skutku dla "
+                                 f"brzmienia). Sentencja: „{cytat}”")
+                    continue
+                # „niezgodny" z jednym wzorcem przy „zgodny" z innymi to nadal utrata mocy: K 9/04 (art. 179 k.c.)
+                # i SK 18/2000 (art. 418 k.c.) — t.j. ma „Art. 179. (utracił moc)" i przypis przy art. 418
+                calosc = "niezgodny" in x["werdykty"] and not x["zakresowy"]
+                pewny = x["akt"] == "ten"
+                if p.get("wejscie") and p["wejscie"] > dzis:
+                    linie.append(f"UWAGA — WYROK TK: {arty} {'' if pewny else '(może dotyczyć tego aktu) '}uznany za "
+                                 f"niezgodny z Konstytucją ({opis}); utrata mocy ODROCZONA do {p['wejscie']} — do tego "
+                                 f"dnia przepis obowiązuje. Sentencja: „{cytat}”")
+                elif calosc:
+                    linie.append(f"UWAGA — PRZEPIS UTRACIŁ MOC (wyrok TK {opis}, skutek od {wej}): {arty}"
+                                 + (" — co najmniej wskazana jednostka (ust./§/pkt)" if x["czesc"] else " — w całości")
+                                 + f"; tekst poniżej (stan {stan or 'ogłoszony'}) tego NIE uwzględnia"
+                                 + ("" if pewny else " (nie ustaliłem pewnie, że punkt sentencji dotyczy TEGO aktu)")
+                                 + f". Sentencja: „{cytat}”")
+                    blokady.append(f"{arty}: utrata mocy po wyroku TK {opis} od {wej}")
+                else:
+                    linie.append(f"UWAGA — WYROK TK ZAKRESOWY albo częściowy ({opis}, skutek od {wej}): {arty} — "
+                                 "brzmienie się nie zmienia, ale przepis w zakresie wskazanym w sentencji nie obowiązuje"
+                                 + ("" if pewny else " (nie ustaliłem pewnie, że punkt dotyczy TEGO aktu)")
+                                 + f". Sentencja: „{cytat}”")
+            if not trafiono and klucze:
+                linie.append(f"Informacja: sentencja wyroku TK {opis} nie wymienia {_opis_kluczy(sorted(klucze))}.")
+            continue
+        z = _zmiany_w_akcie(tekst_zm, cele, base)
+        if z["blad"] or z["calosc"]:
+            powod = z["blad"] or ("uchylenie albo nowe brzmienie całego rozdziału/działu — artykuły w nim nie są "
+                                  "wymienione z numeru" if z.get("jednostka") else
+                                  "zmiana „w całej ustawie” (np. wyrazów w wielu przepisach)")
+            if p["obowiazuje"]:
+                niezbadane.append(f"{opis} (od {wej}; {powod})")
+            else:
+                linie.append(f"UWAGA: {opis} wejdzie w życie {wej} — nie ustaliłem, czy zmienia ten {nazwa} ({powod}).")
+            continue
+        wszystkie = z["klucze"] | {"§" + k for k in z["paragrafy"]}
+        trafione = sorted(k for k in klucze if k in wszystkie or (not k.startswith("§") and _w_zakresie(k, z["zakresy"])))
+        arty = _opis_kluczy(trafione)
+        przepis = f"{', '.join(z['przepisy'])} aktu zmieniającego"
+        if not trafione:
+            linie.append(f"Informacja: w treści {opis} ({przepis}) nie znalazłem zmiany {_opis_kluczy(sorted(klucze))}.")
+            continue
+        wejscie_opis = f"; przepis o wejściu w życie: „{z['wejscie']}”" if z["wejscie"] else ""
+        # data z API to termin dla aktu zmieniającego jako całości; punkty bywają odroczone (DU 2026/1290: „z wyjątkiem
+        # art. 1 pkt 16, 41 i 42 … 1 stycznia 2027 r."; DU 2026/26 — część zmian k.p.c. od 2027-01-01)
+        rozne = "wyjątkiem" in z["wejscie"] or bool(p.get("uwagi"))
+        wej = f"{wej} (data API dla aktu zmieniającego" + ("; dla poszczególnych punktów terminy są RÓŻNE — sprawdź "
+                                                           "przepis o wejściu w życie)" if rozne else ")")
+        if not p["obowiazuje"]:
+            linie.append(f"UWAGA: {arty} ZMIENIA {opis} ({przepis}) z dniem {wej} — do tego dnia obowiązuje brzmienie "
+                         f"poniżej, potem nowe{wejscie_opis}.")
+        elif p["wlaczenie"] == "brak":
+            linie.append(f"UWAGA — TEN PRZEPIS ZMIENIONO po stanie tego tekstu: {arty} zmienia {opis} ({przepis}), wejście "
+                         f"w życie zmiany {wej}{wejscie_opis}. "
+                         + ("Poniżej brzmienie bez tej zmiany (czy nowe już obowiązuje, zależy od terminu dla danego "
+                            "punktu)" if rozne else "Poniżej brzmienie SPRZED tej zmiany")
+                         + f" — aktualne nanieś z: tekst {eli_id.replace('/', ' ')} --fragment \"{z['przepisy'][0]}\".")
+            blokady.append(f"{arty}: zmiana {opis} od {wej}, której ten tekst nie zawiera")
+        else:
+            linie.append(f"UWAGA: {arty} zmienia {opis} ({przepis}), wejście w życie zmiany {wej} — nie ustaliłem, czy "
+                         f"ten tekst już ją zawiera; porównaj z: tekst {eli_id.replace('/', ' ')} --fragment "
+                         f"\"{z['przepisy'][0]}\".")
+            blokady.append(f"{arty}: nie ustaliłem, czy tekst zawiera zmianę {opis} od {wej}")
+    if niezbadane:
+        linie.append(f"UWAGA: nie ustaliłem, czy te zmiany po stanie tekstu dotyczą tego {nazwa}: " + "; ".join(niezbadane)
+                     + " — sprawdź je ręcznie, zanim zacytujesz.")
+        blokady.append("nieustalony wpływ zmian: " + "; ".join(niezbadane))
+    # ostrzeżenia najpierw, informacje („nie znalazłem zmiany") na końcu
+    return sorted(linie, key=lambda l: l.startswith("Informacja")), "; ".join(blokady)
+
+
+def _klucze_fragmentu(txt, spans):
+    """Artykuły (klucze `_klucz`), w których leżą wypisywane fragmenty; w akcie bez artykułów (rozporządzenie) —
+    paragrafy jako „§N". Pusty zbiór = fragmentu nie da się przypisać do jednostki (analiza zgłosi niepewność)."""
+    klucze = set()
+    ma_art = bool(_NAGLOWEK_ART.search(txt))
+    for s, e in spans or []:
+        if ma_art:
+            k = _klucz_naglowka(_artykul_nad(txt, s))
+            if k:
+                klucze.add(k)
+            for m in re.finditer(r"(?m)^[\[<]?Art\.[ ]*(\d+[a-z]*(?:[ ]+\d+[a-z]*)?)[ ]*\.", txt[s:e]):
+                klucze.add(_klucz(m.group(1)))
+        else:
+            ostatni = None
+            for m in re.finditer(r"(?m)^[\[<]?§\s*(\d+[a-z]*(?:\s+\d+[a-z]*)?)\s*\.", txt[:s + 30]):
+                ostatni = m
+            if ostatni:
+                klucze.add("§" + _klucz(ostatni.group(1)))
+            for m in re.finditer(r"(?m)^[\[<]?§\s*(\d+[a-z]*(?:\s+\d+[a-z]*)?)\s*\.", txt[s:e]):
+                klucze.add("§" + _klucz(m.group(1)))
+    return klucze
+
+
+def _tk_w_przypisach(fragment):
+    """Przypisy t.j. o wyrokach TK wydanych PRZED jego stanem prawnym — t.j. oddaje je przypisem, a jednostkę oznacza
+    „(utracił moc)" (ustawa o planowaniu rodziny DU 2022/1575, art. 4a ust. 1 pkt 2: „[przypis 12)] Z dniem
+    27 stycznia 2021 r. na podstawie wyroku Trybunału Konstytucyjnego … K 1/20"; k.c. DU 2026/795: wyroki zakresowe
+    „Utracił moc … w zakresie, w którym…"). Dotąd przypis stał w tekście bez ostrzeżenia — łatwo go przeoczyć.
+
+    Przypis bez odsyłacza (`_przypis_bez_odsylacza`) o wyroku TK nie jest „przypisem tego fragmentu" — stoi tylko w jego
+    sąsiedztwie (k.p.c. DU 2026/468: przypis 3 o K 10/17 należy do art. 1, a stał w art. 2). Wychodzi osobno, z zastrzeżeniem,
+    że nie wiadomo, którego przepisu dotyczy — informacja o wyroku nie ginie, ale nie jest podana jako pewna."""
+    out, obce = [], []
+    for l in fragment.split("\n"):
+        if l.startswith("[przypis") and "Trybunału Konstytucyjnego" in l and re.search(r"(?i)utraci\w*\s+moc|na\s+podstawie\s+wyroku|"
+                                                          r"obwieszczenia\s+Prezesa|w\s+zakresie", l):
+            l = " ".join(l.split())
+            (obce if _PRZYPIS_BEZ_ODSYLACZA_LINIA.match(l) else out).append(l if len(l) <= 320 else l[:317] + "…")
+    uwagi = []
+    if obce:
+        uwagi = (["UWAGA — WYROK TK W PRZYPISIE NIEPRZYPISANYM DO JEDNOSTKI (odsyłacza w treści nie ustalono): NIE wiadomo, "
+                  "czy dotyczy przepisu z tego fragmentu, czy sąsiedniego — sprawdź w PDF (--pdf plik.pdf), zanim go "
+                  "zacytujesz albo uznasz za obowiązujący:"] + ["  " + l for l in dict.fromkeys(obce)])
+    if not out:
+        # k.c. DU 2026/795 z PDF: „Art. 179. (utracił moc)" bez przypisu — odsyłacz zgubił się przy ekstrakcji
+        # (treść przypisu o wyroku K 9/04 trafiła do art. 182; sprawdzone 2026-11-13)
+        if re.search(r"\(utraci\w*\s+moc\)", fragment):
+            return ["UWAGA: w tym fragmencie jest jednostka oznaczona „(utracił moc)” — NIE obowiązuje (zwykle skutek "
+                    "wyroku TK); przypisu z podstawą nie ma we fragmencie — sprawdź go w PDF (--pdf plik.pdf)."] + uwagi
+        return uwagi
+    return (["UWAGA — WYROK TK W PRZYPISIE TEGO FRAGMENTU: część przepisu utraciła moc albo obowiązuje w ograniczonym "
+             "zakresie (tekst jednolity oddaje to przypisem, a jednostkę bywa oznaczona „(utracił moc)”) — nie cytuj tej "
+             "części jako obowiązującej:"] + ["  " + l for l in dict.fromkeys(out)] + uwagi)
+
+
+def _sprawdz_stan_obwieszczenia(txt, meta, wynik):
+    """„Stan prawny na" z API (legalStatusDate) a data z obwieszczenia t.j. — przy rozbieżności ostrzeżenie, a gdy
+    obwieszczenie podaje WCZEŚNIEJSZĄ datę, lista zmian dostaje pozycje z dni pomiędzy (k.p.c. DU 2026/468: API
+    2026-03-25, obwieszczenie „stan prawny na dzień 24 marca 2026 r." — sprawdzone 2026-11-13)."""
+    rodzaj, d_obw = _stan_z_obwieszczenia(txt)
+    lsd = (meta or {}).get("legalStatusDate") or "" if isinstance(meta, dict) else ""
+    out = []
+    if not d_obw:
+        return out
+    formula = "stan prawny na dzień" if rodzaj == "stan" else "zmiany z przepisów ogłoszonych przed dniem"
+    if lsd and d_obw != lsd:
+        out.append(f"UWAGA: obwieszczenie tego t.j. podaje „{formula} {d_obw}”, a API (legalStatusDate) — {lsd}; "
+                   "wiążące jest obwieszczenie.")
+    stan = wynik.get("stan") or ""
+    base = wynik.get("baza") or {}
+    if stan and d_obw < stan and base.get("ELI"):
+        try:
+            dodatkowe = [r for r in _zmiany_bazowe_po(base["ELI"], d_obw)
+                         if r["act"].get("ELI") not in {p["act"].get("ELI") for p in wynik.get("pozycje") or []}]
+        except VerificationUnknown as e:
+            out.append(f"UWAGA: nie udało się sprawdzić zmian z dni {d_obw}…{stan} ({e}).")
+            return out
+        if dodatkowe:
+            out.append(f"UWAGA: zmiany ogłoszone lub wchodzące w życie od {d_obw} (data z obwieszczenia), których lista "
+                       f"liczona od {stan} nie objęła ({len(dodatkowe)}):")
+            for r in dodatkowe:
+                data_aktu, ogloszono = _daty_aktu(r["act"])
+                out.append(_fmt_ref(r, "Akty zmieniające"))
+                wynik.setdefault("pozycje", []).append({"act": r["act"], "data_aktu": data_aktu, "ogloszono": ogloszono,
+                                                        "wejscie": r.get("date") or "", "etykieta": "wejście w życie zmiany"})
+        wynik["stan"] = d_obw
+    return out
+
+
 def act_path(sig_parts):
     """Zwraca ścieżkę bazową aktu, akceptując różne formy sygnatury."""
     s = " ".join(sig_parts).strip()
     compact = re.sub(r"\s+", "", s)
     # ISAP address, np. WDU20240000018 (W + DU/MP + 9–12 cyfr)
-    m = re.match(r"^(W?)(DU|MP)(\d{9,12})$", compact, re.I)
+    m = re.match(r"^(W?)(DU|MP)(\d{11})$", compact, re.I)
     if m:
         addr = "W" + m.group(2).upper() + m.group(3)
         return f"/acts/{addr}", s
@@ -2195,9 +3337,64 @@ def act_path(sig_parts):
     sys.exit(f"Nie rozpoznano sygnatury: {s!r}. Przykłady: 'DU 2024 18', 'Dz.U. 2024 poz. 18', 'WDU20240000018'.")
 
 
+def _sprawdz_haslo(haslo):
+    """Hasło spoza słownika /keywords daje w API po prostu 0 trafień — to zły argument, nie „brak aktów".
+    API porównuje hasła bez względu na wielkość liter, ale z polskimi znakami (2026-11-13: „Sygnaliści" → 2,
+    „sygnalisci" → 0). Kończy programem (kod 2) z podpowiedzią, gdy hasła nie ma albo słownika nie da się
+    pobrać; zwraca, gdy hasło jest w słowniku."""
+    import difflib
+    try:
+        slownik = _get("/keywords", soft=True)
+    except VerificationUnknown as e:
+        sys.exit(f"BŁĄD: 0 trafień dla hasła {haslo!r}, a słownika haseł API nie udało się pobrać ({e}) — nie wiem, "
+                 "czy hasło istnieje. Spróbuj ponownie albo szukaj frazą tytułu.")
+    if not isinstance(slownik, list):
+        sys.exit(f"BŁĄD: 0 trafień dla hasła {haslo!r}, a słownik haseł API ma nieoczekiwany format.")
+    hasla = [str(h) for h in slownik]
+    if haslo.strip().lower() in {h.lower() for h in hasla}:
+        return
+    podobne = difflib.get_close_matches(haslo.strip().lower(), [h.lower() for h in hasla], n=5, cutoff=0.6)
+    sys.exit(f"BŁĄD: hasła {haslo!r} nie ma w słowniku haseł API ELI ({len(hasla)} haseł) — dlatego 0 trafień; to NIE "
+             "jest wynik wyszukiwania. " + (f"Podobne hasła: {', '.join(podobne)}. " if podobne else "")
+             + "Pełna lista: https://api.sejm.gov.pl/eli/keywords; albo szukaj frazą tytułu.")
+
+
+def _norm_tytul(t):
+    return re.sub(r"[\s\-–—.]+", " ", (t or "").lower()).strip()
+
+
+def _akty_bazowe_dalej(a, total, items):
+    """Akty, których tytuł (bez „Ustawa z dnia … r.") JEST frazą, a które nie zmieściły się na tej stronie.
+
+    API sortuje nowelizacje przed aktem bazowym: `szukaj "Kodeks karny" --typ Ustawa` (2026-11-13) — 101 trafień,
+    k.k. (DU/1997/553) dopiero na pozycji 92, więc na domyślnej stronie (10) go nie ma. Jedno dodatkowe zapytanie
+    (do 500 pozycji); awaria → [] (to tylko podpowiedź, lista wyników jest pełna co do liczby)."""
+    if not a.fraza or a.offset or total > 500:
+        return []
+    fraza = _norm_tytul(a.fraza)
+    params = {"title": a.fraza, "limit": total, "offset": 0, "type": a.typ, "year": a.rok,
+              "publisher": a.wyd, "keyword": a.haslo}
+    if a.obowiazujace:
+        params["inForce"] = 1
+    try:
+        wszystkie = _get("/acts/search", params, soft=True)
+    except VerificationUnknown:
+        return []
+    if not isinstance(wszystkie, dict):
+        return []
+    na_stronie = {it.get("ELI") for it in items}
+    out = []
+    for n, it in enumerate(wszystkie.get("items") or []):
+        rdzen = re.sub(r"(?i)^\s*\w+\s+z\s+dnia\s+\d{1,2}\s+\w+\s+\d{4}\s*r\.?\s*", "", it.get("title") or "")
+        if _norm_tytul(rdzen) == fraza and it.get("ELI") not in na_stronie:
+            out.append((n, it))
+    return out
+
+
 def cmd_szukaj(a):
-    if not (a.fraza or a.haslo):
-        sys.exit("Podaj frazę tytułu (np. szukaj \"Kodeks cywilny\") albo --haslo.")
+    # sam filtr (np. --wyd MP --rok 2026) API przyjmuje — odmowa była zbędna (audyt 2026-08, „eli × zero-results")
+    if not (a.fraza or a.haslo or a.typ or a.rok or a.wyd):
+        sys.exit("Podaj frazę tytułu (np. szukaj \"Kodeks cywilny\"), --haslo albo filtr (--typ, --rok, --wyd).")
     params = {"title": a.fraza, "limit": a.limit, "offset": a.offset, "type": a.typ,
               "year": a.rok, "publisher": a.wyd, "keyword": a.haslo}
     if a.obowiazujace:
@@ -2209,11 +3406,21 @@ def cmd_szukaj(a):
     if total is None:
         total = d.get("count", len(items))
     if not items:
-        # zero trafień = komunikat + kod wyjścia ≠ 0 (także z --json) — pusty JSON wyglądałby jak
+        try:
+            wszystkich = int(total)
+        except (TypeError, ValueError):
+            wszystkich = None
+        if wszystkich and wszystkich > 0:
+            # offset za końcem listy — to NIE jest zero trafień (kod 2, nie 1)
+            sys.exit(f"BŁĄD: offset {a.offset} jest za końcem listy — zapytanie ma {wszystkich} trafień. "
+                     f"Użyj --offset mniejszego niż {wszystkich}.")
+        if a.haslo:
+            _sprawdz_haslo(a.haslo)
+        # zero trafień = komunikat + kod wyjścia 1 (także z --json) — pusty JSON wyglądałby jak
         # „sprawdzone, nic nie ma", a to tylko brak dopasowania TEJ frazy/filtrów
-        sys.exit(f"Brak wyników (totalCount={total}, offset {a.offset}) dla: fraza={a.fraza!r}, typ={a.typ!r}, "
-                 f"rok={a.rok!r}, haslo={a.haslo!r}. To NIE dowodzi, że aktu nie ma — spróbuj krótszej frazy "
-                 "z tytułu, bez --typ/--rok, albo --haslo.")
+        raise BrakWynikow(f"Brak wyników (totalCount={total}, offset {a.offset}) dla: fraza={a.fraza!r}, typ={a.typ!r}, "
+                          f"rok={a.rok!r}, wyd={a.wyd!r}, haslo={a.haslo!r}. To NIE dowodzi, że aktu nie ma — spróbuj "
+                          "krótszej frazy z tytułu, bez --typ/--rok, albo --haslo.")
     if a.json:
         print(json.dumps(d, ensure_ascii=False, indent=2)); return
     print(f"Znaleziono: {total} (pokazuję {len(items)}, offset {a.offset})")
@@ -2225,6 +3432,10 @@ def cmd_szukaj(a):
         print(f"UWAGA: to NIE wszystkie wyniki — pozostało {pozostalo}. Kolejna strona: "
               f"--offset {a.offset + len(items)} --limit {a.limit}; albo zwiększ --limit (np. 100). "
               "Akt bazowy bywa na końcu listy (API sortuje nowelizacje przed aktem bazowym).")
+        for n, it in _akty_bazowe_dalej(a, int(total), items):
+            print(f"  → akt o tytule równym frazie jest dalej na liście (pozycja {n + 1} z {total}): "
+                  f"{it.get('address', '')}  [{it.get('status', '')}]  {(it.get('title') or '').strip()[:120]}"
+                  + (f"  ELI: {it['ELI']}" if it.get("ELI") else ""))
     print()
     for it in items:
         print(f"  {it.get('address','')}  [{it.get('status','')}]")
@@ -2247,12 +3458,13 @@ def cmd_meta(a):
         print(f"  Cytat:   {_cytat(d)}   (urzędowa forma w piśmie)")
     print(f"  Typ:     {d.get('type','')}")
     print(f"  Status:  {d.get('status','')}  (inForce={d.get('inForce','')})")
+    try:
+        refs = _get(path + "/references", soft=True)
+        refs = refs if isinstance(refs, dict) else {}
+    except VerificationUnknown:
+        refs = None
     if "uchylon" in (d.get("status") or "").lower():
-        try:
-            refs = _get(path + "/references", soft=True)
-            uchylajace = _lista(refs, "akty uchylające") if isinstance(refs, dict) else []
-        except VerificationUnknown:
-            uchylajace = None
+        uchylajace = _lista(refs, "akty uchylające") if refs is not None else None
         if uchylajace:
             for r in uchylajace:
                 print(f"  Uchylony przez: {_akt_opis(r['act'])}  {r['act'].get('title', '').strip()}"
@@ -2269,7 +3481,10 @@ def cmd_meta(a):
     for w in _jeszcze_nie_obowiazuje(d):
         print(f"  {w}")
     if d.get("legalStatusDate"):
-        print(f"  Stan prawny na: {d['legalStatusDate']}   (tekst jednolity oddaje stan na ten dzień)")
+        # obwieszczenie bywa „z uwzględnieniem stanu prawnego na dzień X" albo „zmian … ogłoszonych przed dniem X";
+        # w 1 z 9 sprawdzonych t.j. API podaje dzień później niż obwieszczenie (k.p.c. DU 2026/468) — 2026-11-13
+        print(f"  Stan prawny na: {d['legalStatusDate']}   (pole legalStatusDate; wiąże data z obwieszczenia t.j. — "
+              f"`tekst {label}` porównuje je, gdy czyta t.j. z obwieszczeniem, a nie tekst ujednolicony)")
     if d.get("validFrom") and d.get("validFrom") != d.get("entryIntoForce"):
         print(f"  Obowiązuje od: {d['validFrom']}")
     if d.get("comments"):
@@ -2289,6 +3504,18 @@ def cmd_meta(a):
         print(f"  Tekst HTML: {BASE}{path}/text.html")
     if "tekst jednolity" in (d.get("status") or "").lower():
         print(f"  → Akt ma tekst jednolity — ustal aktualny: python3 {sys.argv[0]} tj {label}")
+    # wyroki TK (kategoria „Orzeczenie TK" aktu bazowego — t.j. sam jej nie ma)
+    if refs is None:
+        print(f"  Orzeczenia TK: nie udało się sprawdzić — odniesienia {label}")
+    else:
+        base = _akt_bazowy(refs)
+        try:
+            base_refs = _get(f"/acts/{base['ELI']}/references", soft=True) if base and base.get("ELI") else refs
+        except VerificationUnknown:
+            base_refs = None
+            print(f"  Orzeczenia TK: nie udało się sprawdzić — odniesienia {_akt_opis(base)}")
+        for l in _linie_tk_meta(base_refs):
+            print(f"  {l}")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -2350,6 +3577,13 @@ def _ocr_popraw_strone(tekst):
 # (sklejony; DU 1992 poz. 316: „81.", „82. 1." … „84. 1." to § 1–4). Za numerem — wielka litera, ewentualnie po
 # numerze ustępu („8 4. 1. Ustala się:"). Bez litery w numerze i bez numeru 0 („80.").
 _OCR_8_PARAGRAF = re.compile(r"(?m)^([ \t]*)8([ ]?)([1-9]\d{0,2})\.(?=[ \t]+(?:\d{1,2}\.[ \t]+)?[A-ZĄĆĘŁŃÓŚŹŻ])")
+# Warianty, których `_OCR_8_PARAGRAF` nie bierze (13.11.2026, raw OCR skanów): śmieć przed numerem („„8 12, 1. Głosowanie"
+# — DU 1998 poz. 875; „. 817. 1. Urządzenie" — DU 1993 poz. 58), przecinek zamiast kropki („„8 12,"), inna cyfra zamiast
+# „§" („5 2, Ilekroć" i „3 16. Dopuszczalne" — DU 2000 poz. 313). Zamiana TYLKO wtedy, gdy numer N potwierdzają oba
+# sąsiednie pewne nagłówki: tuż przed nim § N−1 (albo „co następuje" dla N = 1), tuż za nim § N+1. Sklejony („817.") —
+# tylko z „8"; z „3"/„5" („317.") nie, bo to zwykle numer ustępu albo liczba.
+_OCR_8_WARIANT = re.compile(r"(?m)^([ \t]*)([„\".,'][ \t]?)?(?:([358])[ ]|(8))([1-9]\d{0,2})([.,])"
+                            r"(?=[ \t]+(?:\d{1,2}\.[ \t]+)?[A-ZĄĆĘŁŃÓŚŹŻ])")
 # świadectwa numeracji: nagłówek paragrafu „§ N." na początku wiersza, początek aktu („zarządza się, co następuje:"
 # — przed § 1), nagłówek artykułu (rozdziela ciągi; nie świadczy o numerze paragrafu)
 _OCR_SWIADEK_PARAGRAF = re.compile(r"(?m)^[ \t]*§[ \t]?(\d{1,3})[a-z]?\.")
@@ -2371,7 +3605,7 @@ def _ocr_popraw_paragrafy(strony, ocr_idx, luz=0):
       Punkty 81.–89. wyliczenia w § k nie mają takiej ramy: przed nimi § k, za nimi § k+1. Sklejony kandydat nie
       świadczy o niczym, dopóki nie zostanie przyjęty."""
     ocr_idx = {i for i in ocr_idx if i < len(strony)}
-    if not any(_OCR_8_PARAGRAF.search(strony[i]) for i in ocr_idx):
+    if not any(_OCR_8_PARAGRAF.search(strony[i]) or _OCR_8_WARIANT.search(strony[i]) for i in ocr_idx):
         return strony
     # świadkowie ze stron z warstwą tekstową nie zmieniają się między przebiegami — liczeni raz
     stali = [z for i, s in enumerate(strony) if i not in ocr_idx for z in _ocr_swiadkowie(i, _pdf_lamy(s, luz=luz))]
@@ -2394,8 +3628,12 @@ def _ocr_popraw_paragrafy_raz(strony, ocr_idx, stali):
     znaczniki = list(stali)
     for i in ocr_idx:
         s = strony[i]
-        znaczniki += [(i, m.start(), "rozstrzelony" if m.group(2) else "sklejony", int(m.group(3)), m)
-                      for m in _OCR_8_PARAGRAF.finditer(s)]
+        zwykle = [(i, m.start(), "rozstrzelony" if m.group(2) else "sklejony", int(m.group(3)), m)
+                  for m in _OCR_8_PARAGRAF.finditer(s)]
+        znaczniki += zwykle
+        poczatki = {z[1] for z in zwykle}
+        znaczniki += [(i, m.start(), "wariant", int(m.group(5)), m) for m in _OCR_8_WARIANT.finditer(s)
+                      if m.start() not in poczatki and (m.group(2) or m.group(3) != "8" or m.group(6) == ",")]
         znaczniki += _ocr_swiadkowie(i, s)
     znaczniki.sort(key=lambda z: (z[0], z[1]))
     przyjete = set()
@@ -2439,13 +3677,26 @@ def _ocr_popraw_paragrafy_raz(strony, ocr_idx, stali):
         if przed and za and przed + za >= 3:
             przyjete.update(range(k - (przed == 1), koniec + 1 + (za == 1)))
         k = koniec + 1
-    if not przyjete:
+    # warianty: oba sąsiednie znaczniki (bez kandydatów, których jeszcze nie przyjęto) to pewne nagłówki N−1 i N+1
+    warianty = set()
+    for k, z in enumerate(znaczniki):
+        if z[2] != "wariant":
+            continue
+        przed = next((znaczniki[j] for j in range(k - 1, -1, -1) if pewny(j) or znaczniki[j][2] == "art"), None)
+        za = next((znaczniki[j] for j in range(k + 1, len(znaczniki)) if pewny(j) or znaczniki[j][2] == "art"), None)
+        if przed and za and przed[2] != "art" and za[2] == "paragraf" and przed[3] == z[3] - 1 and za[3] == z[3] + 1:
+            warianty.add(k)
+    if not przyjete and not warianty:
         return strony
     wynik = list(strony)
     for k in przyjete:
         i, _, _, _, m = znaczniki[k]
         p = m.start() + len(m.group(1))         # „8" za wcięciem → „§" (znak za znak — pozycje innych bez zmian)
         wynik[i] = wynik[i][:p] + "§" + wynik[i][p + 1:]
+    # wariant zmienia długość wiersza — od końca strony, żeby pozycje wcześniejszych dopasowań zostały ważne
+    for k in sorted(warianty, key=lambda k: (znaczniki[k][0], znaczniki[k][1]), reverse=True):
+        i, _, _, n, m = znaczniki[k]
+        wynik[i] = wynik[i][:m.start()] + m.group(1) + f"§ {n}." + wynik[i][m.end():]
     return wynik
 
 
@@ -2562,8 +3813,26 @@ def _tekst_z_pdf(path, label, meta, info=None, ocr=None):
     return txt, url, ""
 
 
+_PATRZ_ORYGINAL = re.compile(r"(?i)patrz\s+orygina[łl]")
+# `pdf_do_tekstu_z_notkami`: „bez_wspolrzednych" — `pdftotext -bbox` nie dał współrzędnych słów dla stron z `-layout`
+_UWAGA_BEZ_WSPOLRZEDNYCH = ("pdftotext -bbox nie zwrócił współrzędnych słów dla stron tego PDF, więc indeksy górne („art. 13¹”) "
+                            "i odsyłacze do przypisów NIE zostały potwierdzone współrzędnymi — rozpoznano je tylko po kształcie "
+                            "tekstu: liczby stojące tuż przed przypisem mogą być obcięte („152,61” z odsyłaczem „3)” → „152,”), "
+                            "a indeks górny może być sklejony z numerem („art. 131” zamiast 13¹).")
+
+
+def _odmowa_nadpisania(plik):
+    return (f"BŁĄD: plik {plik!r} już istnieje — nie nadpisuję go. Podaj inną nazwę pliku albo usuń "
+            "istniejący, jeśli na pewno nie jest potrzebny.")
+
+
 def cmd_tekst(a):
     strict = getattr(a, "strict", False)
+    # --pdf nie nadpisuje istniejącego pliku (dotąd open(…, "wb") kasował go bez słowa — np. wcześniej pobrany
+    # PDF innego aktu albo własny dokument o tej nazwie; 13.11.2026). Sprawdzenie PRZED pobieraniem czegokolwiek;
+    # zapis w trybie „xb" domyka wyścig, gdy plik powstanie w trakcie pobierania.
+    if a.pdf and os.path.lexists(a.pdf):
+        sys.exit(_odmowa_nadpisania(a.pdf))
     path, label = act_path(a.sygnatura)
     # odniesienia służą tylko ostrzeżeniom o aktualności — ich awaria nie może odebrać
     # użytkownikowi samego tekstu; zamiast tego tekst dostaje GŁOŚNE ostrzeżenie
@@ -2579,8 +3848,9 @@ def cmd_tekst(a):
         refs = None
         ostrz = [f"UWAGA: nie udało się zweryfikować aktualności aktu {label} ({e}) — "
                  "sprawdź nowelizacje i teksty jednolite ręcznie, zanim zacytujesz."]
-    else:
-        ostrz = _ostrzezenia(refs, path, strict) if isinstance(refs, dict) else []
+    wynik_zmian = {}
+    if refs is not None:
+        ostrz = _ostrzezenia(refs, path, strict, wynik_zmian) if isinstance(refs, dict) else []
         # nowszy t.j. — zarówno dla aktu bazowego, jak i dla aktu, który SAM jest (starszym) t.j.
         try:
             nowszy = _nowszy_tj(path, refs) if isinstance(refs, dict) else None
@@ -2607,8 +3877,11 @@ def cmd_tekst(a):
             sys.exit("Brak PDF w metadanych aktu.")
         url = f"{BASE}{path}/text/{pick['type']}/{pick['fileName']}"
         data = _get_bytes(url)
-        with open(a.pdf, "wb") as f:
-            f.write(data)
+        try:
+            with open(a.pdf, "xb") as f:
+                f.write(data)
+        except FileExistsError:
+            sys.exit(_odmowa_nadpisania(a.pdf))
         print(f"Zapisano PDF ({len(data)} B): {a.pdf}\n(źródło: {url})")
         for w in ostrz:
             print(w)
@@ -2644,6 +3917,9 @@ def cmd_tekst(a):
                      "byłoby w wyniku, więc tekst jest NIEKOMPLETNY. Tryb strict blokuje niekompletny tekst. Odczytaj "
                      f"skany przez OCR bez --strict (tekst {label} --ocr; wynik z ostrzeżeniem o niepewności OCR) "
                      f"albo pobierz PDF: tekst {label} --pdf plik.pdf")
+        if txt and info_pdf.get("bez_wspolrzednych") and strict:
+            sys.exit(f"BŁĄD (strict): {label} — {_UWAGA_BEZ_WSPOLRZEDNYCH} Tryb strict blokuje taki tekst; bez --strict "
+                     f"zostanie wypisany z ostrzeżeniem, a wiążący jest PDF: tekst {label} --pdf plik.pdf")
         if txt:
             zrodlo = "z urzędowego PDF przez pdftotext -layout"
             if info_pdf.get("podstawa"):
@@ -2669,6 +3945,9 @@ def cmd_tekst(a):
                         " OCR niedostępny (zainstaluj tesseract z językiem polskim i poppler)." if not ocr_dostepny() else "")
                 ostrz.insert(0, f"UWAGA: {n} z {m} stron tego PDF nie ma warstwy tekstowej (skan albo strona pusta) — "
                                 "ich treści NIE MA poniżej. Sprawdź PDF: tekst " + label + " --pdf plik.pdf." + rada)
+            if info_pdf.get("bez_wspolrzednych"):
+                ostrz.insert(0, f"UWAGA: {_UWAGA_BEZ_WSPOLRZEDNYCH} Do cytatu (zwłaszcza liczb, kwot i numerów jednostek) "
+                                f"sprawdź PDF: tekst {label} --pdf plik.pdf")
             if info_pdf.get("ocr_strony"):
                 n, m = info_pdf["ocr_strony"]
                 ostrz.insert(0, f"UWAGA — OCR: {n} z {m} stron tego PDF to skany odczytane przez OCR (tesseract). Tekst "
@@ -2704,6 +3983,47 @@ def cmd_tekst(a):
     if not ujednolicony and "STARSZEGO" not in zrodlo and isinstance(refs, dict) and _akt_bazowy(refs):
         # tekst jednolity: obwieszczenie mówi, które zmiany z listy „po tym t.j." są już w tekście (pkt 1), a które nie
         ostrz = _oznacz_obwieszczenie(ostrz, *_obwieszczenie_tj(txt))
+    # imienna analiza zmian po stanie tekstu i wyroków TK — PRZED wypisaniem, bo --strict blokuje przed emisją
+    if wynik_zmian.get("pozycje") is not None and "STARSZEGO" not in zrodlo:
+        info_akt = {}
+        if ujednolicony:
+            info_akt["podstawa"] = _podstawa_ujednolicenia(info_pdf.get("podstawa"))
+        elif _akt_bazowy(refs):
+            info_akt["uwzgl"], info_akt["nieobj"], info_akt["przed"] = _obwieszczenie_tj(txt)
+            ostrz += _sprawdz_stan_obwieszczenia(txt, meta_aktu, wynik_zmian)
+        spans_wst = _fragmenty(txt, a.fragment) if a.fragment else None
+        if not a.fragment or spans_wst:
+            linie_zm, blokada = _aktualnosc(wynik_zmian, txt, _klucze_fragmentu(txt, spans_wst) if a.fragment else None,
+                                            info_akt, strict)
+            if blokada and strict:
+                sys.exit(f"BŁĄD (strict): {label} — " + ("ten fragment" if a.fragment else "ten tekst")
+                         + f" może podawać NIEAKTUALNE brzmienie: {blokada}. Tryb strict blokuje taki wynik; bez --strict "
+                         "zostanie wypisany z ostrzeżeniem imiennym.")
+            ostrz += linie_zm
+        elif _klucz_frazy(a.fragment):
+            # artykułu nie ma w tekście — może go DODAĆ zmiana po stanie tekstu (imprezy turystyczne DU 2026/925:
+            # art. 47a dodany przez DU 2026/1006 od 2026-08-11); wtedy to nie jest „brak", tylko nieaktualny tekst
+            linie_zm, blokada = _aktualnosc(wynik_zmian, txt, {_klucz_frazy(a.fragment)}, info_akt, strict)
+            nazwane = [l for l in linie_zm if l.startswith("UWAGA") and "nie ustaliłem" not in l]
+            if nazwane:
+                sys.exit(f"Nie znaleziono {a.fragment.strip()!r} w tekście {label} — ale ten przepis dotyczy zmiana po "
+                         "stanie tego tekstu:\n" + "\n".join(l.replace("Poniżej brzmienie SPRZED tej zmiany — aktualne "
+                                                                       "nanieś z:", "Brzmienie:") for l in nazwane)
+                         + "\nTo NIE jest brak przepisu: tekst jest nieaktualny. Brzmienie weź z aktu zmieniającego.")
+    if zrodlo.startswith("z text.html"):
+        # HTML API ma w miejscu tabeli, wzoru albo rysunku samo odesłanie „patrz oryginał" (link do PDF) — tej treści nie
+        # ma w wyniku, a narzędzie dotąd milczało (13.11.2026: 6 z 30 losowych aktów Dz.U. 2024 z HTML, np. t.j. DU 2023/2190
+        # — załącznik nr 1 z dietami za granicą to tylko „patrz oryginał"; DU 2024/694 — 6 załączników)
+        zakres = "\n".join(txt[s:e] for s, e in _fragmenty(txt, a.fragment)) if a.fragment else txt
+        brakujace = len(_PATRZ_ORYGINAL.findall(zakres))
+        if brakujace and strict:
+            sys.exit(f"BŁĄD (strict): {label} — w {'tym fragmencie' if a.fragment else 'tym tekście'} {brakujace}× zamiast "
+                     "treści stoi odsyłacz API „patrz oryginał” (tabela, wzór albo rysunek), więc tekst jest NIEKOMPLETNY. "
+                     f"Tryb strict blokuje niekompletny tekst; treść jest w PDF: tekst {label} --pdf plik.pdf")
+        if brakujace:
+            ostrz.insert(0, f"UWAGA: w {'tym fragmencie' if a.fragment else 'tym tekście'} {brakujace}× zamiast treści stoi "
+                            "odsyłacz API „patrz oryginał” — tej części (zwykle tabeli, wzoru albo rysunku w załączniku) NIE MA "
+                            f"poniżej. Jest tylko w PDF: tekst {label} --pdf plik.pdf")
     print(f"# {label} — tekst ({zrodlo}; do dosłownego cytatu zweryfikuj z PDF urzędowym)\n")
     for w in ostrz:
         print(w)
@@ -2713,10 +4033,11 @@ def cmd_tekst(a):
         spans = _fragmenty(txt, a.fragment)
         if not spans:
             goly = re.sub(r"(?i)^art\.?\s*", "", a.fragment.strip()) or "N"
-            sys.exit(f"Nie znaleziono frazy {a.fragment!r} w tekście aktu ({len(txt)} znaków).\n"
-                     "UWAGA: to NIE dowodzi, że przepisu nie ma — zanim tak napiszesz, sprawdź samym "
-                     f"numerem (--fragment \"{goly}\"), słowem kluczowym z treści "
-                     "albo pobierz pełny tekst bez --fragment.")
+            # kod 1: tekst pobrany, frazy w nim nie ma — ale to nadal NIE dowód, że przepisu nie ma
+            raise BrakWynikow(f"Nie znaleziono frazy {a.fragment!r} w tekście aktu ({len(txt)} znaków).\n"
+                              "UWAGA: to NIE dowodzi, że przepisu nie ma — zanim tak napiszesz, sprawdź samym "
+                              f"numerem (--fragment \"{goly}\"), słowem kluczowym z treści "
+                              "albo pobierz pełny tekst bez --fragment.")
         # tryb nagłówkowy zawiódł → poniżej trafienia pełnotekstowe, więc mogą to być ODESŁANIA
         paragraf = bool(_FRAZA_PARAGRAFU.match(a.fragment.strip())) and not _hity_naglowka(txt, a.fragment)
         hity_par = _hity_paragrafu(txt, a.fragment) if paragraf else []
@@ -2724,6 +4045,11 @@ def cmd_tekst(a):
                 or paragraf and not hity_par):
             print(f"UWAGA: nie znalazłem NAGŁÓWKA {a.fragment!r} w tym akcie — poniżej trafienia "
                   "pełnotekstowe; sprawdź, czy to sam przepis, czy tylko odesłanie do niego.\n")
+            obcy = _naglowek_poza_numeracja(txt, a.fragment)
+            if obcy:
+                print(f"UWAGA: w miejscu {a.fragment.strip()!r} (między sąsiednimi artykułami) stoi nagłówek „{obcy}” — "
+                      "to może być ten przepis z błędnym numerem w danych API (np. k.p.c. t.j. DU 2024/1568: art. 15 ma w "
+                      f"HTML i /struct nagłówek „Art. 1522.”). Sprawdź numer w PDF: tekst {label} --pdf plik.pdf\n")
         artykuly = [_artykul_nad(txt, s) for s, _ in spans] if hity_par else []
         if hity_par and len(hity_par) > 1 and any(artykuly) and not _FRAZA_PARAGRAFU.match(a.fragment.strip()).group(1):
             print(f"UWAGA: {a.fragment.strip()!r} bez numeru artykułu jest NIEJEDNOZNACZNE — paragraf o tym numerze "
@@ -2748,6 +4074,7 @@ def cmd_tekst(a):
         # przypisy fragmentu odsyłające do innych przypisów („…ustawy, o której mowa w odnośniku 6") — data wejścia
         # w życie bywa tylko w tamtym przypisie, przy innym przepisie
         dociagniete, analiza, ostrz_przypisow = _przypisy_fragmentu("\n".join(txt[s:e] for s, e in spans), txt)
+        kontekst += _tk_w_przypisach("\n".join(txt[s:e] for s, e in spans))
         for w in kontekst + ostrz_przypisow + _ostrzezenie_przyszle(
                 "\n".join(dodatkowe + analiza + [txt[s:e] for s, e in spans]), ujednolicony):
             print(w)
@@ -2819,9 +4146,21 @@ def cmd_struktura(a):
     d = _get(path + "/struct", soft=True)
     nodes = d if isinstance(d, list) else [d] if isinstance(d, dict) else None
     if not nodes:
-        sys.exit(f"Brak struktury dla tego aktu ({label}) — API udostępnia /struct głównie dla tekstów "
-                 f"jednolitych i starszych aktów; świeżo ogłoszone pozycje często go nie mają. "
-                 f"Spis jednostek odczytasz z tekstu: tekst {label} | grep -n \"^Art\\.\"")
+        komunikat = (f"Brak struktury dla tego aktu ({label}) — API udostępnia /struct głównie dla tekstów "
+                     f"jednolitych i starszych aktów; świeżo ogłoszone pozycje często go nie mają. "
+                     f"Spis jednostek odczytasz z tekstu: tekst {label} | grep -n \"^Art\\.\"")
+        # 404 na /struct wygląda tak samo dla „akt bez struktury" i „nie ma takiego aktu" — zweryfikowany
+        # brak (kod 1) tylko wtedy, gdy metadane aktu istnieją; inna odpowiedź niż 404/pusta lista — kod 2
+        if d is None or d == []:
+            try:
+                istnieje = isinstance(_get(path, soft=True), dict)
+            except VerificationUnknown:
+                istnieje = False
+            if istnieje:
+                raise BrakWynikow(komunikat)
+            sys.exit(f"Brak struktury dla tego aktu ({label}), a API nie zwraca też jego metadanych — sprawdź "
+                     f"sygnaturę (meta {label}).")
+        sys.exit(f"BŁĄD: API zwróciło nieoczekiwaną odpowiedź zamiast struktury aktu {label}. " + komunikat)
     if a.json:
         print(json.dumps(d, ensure_ascii=False, indent=2)); return
     filtr = (a.filtr or "").lower()
@@ -2847,7 +4186,8 @@ def cmd_struktura(a):
     for n in nodes:
         walk(n)
     if not wypisane:
-        print(f"(nic nie pasuje do filtra {a.filtr!r})")
+        raise BrakWynikow(f"Nic w strukturze {label} nie pasuje do filtra {a.filtr!r} — sprawdź pisownię "
+                          "(np. 'Art. 7_1' dla art. 7¹) albo przeszukaj tekst: tekst … --fragment.")
 
 
 def cmd_odniesienia(a):
@@ -2963,12 +4303,46 @@ def main():
         p.add_argument("--strict", action="store_true", default=argparse.SUPPRESS,
                        help="zakończ błędem, gdy nie udało się zweryfikować aktualności lub kompletności")
 
-    a = ap.parse_args()
+    a = ap.parse_args()   # błąd argumentów: argparse sam kończy kodem 2
     try:
         a.func(a)
     except VerificationUnknown as e:
         _nie_zweryfikowano("danych w API ELI", e)
 
 
+def kod_wyjscia(argv=None):
+    """Uruchamia `main()` i zwraca kod wyjścia procesu: 0 = jest wynik; 1 = ZWERYFIKOWANY brak wyników
+    (BrakWynikow); 2 = wszystko inne — błąd sieci/HTTP, nieoczekiwana odpowiedź, zła sygnatura, błąd argumentów,
+    blokada --strict, VerificationUnknown i nieprzewidziany wyjątek (zamiast śladu stosu z kodem 1). `main()`
+    zostaje bez zmian (SystemExit z komunikatem) — tak wołają go testy i inne skrypty w tym samym procesie."""
+    if argv is not None:
+        sys.argv = [sys.argv[0]] + list(argv)
+    try:
+        main()
+    except BrakWynikow as e:
+        print(e.code, file=sys.stderr)
+        return 1
+    except SystemExit as e:
+        if e.code is None or isinstance(e.code, int):
+            return e.code or 0
+        print(e.code, file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        print("Przerwano.", file=sys.stderr)
+        return 2
+    except BrokenPipeError:
+        # odbiorca zamknął wyjście (`tekst … | head`) — to nie błąd narzędzia; bez tego Python dopisałby ślad stosu
+        try:
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        except OSError:
+            pass
+        return 0
+    except Exception as e:  # nieprzewidziany błąd nigdy nie może dać kodu 1 („brak wyników")
+        print(f"BŁĄD: nieoczekiwany błąd eli.py ({type(e).__name__}: {e}) — wynik NIEZNANY; spróbuj ponownie, "
+              "a jeśli błąd się powtarza, zgłoś go z tą komendą.", file=sys.stderr)
+        return 2
+    return 0
+
+
 if __name__ == "__main__":
-    main()
+    sys.exit(kod_wyjscia())

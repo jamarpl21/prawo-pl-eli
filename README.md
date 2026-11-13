@@ -105,7 +105,11 @@ Trzeci skill domyka komplet: **orzecznictwo** (judykatura). Silnik `saos.py` odp
   trafieniu i ostrzeżeniem, gdy ta sama sygnatura dotyczy różnych spraw w różnych sądach),
 - wyciąć fragment długiego uzasadnienia wokół frazy: `orzeczenie 76341 --fragment "rękojmia"`.
 
-Przy dokumencie typu „uzasadnienie” silnik ostrzega, że podana data to data uzasadnienia, a nie wyroku.
+Przy dokumencie typu „uzasadnienie” data w SAOS bywa datą uzasadnienia albo datą wyroku (na 22 sprawdzonych:
+12 i 6, 4 nie do ustalenia). Silnik rozstrzyga to datą dokumentu z identyfikatora portalu MS i nagłówkiem
+treści, a gdy się nie da, pisze „data uzasadnienia albo wyroku” — terminów od niej nie licz.
+`--haslo` działa tylko dla sądów powszechnych (SN, TK i KIO nie mają w SAOS haseł); hasło spoza słownika
+SAOS kończy się błędem z podobnymi hasłami, a nie „brakiem wyników”.
 
 Podział ról: **treść przepisu → prawo-pl-eli (ELI)**, **jak sądy go stosują → prawo-pl-saos (SAOS)**.
 Most między nimi: ustal akt w ELI, potem `szukaj --przepis "<akt>"` w SAOS. **Uwaga:** SAOS to baza
@@ -139,7 +143,9 @@ treści nie wolno odtwarzać z fragmentu wyszukiwarki.
 przy wynikach dłuższych niż jedna strona (10 pozycji) kolejne strony mogą powtarzać i gubić
 pozycje — przy każdym `--sort`, także `data`. Pełną listę (statystyka, przegląd orzeczeń sądu
 z danego okresu) zwraca opcja `--wszystkie`: łączy strony po `id`, sprawdza komplet i ma limit
-200 trafień na zapytanie; bez niej silnik ostrzega o tym w `uwagi`. Szczegóły i filtry:
+200 trafień na zapytanie oraz 60 zapytań na wywołanie (po 3 rundach z rzędu bez nowej pozycji kończy się
+błędem, a nie niepełną listą; stronę przerwaną błędem sieci ponawia raz); bez niej silnik ostrzega
+o tym w `uwagi`. Szczegóły i filtry:
 [SKILL.md](plugins/prawo-pl-orzeczenia-ms/skills/prawo-pl-orzeczenia-ms/SKILL.md).
 
 ## prawo-pl-cbosa
@@ -165,7 +171,9 @@ bez klucza). Silnik `uodo.py` pozwala:
 
 - przeglądać najnowsze decyzje: `najnowsze --limit 10`,
 - szukać pełnotekstowo (regex, bez rozróżniania wielkości liter): `szukaj "biometr"`,
-  po tytule i dacie publikacji: `szukaj --tytul "kara" --od 2026-01-01`,
+  po tytule i dacie publikacji: `szukaj --tytul "kara" --od 2026-01-01`. API rozumie wyrażenia regularne
+  inaczej niż Python (`\b`, `\S`, `^`/`$` w treści dawały fałszywe zero albo odwrócony wynik) — silnik
+  zamienia je na postać rozumianą przez API i pisze, co wysłał,
 - pobrać **pełną treść decyzji** po sygnaturze: `decyzja DKN.5131.9.2025 --fragment "art. 6"`.
 
 Przy decyzji nieprawomocnej `decyzja` podaje gotowe zapytania CBOSA, które znajdują wyrok sądu
@@ -191,7 +199,9 @@ adresy), przedmiotem, wartością i zmianami. Silnik `rejestrumow.py` pozwala:
 
 Rejestr pokazuje **zawarte umowy** (nie przetargi — te są w BZP/TED) i obejmuje wyłącznie umowy
 od 1.07.2026; podstawa prawna (art. 34a–34b u.f.p.) → **prawo-pl-eli**. Rejestr nie podaje waluty
-ani tego, czy kwota jest netto czy brutto — silnik pokazuje kwotę bez „zł”.
+ani tego, czy kwota jest netto czy brutto — silnik pokazuje kwotę bez „zł” (interfejs rejestru dopisuje
+„zł” przy każdej kwocie, także przy wykonawcy zagranicznym). Rejestr ma jedną kwotę na umowę: po aneksie
+bywa zaktualizowana albo nie, a status „Aktywna” zdarza się przy umowie rozwiązanej — `umowa` o tym ostrzega.
 
 Wszystkie skille są w otwartym standardzie **[Agent Skills](https://agentskills.io)** (`SKILL.md`), więc działają w
 **Claude Code** i **OpenAI Codex**. Silniki (`scripts/eli.py`, `scripts/edzienniki.py`, `scripts/eurlex.py`,
@@ -290,9 +300,9 @@ Każdy tag `v*` publikuje po jednym zipie na plugin w GitHub Releases
 dla każdego z ośmiu pluginów):
 
 ```bash
-claude --plugin-dir ./prawo-pl-saos-v2.3.0.zip
+claude --plugin-dir ./prawo-pl-saos-v2.4.0.zip
 # albo zdalnie, bez pobierania:
-claude --plugin-url https://github.com/jamarpl21/prawo-pl-eli/releases/download/v2.3.0/prawo-pl-saos-v2.3.0.zip
+claude --plugin-url https://github.com/jamarpl21/prawo-pl-eli/releases/download/v2.4.0/prawo-pl-saos-v2.4.0.zip
 ```
 
 ## Użycie jako samodzielne CLI (bez żadnego LLM-a)
@@ -313,14 +323,23 @@ Dwie flagi globalne, w każdym silniku, działają przed komendą i po niej:
 - `--json` — surowa odpowiedź API / sparsowane dane do dalszego przetwarzania. Zero trafień i nierozpoznana
   odpowiedź kończą się komunikatem z kodem wyjścia ≠ 0 **także z `--json`** — pusty JSON wyglądałby jak
   „sprawdzone, nic nie ma", a to najgroźniejszy fałszywy negatyw w pracy prawnika.
+  **Kody wyjścia** (od 2.4.0 wspólne dla siedmiu silników; `cbosa.py` jeszcze bez tej zmiany — każdy błąd
+  i brak wyników daje tam kod ≠ 0): `0` — jest wynik; `1` — tylko ZWERYFIKOWANY brak (źródło odpowiedziało,
+  zero trafień albo frazy nie ma w pełnej treści); `2` — wszystko inne: błąd sieci lub serwera, zły argument,
+  nieistniejący dokument, blokada `--strict`, nieustalona aktualność. Skrypt może więc odróżnić „nie ma”
+  od „nie udało się sprawdzić”. Zero trafień nadal nie dowodzi, że przepisu, orzeczenia albo umowy nie ma.
 - `--strict` — tryb „do pisma procesowego": wynik, którego **aktualności lub kompletności** nie dało się
   zweryfikować, nie jest drukowany z ostrzeżeniem, tylko odrzucany (kod wyjścia ≠ 0, pusty stdout).
   Domyślny tryb (research) jest bez zmian — te same sytuacje dają głośne `UWAGA:`. Co blokuje strict
   (pełna lista per silnik w każdym SKILL.md, sekcja „Co sprawdza --strict"):
   - **ELI:** awaria kontroli aktualności (`/references`), starszy t.j., gdy istnieje nowszy (także gdy
     podasz sygnaturę starego t.j.), tekst zastępczy ze starszego t.j. (brak pdftotext), nieudana
-    ekstrakcja PDF, niekompletna lista nowelizacji po t.j.;
-  - **EUR-Lex:** awaria SPARQL, starsza wersja skonsolidowana, treść aktu bazowego, gdy istnieje
+    ekstrakcja PDF, tekst z PDF bez współrzędnych słów (odsyłacze do przypisów niepotwierdzone),
+    niekompletna lista nowelizacji po t.j., `--fragment` z artykułem zmienionym po stanie
+    tekstu (stare brzmienie) albo takim, którego zmiany nie dało się ustalić, przepis, który utracił moc
+    po wyroku TK, tekst HTML z odsyłaczem „patrz oryginał” zamiast tabeli lub wzoru;
+  - **EUR-Lex:** awaria SPARQL, starsza wersja skonsolidowana, wersja skonsolidowana z datą przyszłą
+    (jeszcze nie obowiązuje), treść aktu bazowego, gdy istnieje
     konsolidacja albo sprostowanie w danym języku (tekst niesprostowany), `meta` aktu bazowego
     znowelizowanego (daty stosowania w CELLAR są wtedy nieaktualne);
   - **SAOS:** zakres dat poza końcem zbioru SN (22.06.2016) / TK (9.12.2015) / KIO (6.09.2018) —
@@ -333,8 +352,11 @@ Dwie flagi globalne, w każdym silniku, działają przed komendą i po niej:
     możliwości pobrania powiązań aktu; **rejestr umów:** zbiór większy niż okno API (10 000).
 
   Wszystkie kontrole wykonują się PRZED emisją wyniku, również dla `--json`. Strict nie zastępuje oceny
-  prawnika: t.j. z późniejszymi nowelizacjami nadal przechodzi (z listą „Nowelizacje po tekście
-  jednolitym"), bo nowszego t.j. po prostu nie ma; zakres uchylenia decyzji UODO czy wyroku WSA trzeba
+  prawnika. W ELI t.j. z późniejszymi nowelizacjami przechodzi tylko wtedy, gdy żadna z nich jeszcze nie
+  obowiązuje albo — przy `--fragment` — gdy narzędzie przeczytało akty zmieniające i nie znalazło w nich
+  zmiany wypisywanego artykułu; cały tekst bez `--fragment`, w którym brakuje obowiązującej już zmiany,
+  jest blokowany. Analiza obejmuje do 8 aktów zmieniających i opiera się na danych API Sejmu: zmiany,
+  której API jeszcze nie zna, narzędzie nie zobaczy. Zakres uchylenia decyzji UODO czy wyroku WSA trzeba
   odczytać z sentencji (strict tylko odmawia treści, która może już nie obowiązywać).
 
 ### eli.py (prawo polskie)
@@ -345,7 +367,7 @@ Dwie flagi globalne, w każdym silniku, działają przed komendą i po niej:
 | `meta` | metadane aktu: status, **data aktu** („z dnia"), **ogłoszono** (publikacja w Dz.U.), wejście w życie (z ostrzeżeniem, gdy akt jeszcze nie obowiązuje), stan prawny t.j., uwagi o rozłożonym wejściu w życie, urzędowa forma cytatu, akt uchylający | `meta DU 2000 1037` |
 | `tj` | znajdź AKTUALNY tekst jednolity (najnowszy oznaczony) | `tj DU 2000 1037` |
 | `odniesienia` | nowelizacje, podstawa prawna, tekst jednolity | `odniesienia DU 2024 18` |
-| `tekst` | treść aktu; `--fragment` wycina pojedynczy artykuł; `--pdf` zapisuje urzędowy PDF | `tekst DU 2024 18 --fragment "art. 299"` |
+| `tekst` | treść aktu; `--fragment` wycina pojedynczy artykuł i mówi, czy TEN artykuł zmieniono po stanie tekstu (czyta akty zmieniające i wyroki TK); `--pdf` zapisuje urzędowy PDF (nie nadpisuje istniejącego pliku) | `tekst DU 2024 18 --fragment "art. 299"` |
 | `struktura` | spis jednostek redakcyjnych aktu | `struktura DU 2024 18 --filtr "Art. 299"` |
 
 Komendy `tekst` i `tj` same ostrzegają, gdy cytujesz z nieaktualnej wersji (istnieje nowszy tekst
@@ -379,7 +401,7 @@ są nazywane wprost.
 |---|---|---|
 | `szukaj` | znajdź akt po frazie z tytułu (domyślnie PL) | `szukaj "sztucznej inteligencji" --typ REG` |
 | `meta` | metadane (typ, wejście w życie / stosowanie, **termin transpozycji** dyrektywy, status, ELI); na wersji skonsolidowanej: „stan na" + daty **aktu bazowego**; ostrzeżenie, gdy akt był zmieniany (daty stosowania w CELLAR nie są wtedy aktualizowane) | `meta 32016R0679` |
-| `skonsolidowany` | wersje skonsolidowane (odpowiednik t.j.) | `skonsolidowany 32006L0112` |
+| `skonsolidowany` | wersje skonsolidowane (odpowiednik t.j.): AKTUALNA to najnowsza już obowiązująca, wersje z datą przyszłą oznaczone „PRZYSZŁA”; ostrzeżenie o nowelizacji nieujętej w żadnej wersji. Z `--json` zwraca obiekt `aktualna` / `przyszle` / `wersje` / `zmiany_nieujete` (do 2.3.0: lista) | `skonsolidowany 32006L0112` |
 | `odniesienia` | nowelizacje, sprostowania, **uchylenia (w obie strony)**, podstawa traktatowa | `odniesienia 32016R0679` |
 | `tekst` | treść aktu (domyślnie PL); `--fragment` wycina artykuł; `--jezyk`, `--pdf` | `tekst 02016R0679-20160504 --fragment "art. 28"` |
 
@@ -519,7 +541,7 @@ docs/                                    # raport audytu merytorycznego, instruk
 
 ## Wersjonowanie
 
-Wszystkie pluginy są wersjonowane **razem (lockstep)** — jedna wersja (obecnie **2.3.0**) zadeklarowana
+Wszystkie pluginy są wersjonowane **razem (lockstep)** — jedna wersja (obecnie **2.4.0**) zadeklarowana
 we wszystkich miejscach, identyczna; `tools/validate.py` wymusza to w CI:
 
 - `plugins/<plugin>/.claude-plugin/plugin.json` i `.codex-plugin/plugin.json` (pole `version`) — wszystkie pluginy,
@@ -576,7 +598,10 @@ Testy jednostkowe: 276 → 502. Audyt wskazał też luki do kolejnych testów (p
 w ostatnich 90 dniach, t.j. z brzmieniem z datą przyszłą, indeksy literowe w k.p.c., tabele załączników)
 — zob. sekcję D raportu. Część z nich sprawdzono i naprawiono w wydaniu 2.2.0 (brzmienie przyszłe
 i vacatio legis w ELI, sprostowania w EUR-Lex, nieważność aktów w e-dziennikach, łańcuch UODO → CBOSA,
-kolizje sygnatur); stan każdej luki opisuje nota na początku raportu.
+kolizje sygnatur), pozostałe — w wydaniu 2.4.0 (m.in. przepisy zmienione po stanie tekstu jednolitego
+i po wyrokach TK, kwoty obok cyfr przypisów, wybór wersji skonsolidowanej w EUR-Lex, hasła i daty
+w SAOS, porównanie rejestru umów z jego interfejsem). Stan każdej luki, także nadal otwartych
+(CBOSA, daty SN i TK, host mazowiecki), opisuje nota na początku raportu.
 
 ## Ważne zastrzeżenia
 

@@ -29,6 +29,18 @@ _straz_sieci = mock.patch.object(eurlex._opener, "open",
                                  side_effect=_SiecZablokowana("test próbował połączyć się z siecią"))
 
 
+def _main(argv):
+    """Uruchamia eurlex.main() z argv → (kod wyjścia, stdout, stderr). Komunikaty błędów idą na stderr."""
+    out, err, kod = io.StringIO(), io.StringIO(), 0
+    with mock.patch.object(sys, "argv", ["eurlex.py", *argv]), \
+            contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        try:
+            eurlex.main()
+        except SystemExit as e:
+            kod = e.code
+    return kod, out.getvalue(), err.getvalue()
+
+
 def setUpModule():
     _straz_sieci.start()
 
@@ -38,21 +50,35 @@ def tearDownModule():
 
 
 class TestEmptyConsolidations(unittest.TestCase):
-    def test_no_consolidation_does_not_claim_no_amendments(self):
-        out = io.StringIO()
-        with mock.patch.object(eurlex, "_konsolidacje", return_value=[]), \
-                contextlib.redirect_stdout(out):
-            eurlex.cmd_skonsolidowany(argparse.Namespace(celex=["32016R0679"], json=False))
-        self.assertNotIn("akt nie był zmieniany", out.getvalue())
-        self.assertIn("nie potwierdza braku zmian", out.getvalue())
-        self.assertIn("odniesienia 32016R0679", out.getvalue())
+    """Zero wersji skonsolidowanych istniejącego aktu = zweryfikowany brak (kod 1); nieistniejący CELEX
+    = błąd (kod 2), a nie „brak wersji"."""
+    AKT = [{"w": {"type": "uri", "value": "http://publications.europa.eu/resource/cellar/x"}}]
 
-    def test_empty_json_remains_a_list(self):
-        out = io.StringIO()
+    def test_no_consolidation_does_not_claim_no_amendments(self):
         with mock.patch.object(eurlex, "_konsolidacje", return_value=[]), \
-                contextlib.redirect_stdout(out):
-            eurlex.cmd_skonsolidowany(argparse.Namespace(celex=["32016R0679"], json=True))
-        self.assertEqual(json.loads(out.getvalue()), [])
+                mock.patch.object(eurlex, "_sparql", return_value=self.AKT):
+            kod, out, err = _main(["skonsolidowany", "32016R0679"])
+        self.assertEqual(kod, 1)
+        self.assertEqual(out, "")
+        self.assertNotIn("akt nie był zmieniany", err)
+        self.assertIn("nie potwierdza braku zmian", err)
+        self.assertIn("odniesienia 32016R0679", err)
+
+    def test_empty_json_is_object_with_empty_list(self):
+        with mock.patch.object(eurlex, "_konsolidacje", return_value=[]), \
+                mock.patch.object(eurlex, "_sparql", return_value=self.AKT):
+            kod, out, err = _main(["skonsolidowany", "32016R0679", "--json"])
+        self.assertEqual(kod, 1)
+        wynik = json.loads(out)
+        self.assertEqual(wynik["wersje"], [])
+        self.assertIsNone(wynik["aktualna"])
+
+    def test_nieistniejacy_celex_to_blad_nie_brak(self):
+        with mock.patch.object(eurlex, "_konsolidacje", return_value=[]), \
+                mock.patch.object(eurlex, "_sparql", return_value=[]):
+            kod, out, err = _main(["skonsolidowany", "39999R9999"])
+        self.assertEqual(kod, 2)
+        self.assertIn("nie znaleziono aktu o CELEX 39999R9999", err)
 
 
 class TestCelexNorm(unittest.TestCase):
@@ -410,7 +436,7 @@ class TestT12StrictMetaAktuBazowego(unittest.TestCase):
                 contextlib.redirect_stdout(out):
             eurlex.main()
         self.assertIn("Akt: CELEX 32016R0679", out.getvalue())
-        self.assertIn("użyj najnowszej: 02016R0679-20160504", out.getvalue())
+        self.assertIn("użyj najnowszej obowiązującej: 02016R0679-20160504", out.getvalue())
 
     def test_meta_strict_awaria_kontroli_blokuje_bez_stdout(self):
         out = io.StringIO()
@@ -429,11 +455,11 @@ class TestT12StrictMetaAktuBazowego(unittest.TestCase):
         with mock.patch.object(eurlex, "_http", return_value=(b"<p>Artykul 1.</p>", "text/html")), \
                 mock.patch.object(eurlex, "_konsolidacje", return_value=["02016R0679-20160504"]), \
                 mock.patch.object(eurlex, "_sprostowania", return_value=[]), \
-                mock.patch.object(sys, "argv", ["eurlex.py", "tekst", "32016R0679", "--strict"]), \
-                contextlib.redirect_stdout(out):
-            with self.assertRaisesRegex(SystemExit, "tekst 02016R0679-20160504"):
-                eurlex.main()
-        self.assertEqual(out.getvalue(), "")
+                mock.patch.object(eurlex, "_zmiany_po_wersji", return_value=[]):
+            kod, out, err = _main(["tekst", "32016R0679", "--strict"])
+        self.assertEqual(kod, 2)
+        self.assertIn("tekst 02016R0679-20160504", err)
+        self.assertEqual(out, "")
 
 
 def _lit(v):
@@ -484,15 +510,19 @@ class TestSzukajZeroTrafien(unittest.TestCase):
                      ["szukaj", "dane osobowe", "--typ", "REG", "--json"],
                      ["--json", "szukaj", "dane osobowe"]):
             with self.subTest(argv=argv):
-                out = io.StringIO()
-                with mock.patch.object(eurlex, "_sparql", return_value=[]), \
-                        mock.patch.object(sys, "argv", ["eurlex.py", *argv]), \
-                        contextlib.redirect_stdout(out):
-                    with self.assertRaises(SystemExit) as caught:
-                        eurlex.main()
-                self.assertNotEqual(caught.exception.code, 0)
-                self.assertIn("To NIE dowód", str(caught.exception.code))
-                self.assertEqual(out.getvalue(), "")  # żadnego „[]"
+                with mock.patch.object(eurlex, "_sparql", return_value=[]):
+                    kod, out, err = _main(argv)
+                self.assertEqual(kod, 1)  # zweryfikowany brak wyników
+                self.assertIn("To NIE dowód", err)
+                self.assertEqual(out, "")  # żadnego „[]"
+
+    def test_podpowiedz_po_angielsku_nie_kaze_szukac_po_angielsku(self):
+        with mock.patch.object(eurlex, "_sparql", return_value=[]):
+            kod, _, err = _main(["szukaj", "personal datas", "--jezyk", "eng"])
+        self.assertEqual(kod, 1)
+        self.assertIn("--jezyk pol", err)
+        self.assertNotIn("--jezyk eng", err)
+        self.assertNotIn("danych osobowych", err)
 
 
 class TestMetaWersjaSkonsolidowana(unittest.TestCase):
@@ -573,15 +603,14 @@ class TestMetaAktZmieniany(unittest.TestCase):
     }
 
     def _meta(self, celex, strict=False, zmiany=None, kons=None):
-        out = io.StringIO()
         fake = _FakeCellar(self.META, zmiany if zmiany is not None else {self.BAZA: [self.ZM]})
-        argv = ["eurlex.py", "meta", celex] + (["--strict"] if strict else [])
         with mock.patch.object(eurlex, "_sparql", fake), \
                 mock.patch.object(eurlex, "_konsolidacje",
-                                  return_value=kons if kons is not None else [self.KONS, "02024R1689-20240712"]), \
-                mock.patch.object(sys, "argv", argv), contextlib.redirect_stdout(out):
-            eurlex.main()
-        return out.getvalue()
+                                  return_value=kons if kons is not None else [self.KONS, "02024R1689-20240712"]):
+            kod, out, self.err = _main(["meta", celex] + (["--strict"] if strict else []))
+        if kod:
+            raise SystemExit(kod)
+        return out
 
     def test_bez_strict_ostrzezenie_wskazuje_akt_zmieniajacy_i_najnowsza_konsolidacje(self):
         out = self._meta(self.BAZA)
@@ -592,8 +621,8 @@ class TestMetaAktZmieniany(unittest.TestCase):
     def test_strict_blokuje_akt_bazowy_po_nowelizacji_bez_stdout(self):
         with self.assertRaises(SystemExit) as caught:
             self._meta(self.BAZA, strict=True)
-        msg = str(caught.exception.code)
-        self.assertNotEqual(caught.exception.code, 0)
+        msg = self.err
+        self.assertEqual(caught.exception.code, 2)
         self.assertIn("32026R1744", msg)
         self.assertIn("meta 02024R1689-20260727", msg)
         self.assertIn("art. o stosowaniu", msg)
@@ -610,8 +639,10 @@ class TestMetaAktZmieniany(unittest.TestCase):
         self.assertIn("był zmieniany (32026R1744)", out)
 
     def test_strict_starsza_konsolidacja_blokuje(self):
-        with self.assertRaisesRegex(SystemExit, "nowsza wersja skonsolidowana: 02024R1689-20260727"):
+        with self.assertRaises(SystemExit) as caught:
             self._meta("02024R1689-20240712", strict=True)
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn("nowsza wersja skonsolidowana: 02024R1689-20260727", self.err)
 
 
 class TestMetaDyrektywaIEtykiety(unittest.TestCase):
@@ -666,10 +697,8 @@ class TestOdniesieniaUchylenia(unittest.TestCase):
 
     def test_zapytanie_pyta_o_uchylenia_w_obie_strony(self):
         fake = _FakeCellar({})
-        with mock.patch.object(eurlex, "_sparql", fake), \
-                mock.patch.object(sys, "argv", ["eurlex.py", "odniesienia", "31995L0046"]), \
-                contextlib.redirect_stdout(io.StringIO()):
-            eurlex.main()
+        with mock.patch.object(eurlex, "_sparql", fake):
+            _main(["odniesienia", "31995L0046"])  # puste odpowiedzi → „nie znaleziono aktu" (kod 2)
         q = fake.zapytania[0]
         self.assertIn("?x cdm:resource_legal_repeals_resource_legal ?w", q)
         self.assertIn("?w cdm:resource_legal_repeals_resource_legal ?o", q)
@@ -712,12 +741,12 @@ class TestTekst404Konsolidacji(unittest.TestCase):
     def test_wersja_zastapiona(self):
         msg = self._tekst("02024R1689-20240712", dict(return_value=["02024R1689-20260727", "02024R1689-20240712"]))
         self.assertIn("nie udostępnia już tekstu wersji skonsolidowanej 02024R1689-20240712", msg)
-        self.assertIn("Najnowsza wersja: 02024R1689-20260727", msg)
+        self.assertIn("Wersja obowiązująca dziś: 02024R1689-20260727", msg)
         self.assertNotIn("Sprawdź numer CELEX", msg)
 
     def test_najnowsza_wersja_bez_tekstu_w_jezyku(self):
         msg = self._tekst("02024R1689-20260727", dict(return_value=["02024R1689-20260727"]))
-        self.assertIn("najnowszej wersji skonsolidowanej 02024R1689-20260727 w języku pol", msg)
+        self.assertIn("obowiązującej wersji skonsolidowanej 02024R1689-20260727 w języku pol", msg)
 
     def test_nieznana_wersja(self):
         msg = self._tekst("02024R1689-20990101", dict(return_value=["02024R1689-20260727"]))
@@ -873,7 +902,12 @@ class TestSprostowania(unittest.TestCase):
                 mock.patch.object(eurlex, "_sparql", fake_sparql), \
                 mock.patch.object(eurlex, "_konsolidacje", return_value=list(kons)), \
                 mock.patch.object(sys, "argv", argv), contextlib.redirect_stdout(out):
-            eurlex.main()
+            err = io.StringIO()
+            try:
+                with contextlib.redirect_stderr(err):
+                    eurlex.main()
+            finally:
+                self.err = err.getvalue()  # komunikat błędu (kod 1/2) idzie na stderr
         return out.getvalue(), fake_sparql
 
     def test_zakres_z_naglowkow_sprostowania(self):
@@ -927,7 +961,8 @@ class TestSprostowania(unittest.TestCase):
     def test_strict_blokuje_niesprostowany_tekst_bazowy(self):
         with self.assertRaises(SystemExit) as caught:
             self._tekst(RODO, fragment="art. 4", strict=True)
-        msg = str(caught.exception.code)
+        self.assertEqual(caught.exception.code, 2)
+        msg = self.err
         self.assertIn("ma sprostowania w języku pol (32016R0679R(02) z 2018-05-23", msg)
         self.assertIn(f"tekst {RODO_KONS}", msg)
         self.assertNotIn("akt bazowy + zmiany", msg)
@@ -1018,12 +1053,14 @@ class TestSprostowania(unittest.TestCase):
         self.assertIn("32024R1689R(01) (2025-10-09): art. 3", out)
         with self.assertRaises(SystemExit) as caught:
             self._tekst(AI_BAZA, sprost=wiersze, kons=kons, strict=True)
-        self.assertIn("do analizy: tekst 02024R1689-20260727", str(caught.exception.code))
-        self.assertNotIn("tekst 02024R1689-20240712", str(caught.exception.code))
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn("do analizy: tekst 02024R1689-20260727", self.err)
+        self.assertNotIn("tekst 02024R1689-20240712", self.err)
 
     def test_komunikaty_nie_kaza_cytowac_samego_aktu_bazowego_i_zmian(self):
         out = io.StringIO()
         with mock.patch.object(eurlex, "_konsolidacje", return_value=[RODO_KONS]), \
+                mock.patch.object(eurlex, "_zmiany_po_wersji", return_value=[]), \
                 contextlib.redirect_stdout(out):
             eurlex.cmd_skonsolidowany(argparse.Namespace(celex=[RODO], json=False))
         self.assertNotIn("akt bazowy + zmiany", out.getvalue())
@@ -1171,11 +1208,10 @@ class TestStareAkty(unittest.TestCase):
             with mock.patch.object(eurlex, "_http", return_value=(b"<html>blad</html>", "text/html")), \
                     mock.patch.object(eurlex, "_sparql",
                                       return_value=[r for r in EPRIV_MANIF if r["l"]["value"] == "POL"]), \
-                    mock.patch.object(eurlex, "_kontrole_tresci", return_value=[]), \
-                    mock.patch.object(sys, "argv", ["eurlex.py", "tekst", "32002L0058", "--pdf", sciezka]), \
-                    contextlib.redirect_stdout(io.StringIO()):
-                with self.assertRaisesRegex(SystemExit, "nie zwrócił pliku PDF"):
-                    eurlex.main()
+                    mock.patch.object(eurlex, "_kontrole_tresci", return_value=[]):
+                kod, _, err = _main(["tekst", "32002L0058", "--pdf", sciezka])
+            self.assertEqual(kod, 2)
+            self.assertIn("nie zwrócił pliku PDF", err)
             self.assertFalse(os.path.exists(sciezka))
 
 
@@ -1638,6 +1674,385 @@ class TestE3FragmentWDokumencieDolaczonym(unittest.TestCase):
         self.assertIn("[w załączniku: ZAŁĄCZNIK I WYKAZ SUBSTANCJI]", out)
         self.assertEqual(out.count("[w załączniku"), 1)  # art. 1 aktu bez oznaczenia
         self.assertTrue(out.split("[...]")[0].lstrip("#").split("\n", 2)[2].strip().startswith("Artykuł 1"))
+
+
+# --- Wersja skonsolidowana obowiązująca DZIŚ, nie przyszła (weryfikacja 2026-11-13: CRR miał
+# 02013R0575-20270101 „← AKTUALNA", a --strict blokował obowiązującą 02013R0575-20260626) ------------
+CRR, CRR_TERAZ, CRR_PRZYSZLA = "32013R0575", "02013R0575-20260626", "02013R0575-20270101"
+CRR_KONS = [CRR_PRZYSZLA, CRR_TERAZ, "02013R0575-20260101"]
+XHTML_ART = b'<p class="oj-ti-art">Artyku\xc5\x82 92</p><p>1. Tre\xc5\x9b\xc4\x87 wymog\xc3\xb3w.</p>'
+
+
+class TestWersjaPrzyszla(unittest.TestCase):
+    def setUp(self):
+        p = mock.patch.object(eurlex, "_dzis", return_value="20261113")
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_aktualna_to_najnowsza_z_data_nie_pozniejsza_niz_dzis(self):
+        self.assertEqual(eurlex._aktualna(CRR_KONS), CRR_TERAZ)
+        self.assertEqual(eurlex._przyszle(CRR_KONS), [CRR_PRZYSZLA])
+        self.assertEqual(eurlex._aktualna(["02013R0575-20261113"]), "02013R0575-20261113")  # dziś = obowiązuje
+        self.assertIsNone(eurlex._aktualna([CRR_PRZYSZLA]))
+        self.assertIsNone(eurlex._aktualna([]))
+
+    def _skons(self, argv, kons=CRR_KONS, zmiany=()):
+        with mock.patch.object(eurlex, "_konsolidacje", return_value=list(kons)), \
+                mock.patch.object(eurlex, "_zmiany_po_wersji", return_value=list(zmiany)):
+            return _main(argv)
+
+    def test_skonsolidowany_oznacza_przyszla_i_wskazuje_obowiazujaca(self):
+        kod, out, _ = self._skons(["skonsolidowany", CRR])
+        self.assertEqual(kod, 0)
+        self.assertIn(f"{CRR_PRZYSZLA}  ← PRZYSZŁA (stan na 2027-01-01 — jeszcze NIE obowiązuje)", out)
+        self.assertIn(f"{CRR_TERAZ}  ← AKTUALNA", out)
+        self.assertNotIn(f"{CRR_PRZYSZLA}  ← AKTUALNA", out)
+        self.assertIn(f"tekst {CRR_TERAZ} --jezyk pol", out)
+
+    def test_skonsolidowany_json_to_obiekt_z_aktualna(self):
+        kod, out, _ = self._skons(["skonsolidowany", CRR, "--json"])
+        self.assertEqual(kod, 0)
+        d = json.loads(out)
+        self.assertEqual((d["aktualna"], d["przyszle"], d["wersje"]), (CRR_TERAZ, [CRR_PRZYSZLA], CRR_KONS))
+
+    def test_same_przyszle_to_obowiazuje_akt_bazowy(self):
+        kod, out, _ = self._skons(["skonsolidowany", CRR], kons=[CRR_PRZYSZLA])
+        self.assertEqual(kod, 0)
+        self.assertIn("Żadna wersja skonsolidowana jeszcze nie obowiązuje", out)
+        self.assertIn(f"tekst {CRR} --jezyk pol", out)
+
+    def _tekst(self, celex, strict=False, kons=CRR_KONS, zmiany=()):
+        with mock.patch.object(eurlex, "_http", return_value=(XHTML_ART, "application/xhtml+xml")), \
+                mock.patch.object(eurlex, "_konsolidacje", return_value=list(kons)), \
+                mock.patch.object(eurlex, "_sprostowania", return_value=[]), \
+                mock.patch.object(eurlex, "_zmiany_po_wersji", return_value=list(zmiany)):
+            return _main(["tekst", celex, "--fragment", "art. 92"] + (["--strict"] if strict else []))
+
+    def test_strict_nie_blokuje_obowiazujacej_przez_przyszla(self):
+        kod, out, err = self._tekst(CRR_TERAZ, strict=True)
+        self.assertEqual(kod, 0, err)
+        self.assertIn("Treść wymogów", out)
+        self.assertIn(f"jest wersja skonsolidowana PRZYSZŁA: {CRR_PRZYSZLA} (stan na 2027-01-01)", out)
+        self.assertNotIn("NOWSZA wersja", out)
+
+    def test_wersja_przyszla_ostrzega_a_strict_blokuje(self):
+        kod, out, _ = self._tekst(CRR_PRZYSZLA)
+        self.assertEqual(kod, 0)
+        self.assertIn("to wersja PRZYSZŁA — stan na 2027-01-01", out)
+        self.assertIn(f"Brzmienie obowiązujące dziś: tekst {CRR_TERAZ}", out)
+        kod, out, err = self._tekst(CRR_PRZYSZLA, strict=True)
+        self.assertEqual(kod, 2)
+        self.assertEqual(out, "")
+        self.assertIn("jeszcze NIE obowiązuje", err)
+
+    def test_akt_bazowy_z_samymi_przyszlymi_strict_przechodzi(self):
+        kod, out, err = self._tekst(CRR, strict=True, kons=[CRR_PRZYSZLA])
+        self.assertEqual(kod, 0, err)
+        self.assertIn("tylko wersje skonsolidowane PRZYSZŁE", out)
+
+    def test_meta_json_podaje_obowiazujaca_i_przyszle(self):
+        rows = [_wiersz(type=TYP + "REG", date="2013-06-26", eiv="2013-06-28", inf="1")]
+        with mock.patch.object(eurlex, "_sparql", _FakeCellar({CRR: rows})), \
+                mock.patch.object(eurlex, "_konsolidacje", return_value=list(CRR_KONS)):
+            kod, out, _ = _main(["meta", CRR, "--json"])
+        self.assertEqual(kod, 0)
+        d = json.loads(out)
+        self.assertEqual(d["aktualna_wersja_skonsolidowana"], CRR_TERAZ)
+        self.assertEqual(d["przyszle_wersje_skonsolidowane"], [CRR_PRZYSZLA])
+        self.assertTrue(any("PRZYSZŁA" in w for w in d["ostrzezenia"]))
+
+    def test_akt_bazowy_wskazuje_obowiazujaca_nie_przyszla(self):
+        kod, out, err = self._tekst(CRR, strict=True)
+        self.assertEqual(kod, 2)
+        self.assertIn(f"aktualny stan prawny to {CRR_TERAZ}", err)
+        self.assertNotIn(f"aktualny stan prawny to {CRR_PRZYSZLA}", err)
+
+
+# --- Akt zmieniający nieujęty w obowiązującej wersji skonsolidowanej (883/2004: 02004R0883-20190731
+# nie ujmuje 2026/2359 z 7.10.2026, w życiu od 1.11.2026) -----------------------------------------
+class TestZmianyPoWersji(unittest.TestCase):
+    W883 = "02004R0883-20190731"
+
+    def _wiersze(self):
+        return [
+            _wiersz(c2="32026R2359", dd="2026-10-07", eiv="2026-11-01"),                       # nieujęty
+            _wiersz(c2="32019R1149", dd="2019-06-20", eiv="2019-07-31", kc=self.W883),         # w składzie
+            _wiersz(c2="32017R0492", dd="2017-03-21", eiv="2017-04-11"),                       # stary — pomiń
+            _wiersz(c2="32026R0001", dd="2026-01-10", eiv="2027-01-01", kc="02004R0883-20270101"),  # w przyszłej
+            _wiersz(c2="32026R0002", dd="2026-01-10", kc="02099X0001-20270101"),               # obca konsolidacja
+        ]
+
+    def test_klasyfikacja(self):
+        fake = mock.Mock(return_value=self._wiersze())
+        with mock.patch.object(eurlex, "_sparql", fake):
+            wynik = eurlex._zmiany_po_wersji("32004R0883", self.W883)
+        q = fake.call_args.args[0]
+        self.assertIn('"32004R0883"', q)
+        self.assertIn('> "2019-07-31"', q)
+        self.assertEqual([z["celex"] for z in wynik], ["32026R0001", "32026R0002", "32026R2359"])
+        z = {x["celex"]: x for x in wynik}
+        self.assertEqual(z["32026R2359"], {"celex": "32026R2359", "data": "2026-10-07", "eiv": ["2026-11-01"],
+                                           "w_przyszlej": []})
+        self.assertEqual(z["32026R0001"]["w_przyszlej"], ["02004R0883-20270101"])
+        self.assertEqual(z["32026R0002"]["w_przyszlej"], [])  # konsolidacja innego aktu się nie liczy
+
+    def test_tekst_wersji_ostrzega_takze_w_strict(self):
+        zm = [{"celex": "32026R2359", "data": "2026-10-07", "eiv": ["2026-11-01"], "w_przyszlej": []}]
+        with mock.patch.object(eurlex, "_dzis", return_value="20261113"), \
+                mock.patch.object(eurlex, "_http", return_value=(b'<p class="oj-ti-art">Article 11</p><p>1. X.</p>',
+                                                                 "application/xhtml+xml")), \
+                mock.patch.object(eurlex, "_konsolidacje", return_value=[self.W883]), \
+                mock.patch.object(eurlex, "_sprostowania", return_value=[]), \
+                mock.patch.object(eurlex, "_zmiany_po_wersji", return_value=zm) as fake:
+            kod, out, _ = _main(["tekst", self.W883, "--jezyk", "eng", "--fragment", "art. 11"])
+            self.assertEqual(kod, 0)
+            self.assertIn("akt zmieniający 32026R2359 (akt z 2026-10-07; wejście w życie / stosowanie wg CELLAR: "
+                          "2026-11-01) nie figuruje w składzie żadnej wersji skonsolidowanej", out)
+            self.assertEqual(fake.call_args.args, ("32004R0883", self.W883))
+            kod, out, err = _main(["tekst", self.W883, "--jezyk", "eng", "--strict"])
+        # strict nie blokuje: CELLAR nie podaje, od kiedy zmiana się stosuje (VAT 2025/1539 — od 2028 r.),
+        # a akt bazowy strict blokuje i tak — blokada nie zostawiłaby drogi do tekstu
+        self.assertEqual(kod, 0, err)
+        self.assertIn("32026R2359", out)
+
+    def test_awaria_kontroli_bez_strict_ostrzega(self):
+        with mock.patch.object(eurlex, "_dzis", return_value="20261113"), \
+                mock.patch.object(eurlex, "_konsolidacje", return_value=[self.W883]), \
+                mock.patch.object(eurlex, "_zmiany_po_wersji", side_effect=eurlex.VerificationUnknown("timeout")):
+            kod, out, _ = _main(["skonsolidowany", "32004R0883"])
+            self.assertEqual(kod, 0)
+            self.assertIn("nie udało się sprawdzić, czy wersja 02004R0883-20190731 ujmuje", out)
+            kod, out, _ = _main(["skonsolidowany", "32004R0883", "--strict"])
+        self.assertEqual(kod, 2)
+        self.assertEqual(out, "")
+
+
+# --- Kody wyjścia: 0 = wynik, 1 = zweryfikowany brak, 2 = wszystko inne (jak orzeczenia_ms.py) ----
+class TestKodyWyjscia(unittest.TestCase):
+    def _fragment(self, fraza, pdf=False):
+        p = [mock.patch.object(eurlex, "_kontrole_tresci", return_value=[])]
+        if pdf:
+            p += [mock.patch.object(eurlex, "_pobierz_tekst", side_effect=eurlex._TylkoPdf("tylko PDF")),
+                  mock.patch.object(eurlex, "_tekst_z_pdf",
+                                    return_value=("Artykuł 1\nTreść.", "https://x/DOC_1", [], ["EURLEX_TEXT_SOURCE_PDF=x"]))]
+        else:
+            p.append(mock.patch.object(eurlex, "_pobierz_tekst",
+                                       return_value=b'<p class="oj-ti-art">Artyku\xc5\x82 1</p><p>Tre\xc5\x9b\xc4\x87.</p>'))
+        with contextlib.ExitStack() as st:
+            for x in p:
+                st.enter_context(x)
+            return _main(["tekst", "32016R0679", "--fragment", fraza])
+
+    def test_fragment_jest_0_brak_w_html_1_brak_w_pdf_2(self):
+        self.assertEqual(self._fragment("art. 1")[0], 0)
+        kod, out, err = self._fragment("art. 99")
+        self.assertEqual(kod, 1)
+        self.assertIn("Nie znaleziono frazy 'art. 99'", err)
+        kod, _, err = self._fragment("art. 99", pdf=True)
+        self.assertEqual(kod, 2)
+        self.assertIn("NIE dowód braku", err)
+
+    def test_bledy_to_kod_2(self):
+        przypadki = {
+            "sieć": (["meta", "32016R0679"], dict(_http=mock.Mock(side_effect=SystemExit("BŁĄD sieci: x (timeout)")))),
+            "zły CELEX": (["meta", "abc"], {}),
+            "zły język": (["tekst", "32016R0679", "--jezyk", "x1"], {}),
+            "nieistniejący CELEX": (["meta", "39999R9999"], dict(_sparql=mock.Mock(return_value=[]))),
+            "VerificationUnknown": (["odniesienia", "32016R0679"],
+                                    dict(_sparql=mock.Mock(side_effect=eurlex.VerificationUnknown("timeout")))),
+            "nieprzewidziany wyjątek": (["meta", "32016R0679"],
+                                        dict(_meta_wiersze=mock.Mock(side_effect=KeyError("results")))),
+        }
+        for nazwa, (argv, podmiany) in przypadki.items():
+            with self.subTest(nazwa):
+                with contextlib.ExitStack() as st:
+                    for atr, wart in podmiany.items():
+                        st.enter_context(mock.patch.object(eurlex, atr, wart))
+                    kod, out, err = _main(argv)
+                self.assertEqual(kod, 2, err)
+                self.assertTrue(err.strip())
+        self.assertIn("nieoczekiwany błąd", err)
+
+    def test_argparse_i_version(self):
+        self.assertEqual(_main(["nieznana-komenda"])[0], 2)
+        kod, out, _ = _main(["--version"])
+        self.assertEqual(kod, 0)
+        self.assertIn(eurlex.__version__, out)
+
+    def test_odniesienia_bez_relacji_istniejacego_aktu_to_1(self):
+        def fake(q, soft=False):
+            return [] if "UNION" in q else [{"w": {"type": "uri", "value": "x"}}]
+        with mock.patch.object(eurlex, "_sparql", fake):
+            kod, out, err = _main(["odniesienia", "32099R0001"])
+        self.assertEqual(kod, 1)
+        self.assertIn("akt istnieje", err)
+
+
+# --- Granice fragmentu takie same po polsku i po angielsku (weryfikacja PL/EN 2026-11-13: EN art. 12,
+# 22 i 36 RODO doklejały nagłówek następnej sekcji, bo granicą było „Sekcja", ale nie „Section") ------
+class TestGranicePlEn(unittest.TestCase):
+    def _frag(self, txt, fraza):
+        (s, e), = eurlex._fragmenty(txt, fraza)
+        return txt[s:e]
+
+    def test_naglowek_sekcji_rozdzialu_podsekcji_i_czesci_konczy_artykul(self):
+        for naglowek in ("Section 2", "Sekcja 2", "Chapter 2 — Taxable transactions", "Rozdział 2 – Dostawa",
+                         "Sub-Section 1", "Subsection 1", "Podsekcja 1", "Part A — Scope", "Część A – Zakres",
+                         "PART TWO", "CZĘŚĆ DRUGA", "Section 2a", "Abschnitt 2"):
+            with self.subTest(naglowek):
+                txt = (f"Article 12\n\nTransparent information\n\n1. Text.\n\n{naglowek}\n\n"
+                       "Information and access to personal data\n\nArticle 13\n\nNext.")
+                frag = self._frag(txt, "art. 12")
+                self.assertNotIn(naglowek, frag)
+                self.assertNotIn("Information and access", frag)
+                self.assertIn("1. Text.", frag)
+
+    def test_naglowek_z_litera_po_spacji(self):
+        # CRR 02013R0575-20260626 EN: „Article 519 e" (PL: „Artykuł 519e")
+        txt = ("Article 519d\n\nHaircut\n\n1. EBA report.\n\nArticle 519 e\n\nOperational risk\n\n"
+               "By 10 January 2028 EBA.\n\nArticle 519f\n\nNext.")
+        self.assertNotIn("Operational risk", self._frag(txt, "art. 519d"))
+        self.assertIn("By 10 January 2028 EBA.", self._frag(txt, "art. 519e"))
+        self.assertNotIn("Next.", self._frag(txt, "art. 519e"))
+
+    def test_odeslania_na_poczatku_linii_nie_sa_granica(self):
+        for linia in ("Chapter III Section 4, Chapter V, Chapter VII and Chapter XII and Article 78 shall apply "
+                      "from 2 August 2025;",
+                      "Section II is amended as follows:",
+                      "Title III, except for point (b) of Article 61(1), shall apply.",
+                      "Tytuł III, z wyjątkiem art. 61 ust. 1, stosuje się."):
+            with self.subTest(linia):
+                txt = f"Article 113\n\nIntro:\n\n(b)\n\n{linia}\n\n(c)\n\nLast point.\n\nArticle 114\n"
+                frag = self._frag(txt, "art. 113")
+                self.assertIn(linia, frag)
+                self.assertIn("Last point.", frag)
+
+    def test_spis_tresci_nie_oznacza_artykulu_jako_zalacznika(self):
+        # VAT 02006L0112-20250414: spis treści kończy się pozycją „ZAŁĄCZNIK XII – TABELA KORELACJI"
+        xhtml = ('<p class="title-doc-first">Dyrektywa Rady 2006/112/WE</p>'
+                 '<table><tr><td><p class="toc-item">ZAŁĄCZNIK XII –</p></td>'
+                 '<td><p class="toc-item">TABELA KORELACJI</p></td></tr></table>'
+                 '<p class="title-article-norm">Artykuł 2</p><p>1. Opodatkowaniu VAT podlegają.</p>'
+                 '<p class="title-article-norm">Artykuł 3</p><p>Dalej.</p>'
+                 '<p class="title-annex-1">ZAŁĄCZNIK XII</p><p>Artykuł 2</p><p>Artykuł 2 ust. 1</p>').encode()
+        with mock.patch.object(eurlex, "_pobierz_tekst", return_value=xhtml), \
+                mock.patch.object(eurlex, "_kontrole_tresci", return_value=[]):
+            kod, out, _ = _main(["tekst", "02006L0112-20250414", "--fragment", "art. 2"])
+        self.assertEqual(kod, 0)
+        akt, tabela = out.split("[...]")
+        self.assertNotIn("[w załączniku", akt)
+        self.assertIn("Opodatkowaniu VAT", akt)
+        self.assertIn("[w załączniku: ZAŁĄCZNIK XII", tabela)
+        self.assertNotIn(eurlex.SPIS, out)
+
+    def test_spis_tresci_aktu_bazowego_bez_klasy_toc_item(self):
+        # akt bazowy VAT 32006L0112: spis w tabeli (p.oj-tbl-num), bez klasy toc-item
+        xhtml = ('<p>DYREKTYWA RADY 2006/112/WE</p><table><tr><td><p class="oj-tbl-num">ZAŁĄCZNIK XII –</p></td>'
+                 '<td>TABELA KORELACJI</td></tr></table>'
+                 '<p class="oj-ti-art">Artykuł 1</p><p>Przedmiot.</p>'
+                 '<p class="oj-ti-art">Artykuł 2</p><p>1. Opodatkowaniu VAT podlegają.</p>'
+                 '<p class="oj-doc-ti">ZAŁĄCZNIK XII</p><p>Artykuł 2</p><p>Artykuł 2 ust. 1</p>').encode()
+        with mock.patch.object(eurlex, "_pobierz_tekst", return_value=xhtml), \
+                mock.patch.object(eurlex, "_kontrole_tresci", return_value=[]):
+            kod, out, _ = _main(["tekst", "32006L0112", "--fragment", "art. 2"])
+        self.assertEqual(kod, 0)
+        akt, tabela = out.split("[...]")
+        self.assertNotIn("[w załączniku", akt)
+        self.assertIn("[w załączniku: ZAŁĄCZNIK XII", tabela)
+
+    def test_404_wersji_po_angielsku_nie_radzi_jezyka_eng(self):
+        blad = SystemExit("BŁĄD: nie znaleziono zasobu (404): x")
+        args = argparse.Namespace(celex=["02022R2065-20221027"], jezyk="eng", json=False, strict=False, pdf=None,
+                                  fragment=None)
+        with mock.patch.object(eurlex, "_http", side_effect=blad), \
+                mock.patch.object(eurlex, "_konsolidacje", return_value=["02022R2065-20221027"]), \
+                mock.patch.object(eurlex, "_dzis", return_value="20261113"):
+            with self.assertRaises(SystemExit) as caught:
+                eurlex.cmd_tekst(args)
+        self.assertIn("spróbuj --jezyk pol albo --pdf", str(caught.exception.code))
+
+    def test_znacznik_zmiany_nastepnego_artykulu_nie_konczy_fragmentu(self):
+        xhtml = ('<p class="oj-ti-art">Artykuł 92</p><p>1. Wymogi.</p><p class="modref">▼M8</p>'
+                 '<p class="oj-ti-art">Artykuł 92a</p><p>1. Nowy.</p>').encode()
+        with mock.patch.object(eurlex, "_pobierz_tekst", return_value=xhtml), \
+                mock.patch.object(eurlex, "_kontrole_tresci", return_value=[]):
+            kod, out, _ = _main(["tekst", "02013R0575-20260626", "--fragment", "art. 92"])
+        self.assertEqual(kod, 0)
+        self.assertIn("1. Wymogi.", out)
+        self.assertNotIn("▼M8", out)
+
+
+# --- meta: data publikacji w Dz.U. UE, zastępnik 1001-01-01, sprostowania tylko z konsolidacji tego aktu --
+class TestMetaDatyPublikacji(unittest.TestCase):
+    def test_publikacja_z_sygnatury_oj(self):
+        self.assertEqual(eurlex._publikacja({"pub_wyd": ["2016-05-04"], "oj": ["oj:JOL_2016_119_R_0001"]}),
+                         "Dz.U. L 119 z 4.5.2016 (data publikacji 2016-05-04; stronę podaje nagłówek PDF)")
+        self.assertEqual(eurlex._publikacja({"pub_wyd": ["1995-11-23"], "oj": ["oj:JOL_1995_281_R_0031_006"]}),
+                         "Dz.U. L 281 z 23.11.1995 (data publikacji 1995-11-23; stronę podaje nagłówek PDF)")
+        self.assertEqual(eurlex._publikacja({"pub": ["2024-07-12"], "oj": ["oj:L_202401689"]}),
+                         "Dz.U. L, 2024/1689, 12.7.2024 (data publikacji 2024-07-12)")
+        # „R_0002" to NIE strona: MiCA = L 150/40 (nagłówek PDF) — strony nie zgadujemy
+        self.assertEqual(eurlex._publikacja({"pub_wyd": ["2023-06-09"], "oj": ["oj:JOL_2023_150_R_0002"]}),
+                         "Dz.U. L 150 z 9.6.2023 (data publikacji 2023-06-09; stronę podaje nagłówek PDF)")
+        self.assertIn("CELLAR jej nie podaje", eurlex._publikacja({}))
+
+    def _meta(self, rows):
+        with mock.patch.object(eurlex, "_sparql", _FakeCellar({"32024R2987": rows})), \
+                mock.patch.object(eurlex, "_konsolidacje", return_value=[]):
+            return _main(["meta", "32024R2987"])
+
+    def test_meta_publikacja_i_zastepnik_1001(self):
+        rows = [_wiersz(type=TYP + "REG", date="2024-11-27", eiv=d, inf="1", pub="2024-12-04", oj="oj:L_202402987")
+                for d in ("1001-01-01", "2024-12-24")]
+        kod, out, _ = self._meta(rows)
+        self.assertEqual(kod, 0)
+        self.assertIn("Data aktu: 2024-11-27  (data dokumentu — przyjęcie/podpisanie, NIE publikacja)", out)
+        self.assertIn("Publikacja w Dz.U. UE: Dz.U. L, 2024/2987, 4.12.2024 (data publikacji 2024-12-04)", out)
+        self.assertIn("Wejście w życie / stosowanie: 2024-12-24, data nieokreślona (CELLAR: 1001-01-01", out)
+
+    def test_sprostowanie_aktu_zmieniajacego_nie_wskazuje_konsolidacji_innego_aktu(self):
+        wiersze = [_wiersz(c2="32024R2987R(02)", date="2025-05-26", kc="02017R1131-20241224"),
+                   _wiersz(c2="32024R2987R(02)", date="2025-05-26", kc="02024R2987-20250101")]
+        with mock.patch.object(eurlex, "_sparql", return_value=wiersze):
+            wynik = eurlex._sprostowania("32024R2987", "POL")
+        self.assertEqual(wynik[0]["konsolidacje"], ["02024R2987-20250101"])
+
+
+# --- tekst --pdf nie nadpisuje istniejącego pliku (dotąd open(…, "wb") kasował go bez słowa) -------
+class TestPdfNieNadpisuje(unittest.TestCase):
+    def test_istniejacy_plik_zostaje_a_pdf_nie_jest_pobierany(self):
+        with tempfile.TemporaryDirectory() as d:
+            sciezka = os.path.join(d, "akt.pdf")
+            pathlib.Path(sciezka).write_bytes(b"moj plik")
+            with mock.patch.object(eurlex, "_pobierz_pdf") as pobierz:
+                kod, out, err = _main(["tekst", "32016R0679", "--pdf", sciezka])
+            self.assertEqual(kod, 2)
+            self.assertIn("już istnieje", err)
+            pobierz.assert_not_called()
+            self.assertEqual(pathlib.Path(sciezka).read_bytes(), b"moj plik")
+
+    def test_plik_powstaly_w_trakcie_pobierania_tez_zostaje(self):
+        with tempfile.TemporaryDirectory() as d:
+            sciezka = os.path.join(d, "akt.pdf")
+
+            def pobierz(*_):
+                pathlib.Path(sciezka).write_bytes(b"inny proces")
+                return b"%PDF-1.4", "https://x/DOC_1", []
+            with mock.patch.object(eurlex, "_pobierz_pdf", side_effect=pobierz), \
+                    mock.patch.object(eurlex, "_kontrole_tresci", return_value=[]):
+                kod, out, err = _main(["tekst", "32016R0679", "--pdf", sciezka])
+            self.assertEqual(kod, 2)
+            self.assertIn("powstał w trakcie pobierania", err)
+            self.assertEqual(pathlib.Path(sciezka).read_bytes(), b"inny proces")
+
+    def test_nowy_plik_zapisany(self):
+        with tempfile.TemporaryDirectory() as d:
+            sciezka = os.path.join(d, "akt.pdf")
+            with mock.patch.object(eurlex, "_pobierz_pdf", return_value=(b"%PDF-1.4 x", "https://x/DOC_1", [])), \
+                    mock.patch.object(eurlex, "_kontrole_tresci", return_value=[]):
+                kod, out, _ = _main(["tekst", "32016R0679", "--pdf", sciezka])
+            self.assertEqual(kod, 0)
+            self.assertEqual(pathlib.Path(sciezka).read_bytes(), b"%PDF-1.4 x")
 
 
 if __name__ == "__main__":

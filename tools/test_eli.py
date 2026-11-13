@@ -1038,6 +1038,13 @@ class TestAudyt2026PdfLayout(unittest.TestCase):
             self.assertEqual(eli.pdf_do_tekstu_layout(b"%PDF-1.4"), "")
 
 
+def _bbox_stron_jak(raw):
+    """Podmiana `_pdftotext`: `-bbox` daje tyle stron (bez słów), ile ma `raw` z `-layout`. Bez współrzędnych `tekst`
+    ostrzega, a --strict blokuje (TestBezWspolrzednych202611b) — testy z samym `pdf_do_tekstu_layout` dostają je tutaj."""
+    stron = raw.count("\f") if raw.endswith("\f") else raw.count("\f") + 1
+    return lambda args, pdf_bytes: _bbox([(595.0, 842.0, [])] * stron) if "-bbox" in args else ""
+
+
 class TestAudyt2026TekstZPdf(unittest.TestCase):
     """D01/D06/strict: przy textHTML=false `tekst` czyta WŁASNY PDF aktu (strict przepuszcza);
     gdy pdftotext nie działa — strict blokuje, a domyślnie starszy t.j. z pełnym ostrzeżeniem."""
@@ -1078,6 +1085,7 @@ class TestAudyt2026TekstZPdf(unittest.TestCase):
                 mock.patch.object(eli, "_get_bytes", side_effect=lambda url, soft=False: pobrane.append(url) or b"%PDF"), \
                 mock.patch.object(eli, "pdftotext_dostepny", return_value=pdftotext), \
                 mock.patch.object(eli, "pdf_do_tekstu_layout", return_value=raw), \
+                mock.patch.object(eli, "_pdftotext", side_effect=_bbox_stron_jak(raw)), \
                 mock.patch.object(sys, "argv", ["eli.py"] + argv), \
                 contextlib.redirect_stdout(out):
             eli.main()
@@ -1160,6 +1168,7 @@ class TestAudyt2026TekstZPdf(unittest.TestCase):
                 mock.patch.object(eli, "_get_bytes", return_value=b"%PDF"), \
                 mock.patch.object(eli, "pdftotext_dostepny", return_value=True), \
                 mock.patch.object(eli, "pdf_do_tekstu_layout", return_value=raw), \
+                mock.patch.object(eli, "_pdftotext", side_effect=_bbox_stron_jak(raw)), \
                 contextlib.redirect_stdout(out):
             eli.cmd_tekst(argparse.Namespace(sygnatura=["DU", "1997", "483"], json=False, strict=True,
                                              pdf=None, fragment="Art. 45"))
@@ -2800,6 +2809,1047 @@ class TestProbaLosowa202610(unittest.TestCase):
         self.assertNotIn("UWAGA — OCR", out)
         self.assertIn("instalacji gazowej.", out)
 
+
+
+
+# ---------------------------------------------------------------------------------------------
+# 2026-11: kody wyjścia 0/1/2, analiza imienna zmian po stanie tekstu, wyroki TK, daty
+# ---------------------------------------------------------------------------------------------
+def _kod(argv, fake_get=None, **patche):
+    """Uruchamia eli.kod_wyjscia(argv) z podmienionym _get; zwraca (kod, stdout, stderr)."""
+    out, err = io.StringIO(), io.StringIO()
+    stos = contextlib.ExitStack()
+    with stos:
+        if fake_get is not None:
+            stos.enter_context(mock.patch.object(eli, "_get", side_effect=fake_get))
+        for nazwa, wartosc in patche.items():
+            stos.enter_context(mock.patch.object(eli, nazwa, wartosc))
+        stos.enter_context(mock.patch.object(sys, "argv", ["eli.py"]))
+        stos.enter_context(contextlib.redirect_stdout(out))
+        stos.enter_context(contextlib.redirect_stderr(err))
+        kod = eli.kod_wyjscia(argv)
+    return kod, out.getvalue(), err.getvalue()
+
+
+class TestKodyWyjscia(unittest.TestCase):
+    """0 = wynik; 1 = ZWERYFIKOWANY brak (zero trafień, frazy nie ma w tekście); 2 = wszystko inne
+    (jak orzeczenia_ms.py). Dotąd sys.exit("…") dawało 1 także przy awarii."""
+
+    PUSTE = {"count": 0, "totalCount": 0, "offset": 0, "items": []}
+
+    def test_zero_trafien_to_1(self):
+        kod, out, err = _kod(["szukaj", "zzz-nie-ma"], lambda path, params=None, soft=False: self.PUSTE)
+        self.assertEqual(kod, 1)
+        self.assertIn("Brak wyników", err)
+        self.assertIn("NIE dowodzi", err)
+        self.assertEqual(out, "")
+
+    def test_offset_za_koncem_to_2_nie_1(self):
+        odp = {"count": 0, "totalCount": 154, "offset": 1000, "items": []}
+        kod, _, err = _kod(["szukaj", "Kodeks karny", "--offset", "1000"], lambda path, params=None, soft=False: odp)
+        self.assertEqual(kod, 2)
+        self.assertIn("za końcem listy", err)
+
+    def test_zla_sygnatura_i_blad_http_to_2(self):
+        kod, _, err = _kod(["meta", "xx"])
+        self.assertEqual(kod, 2)
+        self.assertIn("Nie rozpoznano sygnatury", err)
+
+        def http(path, params=None, soft=False):
+            sys.exit(f"BŁĄD HTTP 404: {eli.BASE}{path}")
+        kod, _, err = _kod(["meta", "DU", "2026", "99999"], http)
+        self.assertEqual(kod, 2)
+        self.assertIn("BŁĄD HTTP 404", err)
+
+    def test_verification_unknown_i_nieprzewidziany_wyjatek_to_2(self):
+        def unknown(path, params=None, soft=False):
+            raise eli.VerificationUnknown("timeout")
+        kod, _, err = _kod(["meta", "DU", "2026", "1"], unknown)
+        self.assertEqual(kod, 2)
+        self.assertIn("nie udało się zweryfikować", err)
+
+        def wyjatek(path, params=None, soft=False):
+            raise KeyError("x")
+        kod, _, err = _kod(["meta", "DU", "2026", "1"], wyjatek)
+        self.assertEqual(kod, 2)
+        self.assertIn("nieoczekiwany błąd", err)
+        self.assertNotIn("Traceback", err)
+
+    def test_blad_argumentow_to_2_a_wynik_to_0(self):
+        kod, _, _ = _kod([])
+        self.assertEqual(kod, 2)
+        meta = {"title": "Ustawa", "displayAddress": "Dz.U. 2026 poz. 1", "status": "obowiązujący",
+                "entryIntoForce": "2026-01-02", "type": "Ustawa"}
+        kod, out, _ = _kod(["meta", "DU", "2026", "1"],
+                           lambda path, params=None, soft=False: {} if path.endswith("/references") else meta)
+        self.assertEqual(kod, 0)
+        self.assertIn("Dz.U. 2026 poz. 1", out)
+
+    def test_brak_frazy_w_tekscie_to_1_z_zastrzezeniem(self):
+        def fake(path, params=None, soft=False):
+            if path.endswith("/references"):
+                return {}
+            if path.endswith("/text.html"):
+                return "<p>Art. 1. Ustawa reguluje.</p>"
+            return {"entryIntoForce": "2020-01-01"}
+        kod, _, err = _kod(["tekst", "DU", "2020", "1", "--fragment", "art. 99"], fake)
+        self.assertEqual(kod, 1)
+        self.assertIn("NIE dowodzi, że przepisu nie ma", err)
+
+    def test_struktura_filtr_bez_trafien_to_1_brak_aktu_to_2(self):
+        drzewo = [{"id": "art_1", "type": "art", "title": "Art. 1."}]
+        kod, _, err = _kod(["struktura", "DU", "2020", "1", "--filtr", "Art. 999"],
+                           lambda path, params=None, soft=False: drzewo)
+        self.assertEqual(kod, 1)
+        self.assertIn("nie pasuje do filtra", err)
+        kod, _, err = _kod(["struktura", "DU", "2020", "1"],
+                           lambda path, params=None, soft=False: None if path.endswith("/struct") else {"ELI": "DU/2020/1"})
+        self.assertEqual(kod, 1)
+        kod, _, err = _kod(["struktura", "DU", "2020", "1"], lambda path, params=None, soft=False: None)
+        self.assertEqual(kod, 2)
+        self.assertIn("nie zwraca też jego metadanych", err)
+
+    def test_adres_isap_tylko_11_cyfr(self):
+        # „DU 2026 99999" to nie adres ISAP (WDU202699999) — dotąd tak go czytano
+        self.assertEqual(eli.act_path(["DU", "2026", "99999"])[0], "/acts/DU/2026/99999")
+        self.assertEqual(eli.act_path(["WDU20240000018"])[0], "/acts/WDU20240000018")
+
+
+class TestSzukajFiltrHasloAktBazowy(unittest.TestCase):
+    """Zerowe wyniki i --haslo (audyt 2026-08, „eli × zero-results")."""
+
+    def _ns(self, **kw):
+        a = dict(fraza=None, typ=None, rok=None, wyd=None, haslo=None, obowiazujace=False, limit=10, offset=0, json=False)
+        a.update(kw)
+        return argparse.Namespace(**a)
+
+    def test_sam_filtr_wydawcy_i_roku_jest_dozwolony(self):
+        wolania = []
+
+        def fake(path, params=None, soft=False):
+            wolania.append(params)
+            return {"totalCount": 1, "items": [{"address": "WMP20260001139", "ELI": "MP/2026/1139", "title": "Komunikat"}]}
+        out = io.StringIO()
+        with mock.patch.object(eli, "_get", side_effect=fake), contextlib.redirect_stdout(out):
+            eli.cmd_szukaj(self._ns(wyd="MP", rok="2026"))
+        self.assertIn("Znaleziono: 1", out.getvalue())
+        self.assertEqual(wolania[0]["publisher"], "MP")
+        self.assertIsNone(wolania[0]["title"])
+
+    def test_haslo_spoza_slownika_to_zly_argument_z_podpowiedzia(self):
+        def fake(path, params=None, soft=False):
+            return ["Sygnaliści", "sygnaliści", "Trybunał Konstytucyjny"] if path == "/keywords" else \
+                {"totalCount": 0, "items": []}
+        with mock.patch.object(eli, "_get", side_effect=fake):
+            with self.assertRaises(SystemExit) as caught:
+                eli.cmd_szukaj(self._ns(haslo="sygnalisci"))
+        self.assertNotIsInstance(caught.exception, eli.BrakWynikow)
+        self.assertIn("nie ma w słowniku", str(caught.exception.code))
+        self.assertIn("sygnaliści", str(caught.exception.code))
+
+    def test_haslo_ze_slownika_bez_trafien_to_brak_wynikow(self):
+        def fake(path, params=None, soft=False):
+            return ["sygnaliści"] if path == "/keywords" else {"totalCount": 0, "items": []}
+        with mock.patch.object(eli, "_get", side_effect=fake):
+            with self.assertRaises(eli.BrakWynikow):
+                eli.cmd_szukaj(self._ns(haslo="Sygnaliści", rok="2020"))
+
+    def test_akt_bazowy_spoza_strony_jest_wskazany(self):
+        # 2026-11-13: „Kodeks karny" --typ Ustawa — 101 trafień, k.k. dopiero na pozycji 92
+        strona = [{"address": f"WDU2026000{n:04d}", "ELI": f"DU/2026/{n}", "title": "Ustawa o zmianie ustawy - Kodeks karny"}
+                  for n in range(1, 11)]
+        wszystkie = strona + [{"address": "WDU19970880553", "ELI": "DU/1997/553", "status": "akt posiada tekst jednolity",
+                               "title": "Ustawa z dnia 6 czerwca 1997 r. - Kodeks karny."},
+                              {"address": "WDU19970900557", "ELI": "DU/1997/557",
+                               "title": "Ustawa z dnia 6 czerwca 1997 r. - Kodeks karny wykonawczy."}]
+
+        def fake(path, params=None, soft=False):
+            return {"totalCount": 12, "items": strona if params["limit"] == 10 else wszystkie}
+        out = io.StringIO()
+        with mock.patch.object(eli, "_get", side_effect=fake), contextlib.redirect_stdout(out):
+            eli.cmd_szukaj(self._ns(fraza="Kodeks karny", typ="Ustawa"))
+        self.assertIn("pozycja 11 z 12", out.getvalue())
+        self.assertIn("DU/1997/553", out.getvalue())
+        self.assertNotIn("DU/1997/557", out.getvalue())          # k.k.w. ma inny tytuł
+
+
+# treść aktów zmieniających i wyroków TK (wycinki z urzędowych tekstów pobranych 2026-11-13)
+ZM_KPK = ("Dz. U. 2026 poz. 901\nUSTAWA\nz dnia 11 czerwca 2026 r.\n"
+          "Art. 1. W ustawie z dnia 6 czerwca 1997 r. – Kodeks postępowania karnego (Dz. U. z 2026 r. poz. 490, 421, 638, "
+          "760 i 882) w art. 87 dodaje się § 4 i 5 w brzmieniu:\n„§ 4. Zażalenie na postanowienie o odmowie, o której mowa "
+          "w § 3, rozpoznaje sąd rejonowy.\n§ 5. Postanowienie prokuratora, o którym mowa w art. 99, staje się wykonalne.”.\n"
+          "Art. 2. W ustawie z dnia 10 września 1999 r. – Kodeks karny skarbowy (Dz. U. z 2025 r. poz. 633) w art. 122 "
+          "w § 1 w pkt 1 po wyrazach „art. 87 § 3” dodaje się wyrazy „i 5”.\n"
+          "Art. 3. Do rozpoznania zażaleń, o których mowa w art. 87 § 3 ustawy zmienianej w art. 1, stosuje się przepisy "
+          "nowe.\nArt. 5. Ustawa wchodzi w życie po upływie 14 dni od dnia ogłoszenia.\n")
+ZM_RADCY = ("Art. 1. W ustawie z dnia 6 lipca 1982 r. o radcach prawnych (Dz. U. z 2024 r. poz. 499, z 2025 r. poz. 1172 "
+            "oraz z 2026 r. poz. 370) wprowadza się następujące zmiany:\n1) w art. 5a w ust. 2 wyrazy „a” zastępuje się "
+            "wyrazami „b”;\n2) art. 5b i art. 5c otrzymują brzmienie:\n„Art. 5b. Obowiązek zachowania tajemnicy, o której "
+            "mowa w art. 3 ust. 3–6, nie ustaje.\nArt. 5c. 1. Okres przechowywania danych wynosi 10 lat.”;\n3) po art. 5c "
+            "dodaje się art. 5d w brzmieniu:\n„Art. 5d. Administratorem jest izba.”;\n4) w art. 22 2 ust. 1 otrzymuje "
+            "brzmienie:\n„1. Treść.”;\n5) uchyla się art. 30–32.\nArt. 2. Ustawa wchodzi w życie po upływie 14 dni od dnia "
+            "ogłoszenia.\n")
+ZM_PLANOWANIE_I_KC = ("Art. 1. W ustawie z dnia 7 stycznia 1993 r. o planowaniu rodziny, ochronie płodu ludzkiego i warunkach "
+                      "dopuszczalności przerywania ciąży (Dz. U. Nr 17, poz. 78 i z 1995 r. Nr 66, poz. 334) wprowadza się "
+                      "następujące zmiany:\n1) w art. 9 wyrazy „x” zastępuje się wyrazami „y”.\n"
+                      "Art. 2. W ustawie z dnia 23 kwietnia 1964 r. - Kodeks cywilny (Dz. U. Nr 16, poz. 93, z 1971 r. Nr 27, "
+                      "poz. 252, z 1993 r. Nr 17, poz. 78) wprowadza się następujące zmiany:\n1) w art. 8 skreśla się § 2;\n"
+                      "2) w art. 446 1 po kropce dodaje się nowe zdanie.\nArt. 3. Ustawa wchodzi w życie po upływie 14 dni.\n")
+BAZA_KPK = {"ELI": "DU/1997/555", "title": "Ustawa z dnia 6 czerwca 1997 r. - Kodeks postępowania karnego.",
+            "announcementDate": "1997-06-06"}
+BAZA_KK = {"ELI": "DU/1997/553", "title": "Ustawa z dnia 6 czerwca 1997 r. - Kodeks karny.", "announcementDate": "1997-06-06"}
+BAZA_RADCY = {"ELI": "DU/1982/145", "title": "Ustawa z dnia 6 lipca 1982 r. o radcach prawnych.", "announcementDate": "1982-07-06"}
+BAZA_PLAN = {"ELI": "DU/1993/78", "announcementDate": "1993-01-07",
+             "title": "Ustawa z dnia 7 stycznia 1993 r. o planowaniu rodziny, ochronie płodu ludzkiego i warunkach "
+                      "dopuszczalności przerywania ciąży."}
+BAZA_KC = {"ELI": "DU/1964/93", "title": "Ustawa z dnia 23 kwietnia 1964 r. - Kodeks cywilny.", "announcementDate": "1964-04-23"}
+
+
+class TestZmianyWAkcieZmieniajacym(unittest.TestCase):
+    """Które artykuły aktu bazowego zmienia akt zmieniający — z jego treści (zweryfikowane 2026-11-13 na 26 parach
+    akt zmieniający → akt bazowy z lat 1995–2026: 124 z 124 artykułów zgodnie z ręcznym odczytem)."""
+
+    def test_tylko_przepis_zmieniajacy_ten_akt_i_bez_cytatow(self):
+        z = eli._zmiany_w_akcie(ZM_KPK, {(1997, 555), (2026, 490)}, BAZA_KPK)
+        self.assertEqual(z["klucze"], {"87"})          # nie 99 (w cytacie), nie 122 (k.k.s.), nie art. 3 (przejściowy)
+        self.assertEqual(z["przepisy"], ["art. 1"])
+        self.assertEqual(z["blad"], "")
+        self.assertIn("14 dni", z["wejscie"])
+        z = eli._zmiany_w_akcie(ZM_KPK, {(1999, 930), (2025, 633)}, {"ELI": "DU/1999/930"})
+        self.assertEqual(z["klucze"], {"122"})
+
+    def test_dodane_zmienione_uchylone_indeks_gorny_zakres(self):
+        z = eli._zmiany_w_akcie(ZM_RADCY, {(1982, 145), (2024, 499)}, BAZA_RADCY)
+        self.assertEqual(z["klucze"], {"5a", "5b", "5c", "5d", "22^2", "30", "31", "32"})   # „po art. 5c" to tylko miejsce
+
+    def test_pierwsza_pozycja_cytatu_a_nie_nowelizacje(self):
+        # DU 1996/646: art. 2 zmienia k.c., a jego cytat wymienia też 1993 Nr 17 poz. 78 (= ustawa o planowaniu rodziny)
+        z = eli._zmiany_w_akcie(ZM_PLANOWANIE_I_KC, {(1993, 78)}, BAZA_PLAN)
+        self.assertEqual((z["przepisy"], z["klucze"]), (["art. 1"], {"9"}))
+        z = eli._zmiany_w_akcie(ZM_PLANOWANIE_I_KC, {(1964, 93)}, BAZA_KC)
+        self.assertEqual((z["przepisy"], z["klucze"]), (["art. 2"], {"8", "446^1"}))
+
+    def test_bez_cytatu_tytul_z_granica_wyrazu(self):
+        kkw = ("Art. 1. W ustawie z dnia 6 czerwca 1997 r. – Kodeks karny wykonawczy wprowadza się następujące zmiany:\n"
+               "1) w art. 5 uchyla się § 2;\nArt. 2. Ustawa wchodzi w życie po upływie 14 dni od dnia ogłoszenia.\n")
+        self.assertEqual(eli._zmiany_w_akcie(kkw, set(), BAZA_KK)["klucze"], set())
+        self.assertTrue(eli._zmiany_w_akcie(kkw, set(), BAZA_KK)["blad"])
+        kk = kkw.replace("Kodeks karny wykonawczy wprowadza się następujące zmiany:\n1)", "Kodeks karny")
+        self.assertEqual(eli._zmiany_w_akcie(kk, set(), BAZA_KK)["klucze"], {"5"})
+
+    def test_cala_ustawa_i_niedomkniety_cudzyslow_to_niepewnosc(self):
+        cala = ZM_KPK.replace("w art. 87 dodaje się § 4 i 5 w brzmieniu:", "w całej ustawie wyrazy „x” zastępuje się "
+                              "wyrazami „y”, a w art. 87 dodaje się § 4 i 5 w brzmieniu:")
+        self.assertTrue(eli._zmiany_w_akcie(cala, {(2026, 490)}, BAZA_KPK)["calosc"])
+        zgubiony = "„Wstęp bez zamknięcia " + "x " * 120000 + "\n" + ZM_KPK.replace("„", "").replace("”", "")
+        self.assertTrue(eli._zmiany_w_akcie(zgubiony, {(2026, 490)}, BAZA_KPK)["blad"])
+
+
+SENT_K_9_04 = ("Wyrok Trybunału Konstytucyjnego z dnia 15 marca 2005 r. orzeka: I Art. 179 ustawy z dnia 23 kwietnia 1964 r. "
+               "- Kodeks cywilny (Dz. U. Nr 16, poz. 93, ze zm.): a) jest zgodny z art. 16 i art. 167 ust. 4 Konstytucji "
+               "Rzeczypospolitej Polskiej oraz nie jest niezgodny z art. 31 ust. 3 i art. 32 Konstytucji, b) jest niezgodny "
+               "z art. 2 i art. 165 Konstytucji. II Art. 179 ustawy powołanej w pkt I sentencji traci moc obowiązującą "
+               "z dniem 15 lipca 2006 r. Poświadczono za zgodność z oryginałem.")
+SENT_K_29_23 = ("orzeka: 1. Art. 26 ust. 4 ustawy z dnia 29 grudnia 1992 r. o radiofonii i telewizji (Dz. U. z 2022 r. poz. "
+                "1722) w zakresie, w jakim pomija literalne wskazanie art. 459-478 ustawy z dnia 15 września 2000 r. - "
+                "Kodeks spółek handlowych (Dz. U. z 2024 r. poz. 18), jest niezgodny z art. 2 Konstytucji. 2. Art. 459-478 "
+                "ustawy - Kodeks spółek handlowych o rozwiązaniu i likwidacji spółki akcyjnej, rozumiane w ten sposób, że "
+                "obejmują także jednostki publicznej radiofonii, są niezgodne z art. 2 Konstytucji. Ponadto postanawia: "
+                "umorzyć postępowanie.")
+SENT_P_13_16 = ("orzeka: Art. 691 § 5 ustawy z dnia 23 kwietnia 1964 r. - Kodeks cywilny (Dz. U. z 2017 r. poz. 459, ze zm.) "
+                "w zakresie, w jakim wyłącza prawo dziecka, jest zgodny z art. 32 ust. 1 Konstytucji. Ponadto postanawia:")
+SENT_P_46_09 = ("orzeka: Art. 2 ustawy z dnia 16 lutego 2007 r. o zmianie ustawy - Kodeks cywilny (Dz. U. Nr 80, poz. 538) "
+                "jest zgodny z art. 2 Konstytucji. Poświadczono")
+SENT_SK_14_21 = ("orzeka: I. Art. 1a ust. 1 pkt 2 ustawy z dnia 12 stycznia 1991 r. o podatkach i opłatach lokalnych (Dz. U. "
+                 "z 2023 r. poz. 70) jest niezgodny z art. 84 i art. 217 Konstytucji. II. Przepis wymieniony w części I traci "
+                 "moc obowiązującą po upływie 18 (osiemnastu) miesięcy od dnia ogłoszenia wyroku. Ponadto postanawia:")
+SENT_SK_109_20 = ("orzeka: I § 31 rozporządzenia Ministra Pracy i Polityki Społecznej z dnia 11 października 2011 r. w sprawie "
+                  "postępowania o świadczenia emerytalno-rentowe (Dz. U. Nr 237, poz. 1412) jest niezgodny z art. 67 ust. 1 "
+                  "Konstytucji. II Przepis wskazany w części I traci moc obowiązującą po upływie 12 miesięcy. Ponadto postanawia:")
+
+
+class TestSentencjaTk(unittest.TestCase):
+    """Sentencja wyroku TK → artykuły, zakres, rozstrzygnięcie, akt (26 wyroków z lat 1997–2024 sprawdzone 2026-11-13;
+    wszystkie wyroki TK w Dz.U. mają text.html)."""
+
+    CELE_KC = {(1964, 93), (2017, 459), (2026, 795)}
+
+    def test_niezgodny_z_jednym_wzorcem_to_utrata_mocy_mimo_zgodnosci_z_innymi(self):
+        pkt = eli._sentencja_tk(SENT_K_9_04, self.CELE_KC, BAZA_KC)
+        self.assertEqual(pkt[0]["klucze"], {"179"})
+        self.assertIn("niezgodny", pkt[0]["werdykty"])
+        self.assertFalse(pkt[0]["zakresowy"])
+        self.assertEqual(pkt[0]["akt"], "ten")
+        self.assertEqual(pkt[1]["akt"], "ten")              # „ustawy powołanej w pkt I"
+
+    def test_wyrok_interpretacyjny_jest_zakresowy(self):
+        pkt = eli._sentencja_tk(SENT_K_29_23, {(2000, 1037), (2024, 18)},
+                                {"title": "Ustawa z dnia 15 września 2000 r. - Kodeks spółek handlowych.",
+                                 "announcementDate": "2000-09-15"})
+        ksh = [x for x in pkt if "459" in x["klucze"]]
+        self.assertTrue(ksh and all(x["zakresowy"] for x in ksh))
+        self.assertEqual(pkt[-1]["akt"], "ten")
+
+    def test_zgodny_i_inny_akt(self):
+        self.assertEqual(eli._sentencja_tk(SENT_P_13_16, self.CELE_KC, BAZA_KC)[0]["werdykty"], {"zgodny"})
+        self.assertEqual(eli._sentencja_tk(SENT_P_46_09, self.CELE_KC, BAZA_KC)[0]["akt"], "inny")
+
+    def test_czesc_i_wyroku_to_nie_zakres_a_paragraf_rozporzadzenia(self):
+        pkt = eli._sentencja_tk(SENT_SK_14_21, {(1991, 31), (2023, 70)}, {})
+        self.assertFalse(pkt[0]["zakresowy"])
+        self.assertTrue(pkt[0]["czesc"])
+        pkt = eli._sentencja_tk(SENT_SK_109_20, {(2011, 1412)}, {})
+        self.assertEqual(pkt[0]["paragrafy"], {"31"})
+        self.assertFalse(pkt[0]["zakresowy"])
+
+    def test_brak_sentencji(self):
+        self.assertIsNone(eli._sentencja_tk("Obwieszczenie bez rozstrzygnięcia", set(), {}))
+
+
+def _refs_tj(base_eli="DU/1982/145"):
+    return {"Tekst jednolity dla aktu": [{"act": {"ELI": base_eli, "displayAddress": "Dz.U. 1982 nr 19 poz. 145"}}]}
+
+
+class TestAnalizaImienna(unittest.TestCase):
+    """Przepis zmieniony po stanie t.j.: ostrzeżenie imienne i blokada --strict (radcy prawni DU 2024/499 art. 5b,
+    zmiana DU 2026/731 od 2026-06-18 — dotąd --strict dawał kod 0 i stare brzmienie)."""
+
+    HTML_TJ = ("<p>Treść obwieszczenia</p><p>1. ogłasza się w załączniku jednolity tekst ustawy z uwzględnieniem zmian "
+               "wprowadzonych: 1) ustawą (Dz. U. poz. 10) oraz zmian wynikających z przepisów ogłoszonych przed dniem "
+               "14 marca 2024 r.</p><p>Art. 5b.</p><p>Obowiązek zachowania tajemnicy, o której mowa w art. 3 ust. 4-6, "
+               "nie ustaje.</p><p>Art. 6.</p><p>Radca prawny wykonuje zawód.</p>")
+
+    def _fake(self, zmiany, teksty, base_refs_extra=None, meta_tj=None):
+        base_refs = {"Inf. o tekście jednolitym": [{"act": {"ELI": "DU/2024/499", "displayAddress": "Dz.U. 2024 poz. 499"}}],
+                     "Akty zmieniające": zmiany}
+        base_refs.update(base_refs_extra or {})
+
+        def fake(path, params=None, soft=False):
+            if path == "/acts/DU/2024/499/references":
+                return _refs_tj()
+            if path == "/acts/DU/1982/145/references":
+                return base_refs
+            if path == "/acts/DU/2024/499":
+                return meta_tj or {"legalStatusDate": "2024-03-14", "textHTML": True}
+            if path == "/acts/DU/2024/499/text.html":
+                return self.HTML_TJ
+            if path == "/acts/DU/1982/145":
+                return BAZA_RADCY
+            m = re.match(r"^/acts/(DU/\d+/\d+)(/text\.html)?$", path)
+            if m and m.group(2):
+                return teksty.get(m.group(1), "")
+            if m:
+                return {"ELI": m.group(1), "textHTML": True}
+            raise AssertionError(path)
+        return fake
+
+    ZM_731 = [{"act": {"ELI": "DU/2026/731", "displayAddress": "Dz.U. 2026 poz. 731", "type": "Ustawa",
+                       "title": "Ustawa z dnia 15 maja 2026 r. o zmianie ustawy o radcach prawnych",
+                       "announcementDate": "2026-05-15", "promulgation": "2026-06-03"}, "date": "2026-06-18"}]
+    TEKSTY = {"DU/2026/731": "<p>" + ZM_RADCY.replace("\n", "</p><p>") + "</p>"}
+
+    def _uruchom(self, argv, zmiany=None, teksty=None, **kw):
+        return _kod(argv, self._fake(self.ZM_731 if zmiany is None else zmiany, self.TEKSTY if teksty is None else teksty,
+                                     **kw), _dzis=lambda: "2026-11-13")
+
+    def test_zmieniony_artykul_ostrzezenie_imienne_i_blokada_strict(self):
+        kod, out, err = self._uruchom(["tekst", "DU", "2024", "499", "--fragment", "art. 5b"])
+        self.assertEqual(kod, 0)
+        self.assertIn("TEN PRZEPIS ZMIENIONO po stanie tego tekstu: art. 5b zmienia Dz.U. 2026 poz. 731", out)
+        self.assertIn("wejście w życie zmiany 2026-06-18", out)
+        self.assertIn("Obowiązek zachowania tajemnicy", out)
+        kod, out, err = self._uruchom(["--strict", "tekst", "DU", "2024", "499", "--fragment", "art. 5b"])
+        self.assertEqual(kod, 2)
+        self.assertEqual(out, "")
+        self.assertIn("art. 5b: zmiana Dz.U. 2026 poz. 731", err)
+
+    def test_niezmieniony_artykul_przechodzi_z_informacja(self):
+        kod, out, _ = self._uruchom(["--strict", "tekst", "DU", "2024", "499", "--fragment", "art. 6"])
+        self.assertEqual(kod, 0)
+        self.assertIn("nie znalazłem zmiany art. 6", out)
+
+    def test_caly_tekst_strict_blokuje_gdy_zmiana_w_zyciu_nieujeta(self):
+        kod, _, err = self._uruchom(["--strict", "tekst", "DU", "2024", "499"])
+        self.assertEqual(kod, 2)
+        self.assertIn("NIE MA jej w tym tekście", err)
+
+    def test_zmiana_przyszla_bez_blokady(self):
+        przyszla = [dict(self.ZM_731[0], date="2027-01-01")]
+        kod, out, _ = self._uruchom(["--strict", "tekst", "DU", "2024", "499", "--fragment", "art. 5b"], zmiany=przyszla)
+        self.assertEqual(kod, 0)
+        self.assertIn("ZMIENIA Dz.U. 2026 poz. 731", out)
+        self.assertIn("z dniem 2027-01-01", out)
+
+    def test_ujeta_w_obwieszczeniu_albo_przypisie_nie_jest_zmiana_po_tj(self):
+        ujeta = [dict(self.ZM_731[0], act=dict(self.ZM_731[0]["act"], promulgation="2024-03-01"), date="2024-03-20")]
+        kod, out, _ = self._uruchom(["--strict", "tekst", "DU", "2024", "499", "--fragment", "art. 5b"], zmiany=ujeta)
+        self.assertEqual(kod, 0)
+        self.assertNotIn("TEN PRZEPIS ZMIENIONO", out)
+
+    def test_nieudane_pobranie_aktu_zmieniajacego_to_niepewnosc(self):
+        kod, out, _ = self._uruchom(["tekst", "DU", "2024", "499", "--fragment", "art. 5b"], teksty={})
+        self.assertEqual(kod, 0)
+        self.assertIn("nie ustaliłem, czy te zmiany po stanie tekstu dotyczą tego fragmentu", out)
+        kod, _, err = self._uruchom(["--strict", "tekst", "DU", "2024", "499", "--fragment", "art. 5b"], teksty={})
+        self.assertEqual(kod, 2)
+
+    def test_artykul_dodany_po_stanie_tekstu_to_nie_brak(self):
+        kod, _, err = self._uruchom(["tekst", "DU", "2024", "499", "--fragment", "art. 5d"])
+        self.assertEqual(kod, 2)
+        self.assertIn("To NIE jest brak przepisu", err)
+        self.assertIn("art. 5d zmienia Dz.U. 2026 poz. 731", err)
+
+    WYROK = {"act": {"ELI": "DU/2025/5", "displayAddress": "Dz.U. 2025 poz. 5", "type": "Orzeczenie",
+                     "title": "Wyrok Trybunału Konstytucyjnego z dnia 7 stycznia 2025 r. sygn. akt K 1/25",
+                     "announcementDate": "2025-01-07", "promulgation": "2025-01-10"}}
+
+    def _tk(self, sentencja, skutek):
+        teksty = {"DU/2025/5": "<p>orzeka: Art. 5b ustawy z dnia 6 lipca 1982 r. o radcach prawnych (Dz. U. z 2024 r. "
+                               "poz. 499) " + sentencja + " Poświadczono</p>"}
+        return [dict(self.WYROK, date=skutek)], teksty, {"Orzeczenie TK": [self.WYROK]}
+
+    def test_wyrok_tk_po_tj_utrata_mocy_blokuje_strict(self):
+        zm, teksty, extra = self._tk("jest niezgodny z art. 2 Konstytucji.", "2025-01-10")
+        kod, out, _ = self._uruchom(["tekst", "DU", "2024", "499", "--fragment", "art. 5b"], zmiany=zm, teksty=teksty,
+                                    base_refs_extra=extra)
+        self.assertIn("WYROKI TK OGŁOSZONE PO STANIE TEGO TEKSTU", out)
+        self.assertIn("PRZEPIS UTRACIŁ MOC (wyrok TK Dz.U. 2025 poz. 5 (K 1/25), skutek od 2025-01-10): art. 5b", out)
+        kod, _, err = self._uruchom(["--strict", "tekst", "DU", "2024", "499", "--fragment", "art. 5b"], zmiany=zm,
+                                    teksty=teksty, base_refs_extra=extra)
+        self.assertEqual(kod, 2)
+        self.assertIn("utrata mocy po wyroku TK", err)
+
+    def test_wyrok_tk_mieszany_zgodny_i_niezgodny_to_utrata_mocy(self):
+        # jak K 9/04 (art. 179 k.c.): „a) jest zgodny z … b) jest niezgodny z …" — przepis utracił moc w całości
+        zm, teksty, extra = self._tk(": a) jest zgodny z art. 16 Konstytucji, b) jest niezgodny z art. 2 Konstytucji.",
+                                     "2025-01-10")
+        kod, _, err = self._uruchom(["--strict", "tekst", "DU", "2024", "499", "--fragment", "art. 5b"], zmiany=zm,
+                                    teksty=teksty, base_refs_extra=extra)
+        self.assertEqual(kod, 2)
+        self.assertIn("utrata mocy po wyroku TK", err)
+
+    def test_wyrok_tk_ze_skutkiem_wg_api_bez_punktu_o_tym_akcie_to_niepewnosc(self):
+        # jak SK 34/08 przy k.c.: API zapisuje skutek dla aktu, a sentencja dotyczy art. 5 ustawy zmieniającej
+        zm, _, extra = self._tk("", "2025-01-10")
+        teksty = {"DU/2025/5": "<p>orzeka: Art. 5 ustawy z dnia 17 czerwca 2004 r. o zmianie ustawy o radcach prawnych "
+                               "(Dz. U. Nr 162, poz. 1692) jest niezgodny z art. 2 Konstytucji. Poświadczono</p>"}
+        kod, out, _ = self._uruchom(["tekst", "DU", "2024", "499", "--fragment", "art. 5b"], zmiany=zm, teksty=teksty,
+                                    base_refs_extra=extra)
+        self.assertIn("sentencja nie wskazuje go wprost", out)
+        self.assertNotIn("nie wymienia art. 5b", out)
+        kod, _, _ = self._uruchom(["--strict", "tekst", "DU", "2024", "499", "--fragment", "art. 5b"], zmiany=zm,
+                                  teksty=teksty, base_refs_extra=extra)
+        self.assertEqual(kod, 2)
+
+    def test_rozne_terminy_punktow_nie_twierdzi_sprzed(self):
+        # DU 2026/1290: „…z wyjątkiem art. 1 pkt 16, 41 i 42, które wchodzą w życie z dniem 1 stycznia 2027 r."
+        teksty = {"DU/2026/731": self.TEKSTY["DU/2026/731"].replace(
+            "Ustawa wchodzi w życie po upływie 14 dni od dnia ogłoszenia.",
+            "Ustawa wchodzi w życie po upływie 14 dni od dnia ogłoszenia, z wyjątkiem art. 1 pkt 2, który wchodzi "
+            "w życie z dniem 1 stycznia 2027 r.")}
+        kod, out, _ = self._uruchom(["tekst", "DU", "2024", "499", "--fragment", "art. 5b"], teksty=teksty)
+        self.assertIn("data API dla aktu zmieniającego; dla poszczególnych punktów terminy są RÓŻNE", out)
+        self.assertNotIn("SPRZED", out)
+        kod, _, _ = self._uruchom(["--strict", "tekst", "DU", "2024", "499", "--fragment", "art. 5b"], teksty=teksty)
+        self.assertEqual(kod, 2)
+
+    def test_uchylenie_rozdzialu_to_niepewnosc(self):
+        z = eli._zmiany_w_akcie(ZM_RADCY.replace("5) uchyla się art. 30–32.", "5) uchyla się rozdział 3."),
+                                {(2024, 499)}, BAZA_RADCY)
+        self.assertTrue(z["calosc"])
+        teksty = {"DU/2026/731": "<p>Art. 1. W ustawie z dnia 6 lipca 1982 r. o radcach prawnych (Dz. U. z 2024 r. "
+                                 "poz. 499) uchyla się rozdział 3.</p><p>Art. 2. Ustawa wchodzi w życie po upływie "
+                                 "14 dni od dnia ogłoszenia.</p>"}
+        kod, out, _ = self._uruchom(["tekst", "DU", "2024", "499", "--fragment", "art. 6"], teksty=teksty)
+        self.assertIn("uchylenie albo nowe brzmienie całego rozdziału", out)
+        self.assertNotIn("nie znalazłem zmiany art. 6", out)
+
+    def test_wyrok_tk_zakresowy_tylko_ostrzega(self):
+        zm, teksty, extra = self._tk("w zakresie, w jakim dotyczy organu nadzorczego, jest niezgodny z art. 2 "
+                                     "Konstytucji.", "2025-01-10")
+        kod, out, _ = self._uruchom(["--strict", "tekst", "DU", "2024", "499", "--fragment", "art. 5b"], zmiany=zm,
+                                    teksty=teksty, base_refs_extra=extra)
+        self.assertEqual(kod, 0)
+        self.assertIn("WYROK TK ZAKRESOWY", out)
+
+    def test_wyrok_tk_z_odroczona_utrata_mocy_ostrzega_bez_blokady(self):
+        # żywego przypadku nie ma (0 wyroków TK w Dz.U. 2025–2026) — data „dziś" ustalona w teście
+        zm, teksty, extra = self._tk("jest niezgodny z art. 2 Konstytucji. II. Przepis wymieniony w części I traci moc "
+                                     "obowiązującą po upływie 12 miesięcy.", "2027-01-10")
+        kod, out, _ = self._uruchom(["--strict", "tekst", "DU", "2024", "499", "--fragment", "art. 5b"], zmiany=zm,
+                                    teksty=teksty, base_refs_extra=extra)
+        self.assertEqual(kod, 0)
+        self.assertIn("utrata mocy ODROCZONA do 2027-01-10", out)
+
+    def test_akt_bez_tj_lista_zmian_i_brzmienie_pierwotne(self):
+        refs = {"Akty zmieniające": self.ZM_731}
+
+        def fake(path, params=None, soft=False):
+            if path == "/acts/DU/1982/145/references":
+                return refs
+            if path == "/acts/DU/1982/145/text.html":
+                return "<p>Art. 5b.</p><p>Stare brzmienie.</p>"
+            if path == "/acts/DU/1982/145":
+                return BAZA_RADCY
+            if path == "/acts/DU/2026/731/text.html":
+                return self.TEKSTY["DU/2026/731"]
+            raise AssertionError(path)
+        kod, out, _ = _kod(["tekst", "DU", "1982", "145", "--fragment", "art. 5b"], fake, _dzis=lambda: "2026-11-13")
+        self.assertIn("ten akt NIE MA tekstu jednolitego", out)
+        self.assertIn("TEN PRZEPIS ZMIENIONO", out)
+
+
+class TestDatyObwieszczeniaWejsciaTk(unittest.TestCase):
+    def test_stan_z_obwieszczenia_obie_formuly(self):
+        self.assertEqual(eli._stan_z_obwieszczenia("» z uwzględnieniem stanu prawnego na dzień 24 marca 2026 r. oraz"),
+                         ("stan", "2026-03-24"))
+        self.assertEqual(eli._stan_z_obwieszczenia("zmian wynikających z przepisów ogłoszonych przed dniem 5 grudnia "
+                                                   "2023 r."), ("przed", "2023-12-05"))
+        self.assertEqual(eli._stan_z_obwieszczenia("z uwzględnieniem zmian wprowadzonych: 1) rozporządzeniem"), ("", ""))
+
+    def test_rozbieznosc_z_api_ostrzega_i_poszerza_liste(self):
+        # k.p.c. DU 2026/468: API 2026-03-25, obwieszczenie „24 marca 2026 r." (sprawdzone 2026-11-13)
+        base_refs = {"Akty zmieniające": [{"act": {"ELI": "DU/2026/400", "displayAddress": "Dz.U. 2026 poz. 400",
+                                                   "promulgation": "2026-03-24"}, "date": "2026-04-08"}]}
+        wynik = {"stan": "2026-03-25", "baza": {"ELI": "DU/1964/296"}, "pozycje": []}
+        with mock.patch.object(eli, "_get", return_value=base_refs):
+            linie = eli._sprawdz_stan_obwieszczenia("stanu prawnego na dzień 24 marca 2026 r.",
+                                                    {"legalStatusDate": "2026-03-25"}, wynik)
+        self.assertIn("2026-03-24", linie[0])
+        self.assertIn("2026-03-25", linie[0])
+        self.assertEqual(wynik["stan"], "2026-03-24")
+        self.assertEqual([p["act"]["ELI"] for p in wynik["pozycje"]], ["DU/2026/400"])
+
+    def test_granica_daty_stanu_prawnego(self):
+        refs = {"Akty zmieniające": [
+            {"act": {"ELI": "DU/1/1", "promulgation": "2023-12-05"}, "date": "2024-01-01"},   # ogłoszony w dniu X
+            {"act": {"ELI": "DU/1/2", "promulgation": "2023-11-01"}, "date": "2023-12-05"},   # w życie w dniu X
+            {"act": {"ELI": "DU/1/3", "promulgation": "2023-11-01"}, "date": "2023-12-06"}]}
+        with mock.patch.object(eli, "_get", return_value=refs):
+            eli_po = [r["act"]["ELI"] for r in eli._zmiany_bazowe_po("DU/9/9", "2023-12-05")]
+        self.assertEqual(eli_po, ["DU/1/1", "DU/1/3"])
+
+    def test_puste_wejscie_w_zycie(self):
+        warunek = {"type": "Rozporządzenie", "status": "obowiązujący", "entryIntoForce": None,
+                   "comments": "Rozporządzenie wchodzi w życie z dniem określonym w komunikacie ministra"}
+        self.assertIn("termin zależy od zdarzenia", eli._jeszcze_nie_obowiazuje(warunek, "2026-11-13")[0])
+        bez_uwag = {"type": "Rozporządzenie", "entryIntoForce": None}
+        self.assertIn("--fragment \"wchodzi w życie\"", eli._jeszcze_nie_obowiazuje(bez_uwag, "2026-11-13")[0])
+        self.assertEqual(eli._jeszcze_nie_obowiazuje({"type": "Obwieszczenie"}, "2026-11-13"), [])
+
+    def test_wyrok_tk_w_przypisie_fragmentu(self):
+        frag = ("2)\n(utracił moc)\n[przypis 12)] Z dniem 27 stycznia 2021 r. na podstawie wyroku Trybunału "
+                "Konstytucyjnego z dnia 22 października 2020 r. sygn. akt K 1/20 (Dz. U. z 2021 r. poz. 175).")
+        linie = eli._tk_w_przypisach(frag)
+        self.assertIn("WYROK TK W PRZYPISIE", linie[0])
+        self.assertIn("K 1/20", linie[1])
+        # tekst przepisu (nie przypis) o Trybunale nie jest ostrzeżeniem
+        self.assertEqual(eli._tk_w_przypisach("Prezes Trybunału Konstytucyjnego w zakresie swoich zadań"), [])
+        self.assertIn("(utracił moc)", eli._tk_w_przypisach("Art. 179. (utracił moc)")[0])
+
+    def test_lista_tk_meta_ze_skutkiem(self):
+        refs = {"Orzeczenie TK": [{"act": {"ELI": "DU/2021/175", "displayAddress": "Dz.U. 2021 poz. 175",
+                                           "title": "Wyrok Trybunału Konstytucyjnego z dnia 22 października 2020 r. sygn. akt K 1/20",
+                                           "promulgation": "2021-01-27"}}],
+                "Akty zmieniające": [{"act": {"ELI": "DU/2021/175", "type": "Orzeczenie",
+                                              "title": "Wyrok Trybunału Konstytucyjnego"}, "date": "2021-01-27"}]}
+        linie = eli._linie_tk_meta(refs)
+        self.assertIn("K 1/20", linie[1])
+        self.assertIn("skutek dla tego aktu od 2021-01-27", linie[1])
+
+
+class TestOdsylaczeZeWspolrzednych202611(unittest.TestCase):
+    """Odsyłacze do przypisów w PDF rozpoznawane po współrzędnych słów (`pdftotext -bbox`): indeks górny = osobne, niższe
+    i podniesione słowo „N)". Współrzędne skopiowane 13.11.2026 z urzędowych PDF (wartości z `-bbox`)."""
+
+    # k.c. DU 2026/795 s. 21: „(utracił moc)" + podniesione „2)"; numer przypisu „2)" na dole strony (bez słowa z lewej)
+    KC_SLOWA = [(143.483960, 645.675640, 163.941800, 656.701360, "moc)"),
+                (163.940000, 645.296320, 169.337840, 652.469680, "2)"),
+                (51.0, 772.23, 55.998, 778.872, "2)"), (65.04, 772.557, 70.539, 782.52, "Z")]
+    KC_STRONA = ("      Art. 178. (uchylony)\n\n"
+                 "                                                              Rozdział III\n"
+                 "                                             Inne wypadki nabycia i utraty własności\n"
+                 "                                2)\n"
+                 "      Art. 179. (utracił moc)\n"
+                 "      Art. 180. Właściciel może wyzbyć się własności rzeczy ruchomej przez to, że w tym zamiarze rzecz porzuci.\n"
+                 "      Art. 182. § 1. Rój pszczół staje się niczyim, jeżeli właściciel nie odszukał go przed upływem trzech dni.\n"
+                 "      § 2. Jeżeli rój osiadł w cudzym ulu niezajętym, właściciel może domagać się wydania roju za zwrotem kosztów.\n"
+                 "\n\n2)\n"
+                 "     Z dniem 15 lipca 2006 r. na podstawie wyroku Trybunału Konstytucyjnego z dnia 15 marca 2005 r. sygn. akt "
+                 "K 9/04 (Dz. U. poz. 462).\n")
+
+    def _tekst(self, strona, slowa):
+        return eli.pdf_layout_do_tekstu(eli._pdf_oznacz_odsylacze(strona, slowa))
+
+    def test_kc_przypis_tk_przy_art_179_a_nie_przy_art_182(self):
+        przed = eli.pdf_layout_do_tekstu(self.KC_STRONA)       # bez współrzędnych — dawny błąd
+        self.assertIn("kosztów. 2) Z dniem 15 lipca 2006", przed)
+        t = self._tekst(self.KC_STRONA, self.KC_SLOWA)
+        art179 = "\n".join(t[s:e] for s, e in eli._fragmenty(t, "art. 179"))
+        art182 = "\n".join(t[s:e] for s, e in eli._fragmenty(t, "art. 182"))
+        self.assertIn("Art. 179. (utracił moc)\n[przypis 2)] Z dniem 15 lipca 2006 r.", art179)
+        self.assertIn("K 9/04", art179)
+        self.assertNotIn("K 9/04", art182)
+        self.assertTrue(art182.rstrip().endswith("za zwrotem kosztów."), art182)
+        self.assertNotIn("\n2)\n", t)
+
+    def test_kp_samotny_odsylacz_za_numerem_punktu(self):
+        # k.p. DU 2026/1245 s. 11, art. 22¹ § 1: „14)" stoi tuż za „6)" (bbox), a `-layout` drukuje je wiersz wyżej
+        slowa = [(51.0, 630.555640, 59.356680, 641.581360, "6)"), (59.28, 630.176320, 67.917840, 637.349680, "14)"),
+                 (72.024, 630.555640, 106.475640, 641.581360, "przebieg"),
+                 (51.0, 612.675640, 59.356680, 623.701360, "5)"), (72.024, 612.675640, 121.415640, 623.701360, "kwalifikacje")]
+        strona = ("4)          wykształcenie;\n5)          kwalifikacje zawodowe;\n      14)\n"
+                  "6)          przebieg dotychczasowego zatrudnienia.\n"
+                  "      § 2. Pracodawca żąda podania danych osobowych.\n\n\n"
+                  "14)\n        W brzmieniu ustalonym przez art. 1 pkt 2 ustawy, o której mowa w odnośniku 10.\n")
+        t = self._tekst(strona, slowa)
+        self.assertIn("5) kwalifikacje zawodowe;\n6) przebieg dotychczasowego zatrudnienia.\n[przypis 14)] W brzmieniu", t)
+        self.assertNotIn("zawodowe; 14)", t)
+
+    def test_cyfry_przypisu_nie_zabieraja_cyfr_liczby(self):
+        # DU 2025/1016 s. 9 („0,01" + „2)") i DU 2026/218 s. 13 („152,61" + „3)"): dotąd „0," i „152,"
+        slowa = [(465.5023, 507.28802, 481.833877, 519.851489, "0,01"), (481.9178, 507.41228, 487.097394, 515.787926, "2)"),
+                 (82.224, 469.018, 115.224, 482.302, "152,61"), (115.22, 467.98636, 121.97732, 476.88664, "3)"),
+                 (129.38, 469.018, 137.996, 482.302, "zł")]
+        strona = ("1)     152,613) zł za 1000 l benzyn silnikowych;\n"
+                  "      Materiały paszowe i mieszanki paszowe,                 0,012)\n")
+        przed = eli.pdf_layout_do_tekstu(strona)
+        self.assertIn("152, zł", przed)
+        t = self._tekst(strona, slowa)
+        self.assertIn("1) 152,61 zł za 1000 l", t)
+        self.assertIn("paszowe, 0,01", t)
+        self.assertIn("[przypis 3)]", t)
+        self.assertIn("[przypis 2)]", t)
+        self.assertNotIn("[przypis 613)]", t)
+        self.assertNotIn("[przypis 012)]", t)
+
+    def test_cyfry_w_jednym_slowie_to_tekst(self):
+        # DU 2026/1391 s. 15 („SpO2),") i DU 2025/1016 s. 5 („(E561)"): jedno słowo bbox, jedna wysokość — nie odsyłacz
+        slowa = [(278.4446, 710.0701, 307.0546, 723.5401, "SpO2),"), (177.3, 686.0, 220.0, 698.6, "(E561)")]
+        strona = "– wysycenie hemoglobiny tlenem (saturacja, SpO2),\n      Wermikulit (E561)       3000\n"
+        self.assertIn("(saturacja, SpO,", eli.pdf_layout_do_tekstu(strona))        # dawny błąd
+        t = self._tekst(strona, slowa)
+        self.assertIn("(saturacja, SpO2),", t)
+        self.assertIn("Wermikulit (E561) 3000", t)
+        self.assertNotIn("[przypis", t)
+
+    def test_dwa_odsylacze_obok_siebie(self):
+        # k.p.c. DU 2026/468 s. 14, art. 49 § 1: „§ 1." „6)" „7)" — drugi stoi za pierwszym; dotąd „7) Niezależnie…"
+        slowa = [(147.728, 338.798, 156.728, 352.082, "1."), (156.86, 337.76636, 163.61732, 346.66664, "6)"),
+                 (167.06, 337.76636, 173.81732, 346.66664, "7)"), (177.14, 338.798, 233.78, 352.082, "Niezależnie")]
+        strona = ("       Art. 49. § 1.6) 7) Niezależnie od przyczyn wymienionych w art. 48, sąd wyłącza sędziego.\n\n\n"
+                  "6)\n     Utracił moc z dniem 9 czerwca 2020 r. (P 13/19).\n7)\n     Utracił moc z dniem 28 lutego 2022 r. (P 10/19).\n")
+        self.assertIn("7) Niezależnie", eli.pdf_layout_do_tekstu(strona))      # dawny błąd
+        t = self._tekst(strona, slowa)
+        self.assertIn("Art. 49. § 1. Niezależnie od przyczyn", t)
+        self.assertIn("[przypis 6)] Utracił moc z dniem 9 czerwca 2020 r.", t)
+        self.assertIn("[przypis 7)] Utracił moc z dniem 28 lutego 2022 r.", t)
+
+    def test_blok_przypisow_z_dokonczeniem_z_poprzedniej_strony(self):
+        # k.p.c. DU 2026/468 s. 13–14: przypis 5 kończy się na s. 14 nad „6)", „7)"; dotąd całość szła do art. 50 § 2
+        s13_slowa = [(300.0, 400.0, 360.0, 412.0, "niższej;"), (360.2, 399.5, 365.4, 406.7, "5)")]
+        s13 = ("5)    w sprawach, w których w instancji niższej brał udział;5)\n\n\n"
+               "5)\n     Utracił moc z dniem 30 lipca 2004 r. w zakresie, w jakim ogranicza wyłączenie do spraw, w których brał\n")
+        s14_slowa = [(147.728, 338.798, 156.728, 352.082, "1."), (156.86, 337.76636, 163.61732, 346.66664, "6)"),
+                     (167.06, 337.76636, 173.81732, 346.66664, "7)"), (177.14, 338.798, 233.78, 352.082, "Niezależnie")]
+        s14 = ("       Art. 49. § 1.6) 7) Niezależnie od przyczyn wymienionych w art. 48, sąd wyłącza sędziego.\n"
+               "       Art. 50. § 2. Strona powinna uprawdopodobnić, że przyczyna wyłączenia stała się jej znana.\n\n\n"
+               "     udział w instancji bezpośrednio niższej (SK 19/02).\n"
+               "6)\n     Utracił moc z dniem 9 czerwca 2020 r. (P 13/19).\n7)\n     Utracił moc z dniem 28 lutego 2022 r. (P 10/19).\n")
+        s13_ozn = eli._pdf_oznacz_odsylacze(s13, [(250.0, 400.0, 299.0, 412.0, "niższej"),
+                                                  (299.1, 399.5, 304.4, 406.7, "brał"), (304.5, 399.5, 309.4, 406.7, "udział;")])
+        t = eli.pdf_layout_do_tekstu(s13_ozn + "\f" + eli._pdf_oznacz_odsylacze(s14, s14_slowa))
+        art50 = "\n".join(t[s:e] for s, e in eli._fragmenty(t, "art. 50"))
+        self.assertTrue(art50.rstrip().endswith("stała się jej znana."), art50)
+        self.assertIn("[przypis 6)] Utracił moc z dniem 9 czerwca 2020 r.", t)
+        self.assertIn("brał udział w instancji bezpośrednio niższej (SK 19/02).", t)
+
+    def test_bez_wspolrzednych_dawna_regula(self):
+        # zeszyty 1990–2011 i OCR: bez słów bbox odsyłacz rozpoznaje `_PDF_ODSYLACZ` — wynik jak dotąd
+        strona = "§ 1.3) Minister ustala opłatę.\n\n3) Dodany przez § 1 pkt 1 rozporządzenia.\n"
+        self.assertEqual(eli._pdf_oznacz_odsylacze(strona, []), strona)
+        self.assertIn("[przypis 3)] Dodany przez", eli.pdf_layout_do_tekstu(strona))
+
+    def test_cytowany_przypis_w_obwieszczeniu_zostaje(self):
+        # DU 2025/151 s. 1: obwieszczenie cytuje przypis „„2) Tekst Programu…" — po cudzysłowie to nie odsyłacz
+        slowa = [(100.0, 300.0, 104.0, 312.0, "„"), (104.1, 299.5, 109.3, 306.7, "2)"), (112.0, 300.0, 140.0, 312.0, "Tekst")]
+        self.assertEqual(eli._pdf_odsylacze_bbox(slowa), [])
+
+    def test_punkt_z_odsylaczem_to_nowy_akapit(self):
+        # k.p. DU 2026/1245 art. 94 pkt 2b: „2b)25) przeciwdziałać…" dotąd doklejało się do pkt 2a
+        strona = ("2a)  organizować pracę w ustalonym z góry tempie;\n"
+                  "2b)25) przeciwdziałać dyskryminacji w zatrudnieniu;\n\n\n"
+                  "25) W brzmieniu ustalonym przez art. 1 pkt 3 ustawy, o której mowa w odnośniku 6.\n")
+        t = eli.pdf_layout_do_tekstu(strona)
+        self.assertIn("tempie;\n2b) przeciwdziałać dyskryminacji", t)
+        self.assertIn("[przypis 25)] W brzmieniu", t)
+
+    def test_przypis_w_zalaczniku_nie_z_poczatku_aktu(self):
+        # DU 2026/1391 s. 42: „Grupa krwi i czynnik Rh1)" w formularzu załącznika dostawał przypis 1 aktu ze s. 1
+        raw = ("§ 1. Rozporządzenie określa wzór.1)\n\n1) Minister Zdrowia kieruje działem administracji rządowej – zdrowie.\n"
+               "\f§ 2. Rozporządzenie wchodzi w życie po upływie 14 dni od dnia ogłoszenia.\n"
+               "\f                    Załącznik nr 1\n\n7. Grupa krwi i czynnik Rh1)\n")
+        t = eli.pdf_layout_do_tekstu(raw)
+        self.assertEqual(t.count("Minister Zdrowia kieruje"), 1, t)
+        self.assertIn("Rh\n[przypis 1)] (treści przypisu nie odnaleziono", t)
+        # w treści aktu (przed załącznikiem) odsyłacz powtórzony na dalszej stronie dostaje przypis jak dotąd
+        t = eli.pdf_layout_do_tekstu(raw.replace("Załącznik nr 1", "§ 3. Minister"))
+        self.assertEqual(t.count("Minister Zdrowia kieruje"), 2, t)
+
+
+class TestFrazaZIndeksemLiterowym202611(unittest.TestCase):
+    def test_litera_indeksu_gornego_w_zapisie_unicode(self):
+        # k.p.c. art. 130¹ᵃ, k.p. art. 18³ᵉ — dotąd „Nie znaleziono frazy"
+        txt = ("Art. 130 1. § 1. (utracił moc)\n\nArt. 130 1a. (uchylony)\n\nArt. 130 2. § 1. Pismo wniesione przez adwokata.\n\n"
+               "Art. 18 3e. § 1. Skorzystanie przez pracownika z uprawnień.\n\nArt. 18 3f. § 1. W postępowaniach.")
+        for fraza, poczatek in (("art. 130¹ᵃ", "Art. 130 1a. (uchylony)"), ("art. 130(1a)", "Art. 130 1a. (uchylony)"),
+                                ("art. 130_1a", "Art. 130 1a. (uchylony)"), ("art. 18³ᵉ", "Art. 18 3e. § 1."),
+                                ("art. 130¹", "Art. 130 1. § 1.")):
+            spans = eli._fragmenty(txt, fraza)
+            self.assertEqual(len(spans), 1, fraza)
+            self.assertTrue(txt[spans[0][0]:spans[0][1]].startswith(poczatek), fraza)
+            self.assertNotIn("Art. 130 2.", txt[spans[0][0]:spans[0][1]], fraza)
+        self.assertEqual(eli._klucz_frazy("art. 130¹ᵃ"), "130^1a")
+        # HTML: „Art. 130<sup>1</sup><sup>a</sup>." → „Art. 130 1 a."
+        self.assertEqual(len(eli._fragmenty("Art. 130 1 a.\n\n§ 1.\n\nTreść.\n\nArt. 130 2.\n\nX", "art. 130¹ᵃ")), 1)
+
+
+class TestPdfNieNadpisuje202611(unittest.TestCase):
+    def test_istniejacy_plik_odmowa_przed_pobraniem(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            plik = pathlib.Path(d) / "akt.pdf"
+            plik.write_bytes(b"MOJ DOKUMENT")
+            pobrane = []
+            kod, out, err = _kod(["tekst", "DU", "2026", "795", "--pdf", str(plik)],
+                                 lambda path, params=None, soft=False: pobrane.append(path) or {},
+                                 _get_bytes=lambda *a, **k: pobrane.append("pdf") or b"%PDF")
+            self.assertEqual(kod, 2)
+            self.assertIn("już istnieje", err)
+            self.assertIn("nie nadpisuję", err)
+            self.assertEqual(pobrane, [])                     # nic nie pobrano
+            self.assertEqual(plik.read_bytes(), b"MOJ DOKUMENT")
+
+    def test_nowy_plik_zapisany_wylacznie(self):
+        import tempfile
+        meta = {"texts": [{"type": "T", "fileName": "D20260795L.pdf"}]}
+
+        def get(path, params=None, soft=False):
+            return {} if path.endswith("/references") else meta
+        with tempfile.TemporaryDirectory() as d:
+            plik = pathlib.Path(d) / "nowy.pdf"
+            with mock.patch.object(eli, "_nowszy_tj", return_value=None), \
+                    mock.patch.object(eli, "_ostrzezenia", return_value=[]):
+                kod, out, err = _kod(["tekst", "DU", "2026", "795", "--pdf", str(plik)], get,
+                                     _get_bytes=lambda *a, **k: b"%PDF-1.7")
+            self.assertEqual(kod, 0, err)
+            self.assertEqual(plik.read_bytes(), b"%PDF-1.7")
+            # plik powstał w trakcie pobierania — tryb „xb" też odmawia
+            with mock.patch.object(eli, "_nowszy_tj", return_value=None), \
+                    mock.patch.object(eli, "_ostrzezenia", return_value=[]), \
+                    mock.patch.object(eli.os.path, "lexists", return_value=False):
+                kod, out, err = _kod(["tekst", "DU", "2026", "795", "--pdf", str(plik)], get,
+                                     _get_bytes=lambda *a, **k: b"INNY")
+            self.assertEqual(kod, 2)
+            self.assertIn("już istnieje", err)
+            self.assertEqual(plik.read_bytes(), b"%PDF-1.7")
+
+
+class TestHtmlBrakiINumeracja202611(unittest.TestCase):
+    def test_naglowek_spoza_numeracji(self):
+        # k.p.c. t.j. DU 2024/1568 (HTML i /struct): art. 15 ma nagłówek „Art. 1522."
+        txt = "Art. 14.\n\n(uchylony)\n\nPrzepis wstępny\n\nArt. 1522.\n\n§ 1.\n\nSąd właściwy…\n\nArt. 16.\n\n§ 1. Sąd rejonowy"
+        self.assertEqual(eli._fragmenty(txt, "art. 15")[:0], [])
+        self.assertEqual(eli._hity_naglowka(txt, "art. 15"), [])
+        self.assertEqual(eli._naglowek_poza_numeracja(txt, "art. 15"), "Art. 1522.")
+        # zwykły brak (artykuł uchylony z numeracji, art. 14¹ za art. 14) — bez podpowiedzi
+        self.assertEqual(eli._naglowek_poza_numeracja("Art. 14.\n\nX\n\nArt. 14 1.\n\nY\n\nArt. 16.\n\nZ", "art. 15"), "")
+        self.assertEqual(eli._naglowek_poza_numeracja("Art. 14.\n\nX\n\nArt. 16.\n\nZ", "art. 15"), "")
+
+    def test_patrz_oryginal_ostrzega_a_strict_blokuje(self):
+        # t.j. DU 2023/2190: załącznik nr 1 (diety za granicą) w HTML API to tylko odsyłacz „patrz oryginał"
+        html = ("<p>§ 1. Rozporządzenie określa wysokość diet.</p><h2>Załącznik nr 1 - Wysokość diety</h2>"
+                "<div><a href='https://api.sejm.gov.pl/eli/acts//text.pdf'>patrz oryginał</a></div>")
+
+        def get(path, params=None, soft=False):
+            if path.endswith("/text.html"):
+                return html
+            return {} if path.endswith("/references") else {"texts": []}
+        with mock.patch.object(eli, "_ostrzezenia", return_value=[]), mock.patch.object(eli, "_nowszy_tj", return_value=None):
+            kod, out, err = _kod(["tekst", "DU", "2023", "2190", "--fragment", "Załącznik nr 1"], get)
+            self.assertEqual(kod, 0, err)
+            self.assertIn("1× zamiast treści stoi odsyłacz API „patrz oryginał”", out)
+            kod, out, err = _kod(["tekst", "DU", "2023", "2190", "--fragment", "§ 1"], get)
+            self.assertNotIn("patrz oryginał", out)
+            kod, out, err = _kod(["--strict", "tekst", "DU", "2023", "2190"], get)
+            self.assertEqual(kod, 2)
+            self.assertIn("NIEKOMPLETNY", err)
+
+    def test_bom_przed_naglowkiem_strony(self):
+        # DU 2025/1016 s. 10: „\ufeff Dziennik Ustaw – 10 – Poz. 1016" wchodziło w treść tabeli
+        raw = "– olejów i tłuszczów 0,05\n\f\ufeff Dziennik Ustaw – 10 – Poz. 1016\n\n5 DDT (suma izomerów)\n"
+        t = eli.pdf_layout_do_tekstu(raw)
+        self.assertNotIn("Dziennik Ustaw", t)
+        self.assertIn("5 DDT", t)
+
+
+class TestOcrParagrafWarianty202611(unittest.TestCase):
+    """Nagłówki „§" odczytane przez OCR ze śmieciem przed numerem, z przecinkiem albo z „3"/„5" zamiast „§" — zamiana tylko,
+    gdy numer N potwierdzają oba sąsiednie pewne nagłówki (§ N−1 tuż przed, § N+1 tuż za). Wiersze z surowego OCR."""
+
+    def _popraw(self, strona):
+        return eli._ocr_popraw_paragrafy([strona], [0])[0]
+
+    def test_warianty_potwierdzone_z_obu_stron(self):
+        # DU 2000 poz. 313 s. 1 i 4, DU 1998 poz. 875 s. 2, DU 1993 poz. 58 s. 2 (obraz strony: „§ 2.", „§ 12.")
+        przyklady = [("§ 1. Rozporządzenie określa:\n5 2, Ilekroć w rozporządzeniu jest mowa o:\n§ 3. 1. Pracodawca jest",
+                      "§ 2. Ilekroć w rozporządzeniu"),
+                     ("§ 15. Wartości sił\n3 16. Dopuszczalne jest ręczne przetaczanie\n§ 17. 1. Przenoszenie", "§ 16. Dopuszczalne"),
+                     ("§ 11. Zebranie dokonuje wyboru\n„8 12, 1. Głosowanie tajne odbywa się\n§ 13. 1. Na każdego", "§ 12. 1. Głosowanie"),
+                     ("§16. 1. Opalanie tusz\n. 817. 1. Urządzenie do mechanicznego\n§18. Wysokość stosów", "§ 17. 1. Urządzenie")]
+        for strona, oczekiwane in przyklady:
+            wynik = self._popraw(strona)
+            self.assertIn(oczekiwane, wynik, strona)
+            self.assertEqual(wynik, self._popraw(wynik))      # idempotentne
+
+    def test_bez_potwierdzenia_bez_zmian(self):
+        for strona in ("§ 1. Rozporządzenie określa:\n5 2, Ilekroć w rozporządzeniu\n§ 4. Pracodawca",   # brak § 3 za nim
+                       "§ 3. Ustala się stawki:\n3 5. Pszenica 15,00\n§ 4. Stawki obowiązują",      # wiersz tabeli w § 3
+                       "Art. 5. Przepis\n„8 12, 1. Głosowanie\n§ 13. Na każdego",                # przed nim artykuł, nie § 11
+                       "§ 2. Treść\n3 3. Wpisy w rejestrze\n§ 4. Dalej"):                           # „3 3." bez śmiecia i z „3" — N=3
+            wynik = self._popraw(strona)
+            if strona.startswith("§ 2. Treść"):
+                self.assertIn("§ 3. Wpisy", wynik)            # oba sąsiedzi potwierdzają — to jest § 3
+            else:
+                self.assertEqual(wynik, strona)
+
+
+class TestPrzypisyBezUtraty202611(unittest.TestCase):
+    def test_przypis_bez_odsylacza_nie_znika(self):
+        # DU 2025/609 (formularz): przypis rozpoznany pod tekstem strony, do którego żaden odsyłacz nie trafił
+        raw = ("§ 1. Wniosek zawiera dane.\n\n"
+               "9) Załączany dokument należy zaznaczyć X. Dodany przez § 1 pkt 1 rozporządzenia.\n")
+        t = eli.pdf_layout_do_tekstu(raw)
+        # etykieta mówi, że odsyłacza nie ustalono (202611b) — dotąd „[przypis 9)] …", jak przypis tego akapitu
+        self.assertIn("[przypis 9) — bez odsyłacza w treści tej strony; nie przypisuj go do sąsiedniego przepisu] "
+                      "Załączany dokument należy zaznaczyć X.", t)
+
+    def test_blok_po_odstepie_nie_bierze_tresci(self):
+        # wcięty wiersz wielką literą (podpis) albo nagłówek jednostki pod odstępem to treść, nie dokończenie przypisu
+        slowa = [(100.0, 300.0, 140.0, 312.0, "ogłoszenia."), (140.1, 299.5, 145.3, 306.7, "1)")]
+        for srodek in ("              Minister Zdrowia: A. Nowak\n", "      § 5. Rozporządzenie wchodzi w życie.\n"):
+            strona = ("§ 4. Termin liczy się od dnia ogłoszenia.1)\n\n\n" + srodek +
+                      "1)\n     Minister Zdrowia kieruje działem administracji rządowej – zdrowie.\n")
+            t = eli.pdf_layout_do_tekstu(eli._pdf_oznacz_odsylacze(strona, slowa))
+            self.assertIn(srodek.strip()[:20], t)
+
+
+class TestDwaOdsylaczeSzerokaPrzerwa202611b(unittest.TestCase):
+    """C: drugi odsyłacz za pierwszym przy szerszej przerwie (wiersz justowany). Współrzędne z `-bbox` k.p.c. DU 2026/468 s. 1."""
+
+    ART1_SLOWA = [(96.50, 304.00, 117.42, 317.28, "Art."), (120.38, 304.00, 129.38, 317.28, "1."),
+                  (129.50, 302.97, 136.26, 311.87, "2)"), (142.10, 302.97, 148.86, 311.87, "3)"),
+                  (150.86, 304.00, 187.45, 317.28, "Kodeks"), (194.77, 304.00, 260.77, 317.28, "postępowania")]
+    ART1 = ("       Art. 1.2) 3) Kodeks postępowania cywilnego normuje postępowanie sądowe w sprawach cywilnych.\n"
+            "       Art. 2. § 1. Do rozpoznawania spraw cywilnych powołane są sądy powszechne.\n\n\n"
+            "2)\n     Utracił moc z dniem 17 lipca 2000 r. na podstawie wyroku Trybunału Konstytucyjnego sygn. akt SK. 12/99.\n"
+            "3)\n     Utracił moc z dniem 11 września 2017 r. na podstawie wyroku Trybunału Konstytucyjnego sygn. akt K 10/17.\n")
+
+    def test_kpc_art_1_dwa_odsylacze_przerwa_5_84_pt(self):
+        self.assertEqual(eli._pdf_odsylacze_bbox(self.ART1_SLOWA), [("1.", "2", False), ("2)", "3", True)])
+        t = eli.pdf_layout_do_tekstu(eli._pdf_oznacz_odsylacze(self.ART1, self.ART1_SLOWA))
+        art1 = "\n".join(t[s:e] for s, e in eli._fragmenty(t, "art. 1"))
+        art2 = "\n".join(t[s:e] for s, e in eli._fragmenty(t, "art. 2"))
+        self.assertIn("Art. 1. Kodeks postępowania cywilnego normuje", art1)
+        self.assertNotIn("3) Kodeks", t)
+        self.assertIn("[przypis 2)] Utracił moc z dniem 17 lipca 2000 r.", art1)
+        self.assertIn("[przypis 3)] Utracił moc z dniem 11 września 2017 r.", art1)
+        self.assertNotIn("K 10/17", art2)
+        self.assertNotIn("bez odsyłacza", t)
+
+    def test_nie_kazde_N_obok_odsylacza_to_drugi_odsylacz(self):
+        # „1)" zwykłą czcionką tuż za odsyłaczem (góra prawie ta sama) i „7)" tej samej wysokości 14 pt dalej — tekst
+        slowa = [(147.728, 338.798, 156.728, 352.082, "1."), (156.86, 337.76636, 163.61732, 346.66664, "6)"),
+                 (166.0, 338.798, 175.0, 352.082, "1)"), (190.0, 337.76636, 196.75, 346.66664, "7)")]
+        self.assertEqual(eli._pdf_odsylacze_bbox(slowa), [("1.", "6", False)])
+
+
+class TestPunktObwieszczeniaToNiePrzypis202611b(unittest.TestCase):
+    """A: punkt wyliczenia obwieszczenia Marszałka Sejmu na dole strony („5) art. 48 ustawy … który stanowi: „Art. 48. Ustawa
+    wchodzi w życie…”") — DU 2026/1473 s. 3, DU 2026/795, 1315, 1342, 1395. Układ `-layout` jak w PDF."""
+
+    RAW = ("                                     OBWIESZCZENIE\n"
+           "                              MARSZAŁKA SEJMU RZECZYPOSPOLITEJ POLSKIEJ\n"
+           "                    w sprawie ogłoszenia jednolitego tekstu ustawy o Państwowej Straży Pożarnej\n\n"
+           "     1. Na podstawie art. 16 ust. 1 ustawy ogłasza się w załączniku do niniejszego obwieszczenia jednolity\n"
+           "tekst ustawy z dnia 24 sierpnia 1991 r. o Państwowej Straży Pożarnej.\n"
+           "     2. Podany w załączniku do niniejszego obwieszczenia tekst jednolity ustawy nie obejmuje:\n"
+           "1)   art. 12 ustawy z dnia 12 września 2025 r. o zmianie niektórych ustaw (Dz. U. poz. 1366), który stanowi:\n"
+           "          „Art. 12. Ustawa wchodzi w życie z dniem następującym po dniu ogłoszenia.”;\n\n"
+           "2)   art. 48 ustawy z dnia 31 lipca 2026 r. o zmianie ustawy o opiece nad dziećmi w wieku do lat 3 (Dz. U.\n"
+           "     poz. 1123), który stanowi:\n\n"
+           "          „Art. 48. Ustawa wchodzi w życie z dniem 1 stycznia 2028 r.”.\n\n"
+           "                                                         Marszałek Sejmu: W. Czarzasty\n"
+           "\fZałącznik do obwieszczenia Marszałka Sejmu Rzeczypospolitej Polskiej z dnia 4 września 2026 r.\n\n"
+           "                                        USTAWA\n"
+           "      Art. 1. Ustawa reguluje ochronę przeciwpożarową.4)\n\n\n"
+           "4)   Zmiany tekstu jednolitego wymienionej ustawy zostały ogłoszone w Dz. U. z 2025 r. poz. 1.\n")
+
+    def test_punkt_wyliczenia_zostaje_w_obwieszczeniu(self):
+        t = eli.pdf_layout_do_tekstu(self.RAW)
+        self.assertIn("» 2) art. 48 ustawy z dnia 31 lipca 2026 r.", t)
+        self.assertIn("» „Art. 48. Ustawa wchodzi w życie z dniem 1 stycznia 2028 r.”.", t)
+        self.assertNotIn("[przypis 2)]", t)
+        # prawdziwy przypis pod „Załącznik do obwieszczenia" działa jak dotąd
+        self.assertIn("Art. 1. Ustawa reguluje ochronę przeciwpożarową.\n[przypis 4)] Zmiany tekstu jednolitego", t)
+        # i nie karmi ostrzeżenia o przepisach aktu, które jeszcze nie obowiązują
+        self.assertEqual(eli._ostrzezenie_przyszle(t, False, dzis="2026-11-13"), [])
+
+    def test_bez_obwieszczenia_regula_bloku_przypisow_bez_zmian(self):
+        # ta sama strona bez „Załącznik do obwieszczenia" — reguła bloku przypisów jak dotąd (punkt nie jest chroniony)
+        raw = self.RAW.split("\f")[0]
+        self.assertIn("[przypis 2) — bez odsyłacza w treści tej strony; nie przypisuj go do sąsiedniego przepisu] art. 48 "
+                      "ustawy", eli.pdf_layout_do_tekstu(raw))
+
+    def test_potwierdzony_odsylacz_albo_wielka_litera_to_przypis(self):
+        blok = [(0, "2) art. 48 ustawy z dnia 31 lipca 2026 r.", [])]
+        self.assertTrue(eli._pdf_punkt_obwieszczenia(blok, ["2"], "tekst obwieszczenia"))
+        self.assertFalse(eli._pdf_punkt_obwieszczenia(blok, ["2"], "tekst" + eli._ODS_POTW + "2) obwieszczenia"))
+        self.assertFalse(eli._pdf_punkt_obwieszczenia([(0, "1) Niniejsze obwieszczenie dotyczy…", [])], ["1"], "x"))
+
+
+class TestPrzypisBezOdsylacza202611b(unittest.TestCase):
+    """B: przypis bez dopasowanego odsyłacza ma etykietę „nie wiadomo, której jednostki", nie rozcina wyliczenia, a ostrzeżenia
+    o przypisach fragmentu nie biorą go za przypis tej jednostki (k.p.c. DU 2026/468 przypis 3 przy art. 2; DU 2026/1473 przypis 15)."""
+
+    RAW = ("      Art. 2. § 1.2) Sąd orzeka w sprawach:\n"
+           "1)    rodzinnych;\n"
+           "2)    opiekuńczych;\n\n\n"
+           "2)    W brzmieniu ustalonym przez art. 1 ustawy z dnia 9 marca 2026 r. (Dz. U. poz. 400).\n"
+           "3)    Utracił moc z dniem 11 września 2017 r. na podstawie wyroku Trybunału Konstytucyjnego z dnia 11 września\n"
+           "      2017 r. sygn. akt K 10/17 (Dz. U. poz. 1727).\n"
+           "\f3)    pracy;\n"
+           "4)    ubezpieczeń społecznych.\n"
+           "      § 2. Sprawy rozpoznaje sąd powszechny.\n"
+           "      Art. 3. Strony obowiązane są dawać wyjaśnienia.\n")
+
+    def test_etykieta_i_miejsce_za_wyliczeniem(self):
+        t = eli.pdf_layout_do_tekstu(self.RAW)
+        etykieta = "[przypis 3) — bez odsyłacza w treści tej strony; nie przypisuj go do sąsiedniego przepisu] Utracił moc"
+        self.assertIn("2) opiekuńczych;\n3) pracy;\n4) ubezpieczeń społecznych.\n" + etykieta, t)
+        self.assertIn("K 10/17 (Dz. U. poz. 1727).\n§ 2. Sprawy rozpoznaje", t)
+        self.assertNotIn("\n[przypis 3)]", t)
+
+    def test_ostrzezenie_tk_osobno_z_zastrzezeniem(self):
+        t = eli.pdf_layout_do_tekstu(self.RAW)
+        uwagi = eli._tk_w_przypisach("\n".join(t[s:e] for s, e in eli._fragmenty(t, "art. 2")))
+        tekst = "\n".join(uwagi)
+        self.assertNotIn("WYROK TK W PRZYPISIE TEGO FRAGMENTU", tekst)
+        self.assertIn("NIEPRZYPISANYM DO JEDNOSTKI", tekst)
+        self.assertIn("K 10/17", tekst)         # informacja o wyroku nie ginie
+        # przypis dopasowany do odsyłacza — jak dotąd
+        self.assertIn("WYROK TK W PRZYPISIE TEGO FRAGMENTU",
+                      "\n".join(eli._tk_w_przypisach("Art. 1. X\n[przypis 3)] Utracił moc na podstawie wyroku Trybunału "
+                                                     "Konstytucyjnego sygn. akt K 10/17.")))
+
+    def test_przepisy_przyszle_naglowek_rozdzialu_i_odnosniki(self):
+        bez = eli._przypis_bez_odsylacza("5", "Wejdzie w życie z dniem 1 stycznia 2028 r.")
+        przyszle, _ = eli._zmiany_w_tekscie("Art. 1. X\n" + bez, dzis="2026-11-13")
+        self.assertEqual(len(przyszle), 1)
+        self.assertTrue(przyszle[0][1].startswith("przypis nieprzypisany do jednostki 5)"), przyszle)
+        self.assertNotIn("przepis z przypisem", przyszle[0][1])
+        uwagi = "\n".join(eli._ostrzezenie_przyszle("Art. 1. X\n" + bez, False, dzis="2026-11-13"))
+        self.assertIn("NIE wiadomo, którego przepisu dotyczy", uwagi)
+        self.assertIn("od 2028-01-01: przypis nieprzypisany do jednostki 5)", uwagi)
+        # sam przypis bez odsyłacza nie daje listy przepisów, które jeszcze nie obowiązują, ani zdania o przepisie „przy nim"
+        for tekst_ujednolicony in (False, True):
+            uwagi = "\n".join(eli._ostrzezenie_przyszle("Art. 1. X\n" + bez, tekst_ujednolicony, dzis="2026-11-13"))
+            self.assertNotIn("PRZEPISY, KTÓRE JESZCZE NIE OBOWIĄZUJĄ", uwagi)
+            self.assertNotIn("przy którym stoi taki przypis, jeszcze NIE obowiązuje", uwagi)
+            self.assertNotIn("Na dziś obowiązuje brzmienie", uwagi)
+        # obok przypisu dopasowanego — oba bloki osobno, licznik tylko dopasowanych
+        uwagi = eli._ostrzezenie_przyszle("Art. 1. X\n[przypis 4)] Wejdzie w życie z dniem 1 marca 2027 r.\n" + bez, False,
+                                          dzis="2026-11-13")
+        self.assertIn("UWAGA — PRZEPISY, KTÓRE JESZCZE NIE OBOWIĄZUJĄ (dziś 2026-11-13): 1", uwagi)
+        # pod nagłówkiem rozdziału nie jest przypisem tego rozdziału
+        txt = "Rozdział 8\n\nZakwaterowanie\n" + bez + "\n\nArt. 74. Strażakowi przysługuje.\n\nArt. 75. Dalej."
+        self.assertEqual(eli._naglowki_nadrzedne(txt, txt.index("Art. 75.")), [])
+        # treść znajduje odesłanie „…w odnośniku 15", ale fragment nie bierze go za swój przypis
+        txt = ("Art. 1. X\n[przypis 6)] W brzmieniu ustalonym przez ustawę, o której mowa w odnośniku 15.\n"
+               + eli._przypis_bez_odsylacza("15", "Ustawa wejdzie w życie z dniem 1 marca 2027 r."))
+        self.assertEqual(eli._przypisy_aktu(txt)["15"], "Ustawa wejdzie w życie z dniem 1 marca 2027 r.")
+        self.assertEqual(eli._przypisy_aktu("[przypis 15)] A\n" + eli._przypis_bez_odsylacza("15", "B"))["15"], "A")
+
+    def test_strict_nie_blokuje_przypisu_nieprzypisanego(self):
+        t = eli.pdf_layout_do_tekstu(self.RAW)
+        meta = {"ELI": "DU/2026/468", "legalStatusDate": "2026-03-25", "textHTML": False,
+                "displayAddress": "Dz.U. 2026 poz. 468", "texts": [{"fileName": "D20260468L.pdf", "type": "T"}]}
+
+        def get(path, params=None, soft=False):
+            return {} if path.endswith("/references") else "" if path.endswith("/text.html") else meta
+        kod, out, err = _kod(["--strict", "tekst", "DU", "2026", "468", "--fragment", "art. 2"], get,
+                             _tekst_z_pdf=lambda *a, **k: (t, "https://api.sejm.gov.pl/x.pdf", ""),
+                             _dzis=lambda: "2026-11-13")
+        self.assertEqual(kod, 0, err)
+        self.assertIn("NIEPRZYPISANYM DO JEDNOSTKI", out)
+        self.assertNotIn("W PRZYPISIE TEGO FRAGMENTU", out)
+
+
+class TestBezWspolrzednych202611b(unittest.TestCase):
+    """D: `pdftotext -bbox` nie dał stron — dotąd po cichu działała dawna reguła kształtu („152,61" + „3)" → „152,")."""
+
+    RAW = ("Art. 37m. 1. Stawka opłaty paliwowej wynosi:\n"
+           "1)     152,613) zł za 1000 l benzyn silnikowych;\n\n\n"
+           "3)     Aktualne stawki opłaty paliwowej ogłasza minister.\n\f")
+    SLOWA = [(82.224, 469.018, "152,61", 115.224, 482.302), (115.22, 467.98636, "3)", 121.97732, 476.88664),
+             (129.38, 469.018, "zł", 137.996, 482.302)]
+
+    def _pdftotext(self, bbox):
+        return lambda args, pdf_bytes: (bbox if "-bbox" in args else self.RAW if "-layout" in args else "")
+
+    def test_pusty_bbox_oznacza_brak_wspolrzednych(self):
+        with mock.patch.object(eli, "_pdftotext", side_effect=self._pdftotext("")):
+            raw, notki, info = eli.pdf_do_tekstu_z_notkami(b"%PDF")
+        self.assertEqual(info.get("bez_wspolrzednych"), (0, 1))
+        self.assertIn("152, zł", eli.pdf_layout_do_tekstu(raw))      # dawna reguła — dlatego ostrzeżenie
+        # zeszyt 2000–2011 (indeksy z bbox) — też; 1990–1999 (OCR, indeksy=False) współrzędnych nie używa
+        with mock.patch.object(eli, "_pdftotext", side_effect=self._pdftotext("")):
+            self.assertIn("bez_wspolrzednych", eli.pdf_do_tekstu_z_notkami(b"%PDF", zeszyt=True)[2])
+            self.assertEqual(eli.pdf_do_tekstu_z_notkami(b"%PDF", zeszyt=True, indeksy=False)[2], {})
+
+    def test_bbox_z_ta_sama_liczba_stron_bez_flagi(self):
+        with mock.patch.object(eli, "_pdftotext", side_effect=self._pdftotext(_bbox([(595.0, 842.0, self.SLOWA)]))):
+            raw, notki, info = eli.pdf_do_tekstu_z_notkami(b"%PDF")
+        self.assertNotIn("bez_wspolrzednych", info)
+        self.assertIn("1) 152,61 zł za 1000 l", eli.pdf_layout_do_tekstu(raw))
+        # inna liczba stron niż w `-layout` — oznaczanie pominięte i flaga
+        with mock.patch.object(eli, "_pdftotext", side_effect=self._pdftotext(_bbox([(595.0, 842.0, self.SLOWA)] * 2))):
+            self.assertEqual(eli.pdf_do_tekstu_z_notkami(b"%PDF")[2].get("bez_wspolrzednych"), (2, 1))
+
+    def test_tekst_ostrzega_a_strict_blokuje(self):
+        meta = {"ELI": "DU/2026/218", "legalStatusDate": "2026-02-19", "textHTML": False,
+                "displayAddress": "Dz.U. 2026 poz. 218", "texts": [{"fileName": "D20260218L.pdf", "type": "T"}]}
+
+        def get(path, params=None, soft=False):
+            return {} if path.endswith("/references") else "" if path.endswith("/text.html") else meta
+        patche = dict(_get_bytes=lambda *a, **k: b"%PDF", pdftotext_dostepny=lambda: True,
+                      _pdftotext=self._pdftotext(""), _nowszy_tj=lambda *a, **k: None, _ostrzezenia=lambda *a, **k: [])
+        kod, out, err = _kod(["tekst", "DU", "2026", "218", "--fragment", "art. 37m"], get, **patche)
+        self.assertEqual(kod, 0, err)
+        self.assertIn("UWAGA: pdftotext -bbox nie zwrócił współrzędnych słów", out)
+        self.assertIn("liczby stojące tuż przed przypisem mogą być obcięte", out)
+        self.assertIn("--pdf plik.pdf", out)
+        kod, out, err = _kod(["--strict", "tekst", "DU", "2026", "218", "--fragment", "art. 37m"], get, **patche)
+        self.assertEqual(kod, 2)
+        self.assertIn("BŁĄD (strict)", err)
+        self.assertIn("NIE zostały potwierdzone współrzędnymi", err)
+        self.assertEqual(out, "")
+        # ze współrzędnymi — bez ostrzeżenia, strict przepuszcza
+        patche["_pdftotext"] = self._pdftotext(_bbox([(595.0, 842.0, self.SLOWA)]))
+        kod, out, err = _kod(["--strict", "tekst", "DU", "2026", "218", "--fragment", "art. 37m"], get, **patche)
+        self.assertEqual(kod, 0, err)
+        self.assertNotIn("współrzędnych słów", out)
+        self.assertIn("1) 152,61 zł za 1000 l", out)
 
 
 if __name__ == "__main__":

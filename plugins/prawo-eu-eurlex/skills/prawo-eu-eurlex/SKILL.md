@@ -1,6 +1,6 @@
 ---
 name: prawo-eu-eurlex
-version: 2.3.0
+version: 2.4.0
 description: >-
   Odpytuje OFICJALNE repozytorium prawa UE — CELLAR/EUR-Lex Urzędu Publikacji (SPARQL + REST,
   bez klucza): wyszukiwanie aktów, pełny tekst PO POLSKU i w 23 innych językach, WERSJE
@@ -57,7 +57,7 @@ EURLEX="${CLAUDE_PLUGIN_ROOT}/skills/prawo-eu-eurlex/scripts/eurlex.py"
 #    sprawdzana w kodzie przed zapisem i przed każdym uruchomieniem; niezgodna = helper nie startuje.
 [ -f "$EURLEX" ] || EURLEX=$(python3 - <<'EOF'
 import hashlib, os, sys, urllib.request
-WERSJA, SHA256 = "2.3.0", "fb483c9fff25961d72ec061af64db1c19663c646a9c83848a089fedd7342b4f9"
+WERSJA, SHA256 = "2.4.0", "137ea7ea59f4ec33dc9a9c58b73e726b0b0903adc459f757609794c273ff8b7c"
 URL = f"https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/v{WERSJA}/plugins/prawo-eu-eurlex/skills/prawo-eu-eurlex/scripts/eurlex.py"
 p = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"prawo-eu-eurlex-{WERSJA}", "eurlex.py")
 try:
@@ -92,12 +92,18 @@ wersje skonsolidowane `02016R0679-20160504`, sprostowania `32016R0679R(01)`, tra
   fizycznych w związku z przetwarzaniem danych osobowych"). Zero trafień z mianownika to NIE
   dowód, że aktu nie ma.
 - **meta** — metadane: pełny tytuł, typ, daty, status, ELI: `python3 scripts/eurlex.py meta 32016R0679`
+  - **Data aktu ≠ publikacja.** „Data aktu" to data dokumentu (przyjęcie/podpisanie: RODO 2016-04-27);
+    „Publikacja w Dz.U. UE" to ogłoszenie, od którego liczy się vacatio legis (RODO: Dz.U. L 119
+    z 4.5.2016; od X 2023 Dz.U. „akt po akcie": `Dz.U. L, 2024/1689, 12.7.2024`). Numeru STRONY
+    CELLAR wiarygodnie nie podaje — weź go z nagłówka urzędowego PDF (`tekst … --pdf`).
   - **Daty pochodzą z metadanych AKTU BAZOWEGO.** CELLAR trzyma wejście w życie i daty rozpoczęcia
     stosowania w JEDNEJ właściwości: jedna data = „Wejście w życie"; kilka dat = „Wejście w życie /
     stosowanie" i pod nią rodzaj każdej daty z adnotacji CELLAR (np. RODO: `2016-05-24: wejście w
     życie (data publikacji +20 patrz art. 99)`, `2018-05-25: stosowanie (patrz art. 99)`); bez
     adnotacji — uwaga, że CELLAR ich nie opisuje. Zakres daty i tak ustal z przepisów końcowych
-    (`tekst --fragment` na wskazanym artykule).
+    (`tekst --fragment` na wskazanym artykule). `1001-01-01` w CELLAR to zastępnik daty
+    NIEOKREŚLONEJ (32024R2987: stosowanie części przepisów od wejścia w życie standardów
+    technicznych) — `meta` pisze „data nieokreślona", nie podawaj jej jako daty.
   - **Dyrektywa:** osobno „Termin transpozycji" (bywa kilka — różne zakresy); polską ustawę
     wdrażającą sprawdź skillem prawo-pl-eli. Starsze dyrektywy nie mają pola transpozycji, tylko
     ogólny termin (deadline) — `meta` pokazuje go z przepisem (32002L0012: 2003-09-20, „najpóźniej
@@ -118,11 +124,20 @@ wersje skonsolidowane `02016R0679-20160504`, sprostowania `32016R0679R(01)`, tra
     zmieniają dat i nie wywołują ostrzeżenia.
 - **skonsolidowany** — WERSJE SKONSOLIDOWANE aktu (odpowiednik tekstu jednolitego; data w CELEX
   = stan prawny na): `python3 scripts/eurlex.py skonsolidowany 32006L0112`
+  **AKTUALNA = najnowsza wersja z datą „stan na" nie późniejszą niż dziś.** Urząd Publikacji
+  publikuje też wersje PRZYSZŁE (zmiany stosowane od daty w CELEX-ie): CRR `02013R0575-20270101`
+  obok obowiązującej `02013R0575-20260626`. Lista oznacza je „← PRZYSZŁA … jeszcze NIE obowiązuje";
+  nie cytuj ich jako prawa obowiązującego dziś. Gdy akt zmieniający przyjęto albo wszedł w życie po
+  dacie aktualnej wersji, a żadna wersja go nie ujmuje, narzędzie to mówi (rozporządzenie 883/2004:
+  `02004R0883-20190731` nie ujmuje 2026/2359, stosowanego częściowo od 1.11.2026) — przeczytaj wtedy
+  akt zmieniający i od kiedy się stosuje. `--json` zwraca obiekt: `aktualna`, `przyszle`, `wersje`
+  (wszystkie, najnowsza data pierwsza), `zmiany_nieujete`, `dzis`.
 - **tekst** — treść aktu (XHTML → czysty tekst), domyślnie po polsku. **Do pojedynczego artykułu
   używaj `--fragment`** (pełny akt to setki tysięcy znaków):
   `python3 scripts/eurlex.py tekst 02016R0679-20160504 --fragment "art. 28"`
   `python3 scripts/eurlex.py tekst 32024R1689 --fragment "profilowanie"` (pełnotekstowo)
-  `--jezyk eng` — inna wersja językowa; `--pdf ŚCIEŻKA` zapisuje urzędowy PDF.
+  `--jezyk eng` — inna wersja językowa; `--pdf ŚCIEŻKA` zapisuje urzędowy PDF (istniejącego pliku NIE
+  nadpisuje — kończy się błędem; podaj nową ścieżkę).
   Starsze akty (np. `31995L0046`, e-Privacy `32002L0058`) mają w CELLAR tylko HTML (bez XHTML)
   i PDF pod innym plikiem niż `DOC_1` — `tekst` i `--pdf` pobierają je normalnie. 404 na akcie
   bazowym narzędzie wyjaśnia: „sprawdź numer CELEX" tylko gdy aktu nie ma w metadanych; gdy akt
@@ -161,21 +176,32 @@ wersje skonsolidowane `02016R0679-20160504`, sprostowania `32016R0679R(01)`, tra
   status i daty aktu — `meta --json`):
   `python3 scripts/eurlex.py odniesienia 32016R0679` (→ uchyla 31995L0046)
 - każda komenda przyjmuje `--json` oraz `--strict`; obie flagi działają przed komendą i po niej.
-  Zero trafień / nierozpoznana odpowiedź API kończą się komunikatem i kodem wyjścia ≠ 0 — także z `--json`
-  (nie dostaniesz pustego JSON-a, który wyglądałby jak „sprawdzone, nic nie ma”; dotyczy też `szukaj`).
+  **Kody wyjścia:** `0` — jest wynik; `1` — ZWERYFIKOWANY brak (zapytanie poprawne, źródło odpowiedziało:
+  `szukaj` bez trafień, `--fragment` bez frazy w tekście XHTML/HTML, `skonsolidowany` bez wersji,
+  `odniesienia` bez relacji istniejącego aktu); `2` — wszystko inne (błąd sieci/HTTP, nieoczekiwana
+  odpowiedź, zły argument, nieistniejący CELEX, brak wersji językowej, blokada `--strict`, brak frazy
+  w tekście wyekstrahowanym z PDF, nieprzewidziany błąd). Kod `2` NIGDY nie znaczy „nie ma" — nie
+  wnioskuj z niego o braku aktu ani przepisu. Komunikat błędu idzie na stderr; `szukaj --json` bez
+  trafień nie wypisuje pustego „[]”.
   `--json` dla `meta` zwraca obiekt: `meta` (surowe wiersze tej pracy), `akt_bazowy` (na wersji
-  skonsolidowanej), `zmieniajace`, `sprostowania` (w języku `--jezyk`), `wersje_skonsolidowane`,
+  skonsolidowanej), `zmieniajace`, `sprostowania` (w języku `--jezyk`), `wersje_skonsolidowane`
+  (wszystkie, najnowsza data pierwsza — pierwsza bywa PRZYSZŁA), `aktualna_wersja_skonsolidowana`,
+  `przyszle_wersje_skonsolidowane`,
   `koniec_obowiazywania` (`akt`: data końca aktu, `9999-12-31` = brak; `czesciowy_uplyw`: lista dat),
   `opisy_dat` (adnotacje CELLAR: pole, data, typ, komentarz, surowe; `null` = niepobrane), `ostrzezenia`.
 - **Co sprawdza `--strict`, a czego nie.** Każda kontrola wykonuje się PRZED emisją wyniku; awaria
   kontroli (SPARQL niedostępny) blokuje wynik zamiast udawać „brak". Blokuje: `tekst` (i `--pdf`)
-  aktu bazowego, gdy istnieją wersje skonsolidowane albo SPROSTOWANIE w danym języku (tekst
-  niesprostowany), i starszą wersję skonsolidowaną, gdy jest nowsza (także w
-  `meta`); `meta` AKTU BAZOWEGO, gdy akt był zmieniany (daty stosowania mogą być nieaktualne —
-  użyj `meta`/`tekst` najnowszej konsolidacji). Nie blokuje: `meta` aktu bazowego bez nowelizacji
-  (konsolidacja z samych sprostowań i same sprostowania → tylko ostrzeżenie), `meta` najnowszej
+  aktu bazowego, gdy istnieje obowiązująca wersja skonsolidowana albo SPROSTOWANIE w danym języku
+  (tekst niesprostowany); starszą wersję skonsolidowaną, gdy jest nowsza obowiązująca, i wersję
+  PRZYSZŁĄ (także w `meta`); `meta` AKTU BAZOWEGO,
+  gdy akt był zmieniany (daty stosowania mogą być nieaktualne — użyj `meta`/`tekst` obowiązującej
+  konsolidacji). Nie blokuje: `meta` aktu bazowego bez nowelizacji
+  (konsolidacja z samych sprostowań i same sprostowania → tylko ostrzeżenie), `meta` obowiązującej
   wersji skonsolidowanej
-  (daty aktu bazowego idą z ostrzeżeniem). `--strict` NIE weryfikuje treści dat z przepisami
+  (daty aktu bazowego idą z ostrzeżeniem), `tekst` obowiązującej wersji skonsolidowanej, gdy akt
+  zmieniający przyjęty lub wchodzący w życie po jej dacie nie figuruje w żadnej wersji (tylko
+  ostrzeżenie — CELLAR nie podaje, od kiedy zmiana się stosuje: VAT 2025/1539 i MDR 2025/1920 od
+  2028 r.; sprawdź akt zmieniający). `--strict` NIE weryfikuje treści dat z przepisami
   końcowymi ani nie wykrywa zmian, których CELLAR jeszcze nie zaindeksował.
 
 Narzędzie samo ostrzega: na akcie bazowym podpowiada najnowszą wersję skonsolidowaną i wymienia
@@ -206,8 +232,8 @@ wersji skonsolidowanych czytaj akt bazowy):
 ## Zasady (ważne — dlaczego)
 
 1. **Najpierw właściwy akt i wersja, potem cytat.** Typowy przepływ: tabela wyżej (albo `szukaj`) →
-   `skonsolidowany <CELEX>` → `tekst <najnowsza wersja> --fragment "art. N"`. Cytowanie aktu
-   bazowego sprzed nowelizacji to częsty błąd.
+   `skonsolidowany <CELEX>` → `tekst <wersja oznaczona AKTUALNA> --fragment "art. N"` (nie
+   pierwsza z listy — ta bywa PRZYSZŁA). Cytowanie aktu bazowego sprzed nowelizacji to częsty błąd.
 2. **Wejście w życie ≠ rozpoczęcie stosowania ≠ termin transpozycji.** RODO weszło w życie
    24.05.2016, a stosuje się od 25.05.2018; AI Act stosuje się ETAPAMI (różne daty dla różnych
    rozdziałów); dyrektywa wiąże państwa od terminu transpozycji. `meta` pokazuje wszystkie daty
@@ -223,7 +249,11 @@ wersji skonsolidowanych czytaj akt bazowy):
    DOSŁOWNEGO cytatu pobierz urzędowy PDF (`tekst … --pdf`) — a przy sprostowaniu także PDF
    sprostowania (`tekst <CELEX>R(nn) --pdf …`).
 4. **Wszystkie wersje językowe są równorzędnie autentyczne.** Przy wątpliwości interpretacyjnej
-   porównaj polską z angielską: `tekst <CELEX> --jezyk eng --fragment "art. N"`.
+   porównaj polską z angielską: `tekst <CELEX> --jezyk eng --fragment "art. N"`. `--fragment` wycina
+   w każdym języku tę samą jednostkę (kończy na następnym artykule, sekcji, rozdziale, części lub
+   załączniku). Gdy wersje różnią się liczbą ustępów albo artykułów, to zwykle różnica samego tekstu
+   w CELLAR, nie narzędzia — np. polska wersja skonsolidowana CRR `02013R0575-20260626` nie ma
+   art. 338 (także w jej PDF), angielska ma; rozstrzyga urzędowy PDF aktu i aktów zmieniających.
 5. **Zawsze podawaj CELEX i ELI** przy cytacie (np. „art. 28 ust. 3 RODO, CELEX 32016R0679",
    `meta` zwraca ELI). To pozwala odbiorcy zweryfikować źródło.
 6. Baza może nie mieć najświeższych zmian (indeksacja bywa opóźniona) — przy sprawie na konkretną

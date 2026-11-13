@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-edzienniki
-version: 2.3.0
+version: 2.4.0
 description: >-
   Odpytuje API ELI 16 WOJEWÓDZKICH DZIENNIKÓW URZĘDOWYCH — PRAWO MIEJSCOWE: uchwały rad gmin,
   powiatów i sejmików województw, rozporządzenia i zarządzenia wojewody, akty prawa miejscowego.
@@ -54,7 +54,7 @@ EDZ="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-edzienniki/scripts/edzienniki.py"
 #    sprawdzana w kodzie przed zapisem i przed każdym uruchomieniem; niezgodna = helper nie startuje.
 [ -f "$EDZ" ] || EDZ=$(python3 - <<'EOF'
 import hashlib, os, sys, urllib.request
-WERSJA, SHA256 = "2.3.0", "51a7831de010a7d583ef8140fc43354d026bae4192ffbe3722acc8140fd88968"
+WERSJA, SHA256 = "2.4.0", "241a7cc64f04c062723e7899cde01bc6640c41c6cf96762830821ee145307d9c"
 URL = f"https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/v{WERSJA}/plugins/prawo-pl-edzienniki/skills/prawo-pl-edzienniki/scripts/edzienniki.py"
 p = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"prawo-pl-edzienniki-{WERSJA}", "edzienniki.py")
 try:
@@ -82,6 +82,9 @@ Nie szukaj helpera przez `find` po katalogach użytkownika ani systemu i nie pob
   `LS` lubuskie, `LD` łódzkie, `MP` małopolskie, `MZ` mazowieckie, `OP` opolskie,
   `PK` podkarpackie, `PL` podlaskie, `PM` pomorskie, `SL` śląskie, `SK` świętokrzyskie,
   `WM` warmińsko-mazurskie, `WP` wielkopolskie, `ZP` zachodniopomorskie (można też podać nazwę).
+  To NIE są dawne kody ISO 3166-2: `LB` = **lubelskie** (w ISO PL-LB było lubuskie → tu `LS`); ISO `PD`,
+  `WN`, `MA`, `LU` kończą się błędem z podpowiedzią właściwego kodu. Prefiks pasujący do kilku
+  województw (`ma`, `po`, `lu`, `w`…) = błąd z listą kandydatów, nigdy cichy wybór.
 - **szukaj** — akty województwa po frazie z TYTUŁU (nazwa gminy, przedmiot uchwały):
   `python3 scripts/edzienniki.py szukaj --woj DS "plan zagospodarowania" --rok 2026 --limit 5`
   Filtr jest LOKALNY (API dzienników ignoruje filtry serwerowe — silnik pobiera rocznik i sam
@@ -108,7 +111,8 @@ Nie szukaj helpera przez `find` po katalogach użytkownika ani systemu i nie pob
   zawinięte linie scalone); `--fragment "§ 2"` / `"art. 5"` zwraca **całą jednostkę** (do następnego §;
   każde wystąpienie, np. § 2 uchwały i § 2 statutu w załączniku — trafienie w załączniku poprzedza
   linia `[w załączniku: Załącznik Nr …]`; kolumna „§" i numeracja kolumn tabeli „1. 2. 3. 4." nie są
-  paragrafem), inna fraza — okna rozszerzone do granic akapitu; `--pdf` zapisuje urzędowy PDF:
+  paragrafem), inna fraza — okna rozszerzone do granic akapitu; `--pdf` zapisuje urzędowy PDF (nie
+  nadpisuje istniejącego pliku — podaj nową nazwę):
   `python3 scripts/edzienniki.py tekst DS 2026 3299 --fragment "§ 2"`
   Przed treścią `tekst` pokazuje te same powiązania co `akt` (linie `UWAGA:`): nieważność w całości
   lub w części (z tytułem rozstrzygnięcia i unieważnioną jednostką), sprostowanie, uchylenie, zmiany —
@@ -117,8 +121,13 @@ Nie szukaj helpera przez `find` po katalogach użytkownika ani systemu i nie pob
   Bez `pdftotext` na PATH: tekst z `text.html` z głośnym ostrzeżeniem (zwykle tylko 1. strona —
   „nie znaleziono frazy" NIE jest wtedy dowodem braku przepisu) — pobierz PDF przez `--pdf`.
 - każda komenda przyjmuje `--json` oraz `--strict`; obie flagi działają przed komendą i po niej.
-  Zero trafień / nierozpoznana odpowiedź API kończą się komunikatem i kodem wyjścia ≠ 0 — także z `--json`
-  (nie dostaniesz pustego JSON-a, który wyglądałby jak „sprawdzone, nic nie ma”).
+  Zero trafień / nierozpoznana odpowiedź API kończą się komunikatem na stderr i kodem wyjścia ≠ 0 — także
+  z `--json` (nie dostaniesz pustego JSON-a, który wyglądałby jak „sprawdzone, nic nie ma”).
+  **Kody wyjścia:** `0` = jest wynik; `1` = ZWERYFIKOWANY brak (pełny rocznik bez trafień albo frazy nie ma
+  w pełnym tekście z PDF); `2` = wszystko inne — błąd sieci/HTTP/TLS (np. 5xx = awaria serwera dziennika),
+  nieistniejąca pozycja, zły argument, blokada `--strict`, niepełna lista rocznika, brak frazy w samym
+  `text.html`. Tylko kod `1` wolno opisać jako „nie ma takiego aktu/przepisu”; przy `2` powiedz, czego nie
+  udało się sprawdzić.
 
 ### Co dokładnie sprawdza `--strict` (kod wyjścia ≠ 0 = wynik NIEZWERYFIKOWANY)
 
@@ -160,16 +169,22 @@ Typowy przepływ: ustal województwo → `szukaj --woj <kod> "<gmina lub przedmi
    z urzędowego PDF"). `text.html` na hostach dzienników to zwykle **tylko 1. strona aktu** (bez
    dalszych §, stawek, załączników), a na hoście podlaskim bywa uszkodzony (znaki U+FFFD, brak „§",
    zlepione wyrazy) — silnik to wykrywa i ostrzega; do dosłownego cytatu z takiego wyniku użyj
-   `tekst … --pdf`.
+   `tekst … --pdf`. Stawka z prawej kolumny listy stawek stoi na końcu akapitu swojej litery
+   („a) … od 1 m² powierzchni  1,20 zł”); w tabelach pusta komórka znika bez śladu — cytując wiersz
+   tabeli, porównaj go z PDF. Strony PDF bez warstwy tekstowej (rysunek planu, **zeskanowany załącznik**) nie trafiają
+   do tekstu — `tekst` wymienia je w `UWAGA: strony … nie mają warstwy tekstowej`; ich treść czytaj
+   z PDF (`--pdf`), a brak frazy przy takich stronach to kod 2, nie „zweryfikowany brak”.
 5. **mazowieckie (MZ)** stoi za filtrem antybotowym (Akamai), który żądania klientów
    nieprzeglądarkowych przetrzymuje bez odpowiedzi (timeout) — także z polskiego IP, to NIE jest blokada
    geograficzna. Silnik wysyła nagłówki, które filtr przepuszcza (zweryfikowane 2026-10-05); gdy mimo to
    zgłosi timeout MZ, filtr zmienił reguły — wskaż użytkownikowi UI w przeglądarce i ręczne pobranie
-   PDF: https://edziennik.mazowieckie.pl/ **Małopolskie (MP), lubuskie (LS) i łódzkie (LD)** wysyłają
+   PDF: https://edziennik.mazowieckie.pl/ Błąd **HTTP 5xx** (np. MZ 13.11.2026: 503) to awaria serwera
+   dziennika, NIE brak aktu — silnik mówi to wprost; ponów później, nie wnioskuj, że aktu nie ma.
+   **Małopolskie (MP), lubuskie (LS) i łódzkie (LD)** wysyłają
    niepełny łańcuch certyfikatów TLS — silnik dociąga certyfikat pośredni (AIA) i weryfikuje pełny
    łańcuch sam. Inne błędy TLS silnik nazywa po imieniu — np. **wygasły certyfikat** serwera (pomorskie
-   PM od 2026-10-01) to błąd po stronie hosta: silnik nie wyłącza weryfikacji, powiedz o tym
-   użytkownikowi i wskaż UI.
+   PM od 1.10.2026 do odnowienia) to błąd po stronie hosta: silnik nie wyłącza weryfikacji, powiedz
+   o tym użytkownikowi i wskaż UI.
 6. Pełna tabela hostów, endpointy i pułapki API: `references/api.md`.
 
 ## Czego ten skill NIE obejmuje

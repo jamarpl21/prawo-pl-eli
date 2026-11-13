@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-uodo
-version: 2.3.0
+version: 2.4.0
 description: >-
   Odpytuje OFICJALNE API Portalu Orzeczeń UODO (orzeczenia.uodo.gov.pl) — decyzje Prezesa
   Urzędu Ochrony Danych Osobowych: kary pieniężne za naruszenia RODO, upomnienia, nakazy,
@@ -54,7 +54,7 @@ UODO="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-uodo/scripts/uodo.py"
 #    sprawdzana w kodzie przed zapisem i przed każdym uruchomieniem; niezgodna = helper nie startuje.
 [ -f "$UODO" ] || UODO=$(python3 - <<'EOF'
 import hashlib, os, sys, urllib.request
-WERSJA, SHA256 = "2.3.0", "2911ac0e6babdda65c48f2fa96fc386ab02bdf2edfe85aa8a902e0b852913648"
+WERSJA, SHA256 = "2.4.0", "41f79ebeb9f30e882313a9550256ef759a3e586935c325800efe13942d8436b0"
 URL = f"https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/v{WERSJA}/plugins/prawo-pl-uodo/skills/prawo-pl-uodo/scripts/uodo.py"
 p = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"prawo-pl-uodo-{WERSJA}", "uodo.py")
 try:
@@ -94,7 +94,9 @@ Nie szukaj helpera przez `find` po katalogach użytkownika ani systemu i nie pob
   w nic — zero wyników z mianownika to NIE dowód, że takich decyzji nie ma.
   Fraza, której API nie przyjmie jako regex (np. `"lit. f)"`, `"(monitoring"`, `"C++"`), jest
   automatycznie szukana dosłownie (silnik mówi to na stderr); świadomy regex (`"monitoring|biometr"`)
-  działa jak dotąd.
+  działa jak dotąd. API ma inny dialekt niż Python: `\b`, `\A` i `^`/`$` w treści dają tam fałszywe zero,
+  a `\D \S \W` odwracają się po cichu — `szukaj`/`--tytul` same je przepisują (`\b` → `\y`; usunięta
+  kotwica = wynik szerszy, silnik to mówi), a surowy `--warunek` z nimi przy pustym wyniku kończy się kodem 2.
   API stosuje **jeden warunek na zapytanie** (fraza ALBO tytuł; zakres dat można łączyć
   z warunkiem). Zaawansowane: `--warunek
   "indeks:operator:wartość"` (indeksy i operatory: `references/api.md`). `--limit N`, `--strona N`.
@@ -127,8 +129,11 @@ Nie szukaj helpera przez `find` po katalogach użytkownika ani systemu i nie pob
   (prawomocności nie da się potwierdzić; komunikat podaje `cbosa.py sygnatura "…"`); decyzja
   NIEPRAWOMOCNA bez wpisów sądowych przechodzi z ostrzeżeniem „UWAGA: decyzja NIEPRAWOMOCNA".
   W `najnowsze`/`szukaj` `--strict` nic nie zmienia (listy to metadane, nie ma czego weryfikować).
-  Zero trafień / nierozpoznana odpowiedź API kończą się komunikatem i kodem wyjścia ≠ 0 — także z `--json`
-  (nie dostaniesz pustego JSON-a, który wyglądałby jak „sprawdzone, nic nie ma”).
+  **Kody wyjścia** (także z `--json`, komunikat na stderr, bez pustego JSON-a): **0** = wynik; **1** =
+  ZWERYFIKOWANY brak (zapytanie poprawne, zero trafień albo frazy `--fragment` nie ma w treści); **2** =
+  wszystko inne — błąd sieci/HTTP, zła odpowiedź API, zły argument, nieznana sygnatura, blokada `--strict`,
+  pusta dalsza strona albo pusty wynik filtra `--pub-od/--pub-do` w obrębie strony. Przy kodzie 2 NIE pisz,
+  że decyzji nie ma.
 
 Typowy przepływ: `szukaj "<rdzeń frazy>"` → wybierz sygnaturę → `decyzja <sygnatura>`
 → jeśli blok „Kontrola sądowa" pokazuje wyrok: `prawo-pl-cbosa sygnatura "<sygnatura wyroku>"`

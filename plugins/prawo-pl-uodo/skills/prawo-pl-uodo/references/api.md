@@ -42,15 +42,31 @@ najnowszych — tak sortuje silnik), `fields` (lista pól przez przecinek, np.
 **Zweryfikowane pułapki:**
 - do pełnego tekstu (`content_pl`) używaj **`regex`, nie `glob`** — glob dopasowuje całą wartość
   i na wielolinijkowej treści zawodzi (`content_pl:glob:*biometri*` → 0; `content_pl:regex:biometr.*` → trafienia);
-- regex działa **bez rozróżniania wielkości liter**;
+- regex działa **bez rozróżniania wielkości liter**, bo API **zamienia wzorzec na małe litery** (tekst
+  najpewniej też — wniosek z `[[:upper:]]` i `\x41` → 0)
+  (także polskie: `PIENIĘŻN`, `Pieniężn`, `pieniężn` w tytułach od 2025 r. → ten sam zbiór 39 decyzji);
 - wyrażenie, którego silnik API nie skompiluje, daje **goły HTTP 500** (pomiar 2026-11-13: `lit. f)`,
-  `(monitoring`, `C++`, `[a`, `?a`, `*a`, `a\`, `x{2,1}`); ucieczka `\x` działa dla każdego znaku
+  `(monitoring`, `C++`, `[a`, `?a`, `*a`, `a\`, `x{2,1}`, `\Z`, `\z`, powtórzenie powyżej 255:
+  `.{0,256}x` → 500, `.{0,255}x` → 200); ucieczka `\x` działa dla każdego znaku
   specjalnego (`\. \( \) \[ \] \{ \} \* \+ \? \| \^ \$ \\` → 200). Dialekt ≠ Python `re`: kwantyfikatory
   zaborcze (`a++`, `a*+`), grupy atomowe `(?>…)` i nazwane (`(?P<x>…)`, `(?<x>…)`) → 500; `(?i)`,
-  `(?=…)`, `(?<=…)`, `\w` → 200; `\b`, `^`, `$`, `\A` → 200, ale 0 trafień
-  przy `\bmonitor`, `^monitoring`, `monitoring$` — nie polegaj na kotwicach i granicy słowa.
-  `szukaj`/`--tytul` same zabezpieczają frazę niepoprawną jako regex (komunikat na stderr), `--warunek`
-  idzie surowo; przy 5xx na warunku `regex` silnik podpowiada składnię;
+  `(?=…)`, `(?<=…)`, `\d \s \w`, klasy POSIX (`[[:digit:]]`, `[[:space:]]`) → 200;
+- **pułapki bez błędu HTTP** (pomiar 2026-11-13, składnia POSIX/Tcl + zamiana na małe litery):
+  | konstrukcja | odpowiedź API | zamiast tego |
+  |---|---|---|
+  | `\bmonitor`, `\Bonitor` | 0 trafień (`\b` = znak backspace, `\B` → `\b`) | `\ymonitor` (granica słowa), `\m` (początek słowa) |
+  | `\Amonitoring`, `monitoring\M` | 0 (`\A` → `\a` = znak dzwonka, `\M` → `\m`) | `^`, `\y` |
+  | `^monitoring`, `monitoring$`, `(?n)^monitoring` w `content_pl` | 0 — `^`/`$` kotwiczą CAŁĄ treść decyzji (`^.{0,20}decyzj` trafia) | bez kotwicy |
+  | `^nałożenie` w `title_pl` | trafienia — tytuł to jedno pole, kotwica działa | — |
+  | `\D`, `\S`, `\W`, `\Y` | po cichu jak `\d`, `\s`, `\w`, `\y` (`^\S` i `^\s` → 0, choć `^.` trafia) | `[^0-9]`, `[^[:space:]]`, `[^[:alnum:]_]` |
+  | `[[:upper:]]`, `\x41` | 0 (tekst w małych literach) | `[[:alpha:]]`, `[a-z]` |
+  `\y` uwzględnia polskie litery: `\yśrodk` i `środk`, `\ykażdego` i `każdego` dają te same zbiory, a
+  `\ydego` → 0, choć „każdego” jest w ponad 100 decyzjach. `$` w `title_pl` (`2016/679\.$`) dał ten sam
+  zbiór co bez kotwicy — fałszywego zera nie ma.
+  `szukaj`/`--tytul` same zabezpieczają frazę niepoprawną jako regex (komunikat na stderr) i przepisują
+  konstrukcje z tabeli na równoważnik albo nadzbiór (usunięta kotwica — silnik to mówi); `--warunek`
+  idzie surowo — przy pustym wyniku silnik podaje warunek bez pułapek i kończy kodem 2 (artefakt, nie
+  brak); przy 5xx na warunku `regex` silnik podpowiada składnię;
 - `order=-id` sortuje po `id`, które koduje datę OGŁOSZENIA — „najnowsze" = ostatnio wydane, nie
   ostatnio opublikowane (starsze decyzje dopisywane do portalu lądują głęboko w liście);
 - **łańcuch warunków** (`/{warunek1}/{warunek2}`) zwraca 200, ale drugi warunek bywa ignorowany —
@@ -89,7 +105,11 @@ type status scope refid text}] parts resources{} entities[] terms`.
   `validation` | **`repealed`** (uchylenie przez sąd — w całości lub w części, `refid` wyroku) |
   **`defended`** (skargę oddalono; `refid` wyroku) | **`trial`** („Rozpatrzenie”: orzeczenie sądu bez
   oznaczonego wyniku — wyrok albo postanowienie, np. o zawieszeniu; `refid` sprawy) |
-  `other` (na rekordach sądowych: „Data wpływu", bez refid).
+  `other` (na rekordach sądowych: „Data wpływu", bez refid). `validation` bywa z `refid` orzeczenia
+  (3 z 535 decyzji od 2019 r., 2026-11-13: ZSOŚS.440.8.2018 → III OSK 2986/21 ze statusem `nonfinal`,
+  DKN.5131.49.2021 → III OSK 251/24, DKN.5112.1.2020 → III OSK 2694/23) — silnik pokazuje je w bloku
+  „Kontrola sądowa”; wpis `nonfinal` nie potwierdza prawomocności. W historii portalu (`/document/<urn>/history`)
+  `defended` to „Potwierdzenie przez”, `repealed` — „Uchylenie przez”, `trial` — „Rozpatrzenie”.
 - **Kontrola sądowa jest tylko w `dates[]`** — status `final` nie znaczy, że kara się ostała:
   ZSPR.421.3.2018 ma status `final`, a `dates[]` zawiera `repealed` 2019-12-11 (II SA/Wa 1030/19 —
   uchylony pkt 2 = kara 943 470 zł) i `defended` 2023-09-19 (III OSK 2538/21 — oddalono skargę kasacyjną

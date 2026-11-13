@@ -1,7 +1,7 @@
 ---
 name: prawo-pl-orzeczenia-ms
 metadata:
-  version: "2.3.0"
+  version: "2.4.0"
 description: >-
   Pobiera orzeczenia sądów powszechnych (SA/SO/SR) bezpośrednio z Portalu Orzeczeń
   Ministerstwa Sprawiedliwości (orzeczenia.ms.gov.pl). Używaj, gdy użytkownik wskazuje
@@ -34,7 +34,7 @@ MS="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-orzeczenia-ms/scripts/orzeczenia_ms.py
 #    sprawdzana w kodzie przed zapisem i przed każdym uruchomieniem; niezgodna = helper nie startuje.
 [ -f "$MS" ] || MS=$(python3 - <<'EOF'
 import hashlib, os, sys, urllib.request
-WERSJA, SHA256 = "2.3.0", "61a724d8eaa18bd7451313d7bdc58c3d883c000a7de9ab4889093b665e9cf8a6"
+WERSJA, SHA256 = "2.4.0", "d6d2520994e2ede6d072055debdf864d95c4cd937bee34b845ffd591fb2cbbbc"
 URL = f"https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/v{WERSJA}/plugins/prawo-pl-orzeczenia-ms/skills/prawo-pl-orzeczenia-ms/scripts/orzeczenia_ms.py"
 p = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"prawo-pl-orzeczenia-ms-{WERSJA}", "orzeczenia_ms.py")
 try:
@@ -83,7 +83,10 @@ python3 "$MS" rss --sad 15050000 --limit 5
 - Kolejne strony powtarzają i gubią pozycje (portal przestawia pozycje o równym kluczu sortowania).
   Do PEŁNEJ listy (statystyka, przegląd wszystkich orzeczeń sądu/okresu) używaj `--wszystkie`
   (bez `--strona`; `--sort` tylko `data`): silnik zbiera strony, łączy po `id`, zwraca listę tylko
-  przy komplecie (`kompletna: true`), a bez kompletu po 3 rundach — kod 2 bez listy. Limit 200
+  przy komplecie (`kompletna: true`), a bez kompletu — kod 2 bez listy. Rundy trwają, dopóki
+  starcza budżetu 60 zapytań na wywołanie (20 stron = 3 rundy, mniejsze zapytania więcej), i kończą się
+  po 3 rundach z rzędu bez nowej pozycji; stronę po błędzie sieci (przekroczony czas, zerwane
+  połączenie) silnik ponawia raz po 5 s, w tym samym budżecie. Limit 200
   trafień: przy większej liczbie zawęź zapytanie (`--sad`, `--wydzial`, krótszy zakres `--od/--do`)
   i złóż wynik z kilku zawężonych. Nie składaj pełnej listy ręcznie ze stron.
   Pomiar: [references/api.md](references/api.md).

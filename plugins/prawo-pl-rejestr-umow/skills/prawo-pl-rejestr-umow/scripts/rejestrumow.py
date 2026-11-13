@@ -33,7 +33,7 @@ Sekcje body wyszukiwania (API ignoruje nieznane pola PO CICHU — zła nazwa = c
 """
 import sys, json, re, time, argparse, email.utils, urllib.request, urllib.parse, urllib.error
 
-__version__ = "2.3.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "2.4.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://rejestrumow.gov.pl/api-dp/v1"
 CONTENT_HOSTS = ("rejestrumow.gov.pl",)
 
@@ -77,6 +77,14 @@ ZAWEZ = "zawęź filtry (daty: --od/--do, --pub-od/--pub-do; --woj; --wartosc-od
 
 
 LIMIT_CZEKANIA_429 = 60  # s — łączne czekanie na limit zapytań API (HTTP 429), potem błąd
+
+
+class BrakWynikow(SystemExit):
+    """ZWERYFIKOWANY brak wyników: zapytanie poprawne, API odpowiedziało, zero trafień → kod 1.
+    Każde inne zakończenie z komunikatem (sieć, HTTP, 429, nieoczekiwana odpowiedź, zły argument,
+    nieistniejące idUmowy) daje kod 2 — dotąd sys.exit("…") dawał 1 w obu sytuacjach, więc
+    wywołujący nie odróżniał „sprawdzone, nic nie ma” od „nie udało się sprawdzić” (ujednolicenie
+    z orzeczenia_ms.py, 2026-11)."""
 
 
 def _retry_after(naglowki, domyslnie):
@@ -155,8 +163,28 @@ def _req(path, params=None, body=None):
     try:
         return json.loads(tresc)
     except json.JSONDecodeError:
-        sys.exit(f"BŁĄD: API rejestru zwróciło nie-JSON dla {url} (nieznana ścieżka zwraca "
-                 "stronę HTML aplikacji) — sprawdź endpoint / spróbuj ponownie.")
+        _nie_json(url, tresc)
+
+
+def _nie_json(url, tresc):
+    """Odpowiedź 200, ale nie JSON. 2026-11-13: po kilkudziesięciu zapytaniach w kilka minut (odstęp
+    2 s) pięć kolejnych odczytów poprawnych /agreement/{uuid} oddało nie-JSON, a ten sam adres
+    odczytany po przerwie dał JSON. Treści tych odpowiedzi nie zachowano, więc przyczyny nie znamy
+    na pewno (serwis stoi za Imperva, a interfejs WWW w tej samej serii pokazał „Przekroczono limit
+    liczby żądań do usługi”) — ale to nie była zła ścieżka, a stary komunikat kazał „sprawdzić
+    endpoint”. Pokazujemy początek odpowiedzi, żeby następnym razem przyczyna była widoczna; nie
+    obchodzimy ochrony ani nie ponawiamy w pętli."""
+    tekst = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", tresc or "")).strip()
+    probka = f"\nPoczątek odpowiedzi: {tekst[:160]!r}" if tekst else ""
+    # wzorce: typowe strony blokady Imperva/Incapsula i komunikat limitu z interfejsu rejestru
+    if re.search(r"incapsula|imperva|incident id|request unsuccessful|przekroczono limit",
+                 tresc or "", re.I):
+        sys.exit(f"BŁĄD: ochrona CDN rejestru (Imperva) albo limit zapytań zwróciły stronę HTML "
+                 f"zamiast danych: {url}\nZwykle po serii zapytań w krótkim czasie — odczekaj kilka "
+                 "minut i ponów pojedyncze zapytanie (nie uruchamiaj wielu naraz)." + probka)
+    sys.exit(f"BŁĄD: API rejestru zwróciło nie-JSON dla {url} — możliwa chwilowa blokada po serii "
+             "zapytań (odczekaj kilka minut i ponów) albo nieznana ścieżka (zwraca stronę HTML "
+             "aplikacji)." + probka)
 
 
 def _uuid_ok(s):
@@ -200,6 +228,36 @@ def _pelne(d):
 def _ident(s):
     """NIP/REGON: API porównuje dosłownie ('896-000-54-08' → 0 trafień) — zostawiamy same cyfry."""
     return re.sub(r"[\s-]", "", s) if s else s
+
+
+def _suma_ok(cyfry, wagi, dziesiec_to_zero):
+    """Suma kontrolna: Σ cyfra×waga mod 11 = ostatnia cyfra. Reszta 10: REGON → 0, NIP → numer błędny."""
+    reszta = sum(int(c) * w for c, w in zip(cyfry, wagi)) % 11
+    if reszta == 10:
+        if not dziesiec_to_zero:
+            return False
+        reszta = 0
+    return reszta == int(cyfry[-1])
+
+
+def _uwaga_identyfikator(rodzaj, s):
+    """Podpowiedź do „Brak wyników” — NIE blokada: jednostki wpisują NIP/REGON ręcznie, więc błędny
+    numer bywa w rejestrze i zapytanie o niego jest poprawne. 2026-11-13: --nip 5732331964 (suma
+    zła, prawdziwy NIP MZD w Częstochowie to 5732331963) → API 0 trafień bez żadnego błędu."""
+    s = _ident(s) or ""
+    if rodzaj == "NIP":
+        if not re.fullmatch(r"\d{10}", s):
+            return f"NIP {s!r} nie ma 10 cyfr — sprawdź, czy to NIP (REGON ma 9 albo 14 cyfr)."
+        if not _suma_ok(s, (6, 5, 7, 2, 3, 4, 5, 6, 7), False):
+            return f"NIP {s} ma błędną sumę kontrolną — najpewniej literówka w numerze."
+        return None
+    if re.fullmatch(r"\d{9}", s):
+        ok = _suma_ok(s, (8, 9, 2, 3, 4, 5, 6, 7), True)
+    elif re.fullmatch(r"\d{14}", s):
+        ok = _suma_ok(s, (2, 4, 8, 5, 0, 9, 7, 3, 6, 1, 2, 4, 8), True)
+    else:
+        return f"REGON {s!r} nie ma 9 ani 14 cyfr — sprawdź, czy to REGON (NIP ma 10 cyfr)."
+    return None if ok else f"REGON {s} ma błędną sumę kontrolną — najpewniej literówka w numerze."
 
 
 def _kod_zmiany(k):
@@ -303,12 +361,44 @@ def _stron(ile, limit):
     return -(-min(ile, OKNO) // limit) if ile else 0
 
 
-def _brak_wynikow():
-    sys.exit("Brak wyników. Fraza szuka w PRZEDMIOCIE umowy; nazwy JSFP wpisują jednostki "
-             "(bywają skróty/literówki) — spróbuj krótszej frazy, --regon/--nip albo --wykonawca; "
-             "--jsfp/--regon/--nip szukają tylko ZAMAWIAJĄCEGO (podmiot jako wykonawca: --wykonawca*, "
-             "w dowolnej roli: --rola dowolna).\n"
-             "Pamiętaj: rejestr obejmuje umowy zawarte od 1.07.2026.")
+def _brak_wynikow(a=None):
+    """Zweryfikowane zero (kod 1) z podpowiedziami dobranymi do UŻYTYCH filtrów. Dotąd komunikat był
+    stały i przy samym --wykonawca albo --nip zaczynał od „Fraza szuka w PRZEDMIOCIE”. Sprawdzone
+    2026-11-13 (--wykonawca): „COMPENSA TOWARZYSTWO UBEZPIECZEŃ” 1342, bez „Ń” 0, „Compensa S.A.” 0,
+    „Compensa TU” 0, „compensa” 1342; NIP z błędną sumą kontrolną daje 0 bez błędu API.
+    Zero nie znaczy więc „takich umów nie ma”."""
+    g = (lambda k: getattr(a, k, None)) if a is not None else (lambda k: None)
+    rola = g("rola") or "zamawiajacy"
+    rady = []
+    if g("fraza"):
+        rady.append("fraza szuka tylko w PRZEDMIOCIE umowy — spróbuj krótszej frazy albo rdzenia słowa")
+    if g("jsfp") or g("wykonawca"):
+        rady.append("nazwę API dopasowuje słowo w słowo, z polskimi znakami (każde słowo musi być w "
+                    "nazwie: „S.A.”, „TU”, „sp. z o.o.” nie pasują do pełnej formy) — szukaj jednym "
+                    "rdzeniem nazwy (np. „compensa”), w kilku pisowniach, albo po NIP/REGON")
+    for rodzaj, pole in (("NIP", "nip"), ("REGON", "regon"), ("NIP", "wykonawca_nip"),
+                         ("REGON", "wykonawca_regon")):
+        if g(pole):
+            uwaga = _uwaga_identyfikator(rodzaj, g(pole))
+            if uwaga:
+                rady.append(uwaga)
+    if (g("jsfp") or g("regon") or g("nip")) and rola == "zamawiajacy":
+        rady.append("--jsfp/--regon/--nip szukają tylko ZAMAWIAJĄCEGO; ten sam podmiot jako wykonawca: "
+                    "--rola wykonawca, w dowolnej roli: --rola dowolna")
+    if (g("wykonawca") or g("wykonawca_nip") or g("wykonawca_regon")) or rola == "wykonawca":
+        rady.append("--wykonawca* (i --rola wykonawca) szukają tylko DRUGIEJ strony umowy; podmiot "
+                    "jako zamawiający: --jsfp/--regon/--nip")
+    if any((g(k) or "9999") < "2026-07-01" for k in ("od", "do", "pub_od", "pub_do")):
+        rady.append("zakres dat sięga przed 1.07.2026 — wcześniejszych umów rejestr nie zawiera")
+    if a is None or not any(g(k) for k in ("fraza", "jsfp", "wykonawca", "nip", "regon",
+                                           "wykonawca_nip", "wykonawca_regon")):
+        rady.append("sprawdź pisownię filtrów i spróbuj luźniejszych kryteriów")
+    raise BrakWynikow(
+        "Brak wyników — zapytanie poprawne, API odpowiedziało: zero umów dla tych filtrów.\n"
+        + "".join(f"- {r}\n" for r in rady)
+        + "Zero trafień NIE dowodzi, że takiej umowy nie ma: rejestr obejmuje tylko umowy zawarte "
+        "od 1.07.2026, bez umów wyłączonych z obowiązku wpisu, a dane (nazwy, NIP/REGON) wpisują "
+        "jednostki ręcznie.")
 
 
 def _sprawdz_liste(d):
@@ -323,7 +413,7 @@ def _sprawdz_liste(d):
     return d
 
 
-def _sprawdz_strone(d, limit, strona):
+def _sprawdz_strone(d, limit, strona, a=None):
     """Pusta strona ≠ zero trafień: odróżniamy prawdziwe zero, stronę poza zbiorem i stronę
     poza oknem API (offset ≥ 10 000, gdzie API zwraca pustą listę i ZANIŻA total do 10 000)."""
     tresc = d.get("content") or []
@@ -333,7 +423,7 @@ def _sprawdz_strone(d, limit, strona):
     if tresc:
         return ile
     if ile == 0:
-        _brak_wynikow()
+        _brak_wynikow(a)
     stron = _stron(ile, limit)
     if strona * limit >= OKNO and ile > strona * limit:
         sys.exit(f"Strona {strona} poza oknem API: okno {OKNO} wyników wyczerpane (pasujących umów: {ile}, "
@@ -344,8 +434,8 @@ def _sprawdz_strone(d, limit, strona):
     sys.exit(f"BŁĄD: API zwróciło pustą stronę {strona} mimo {ile} pasujących umów — spróbuj ponownie.")
 
 
-def _lista(d, limit, strona):
-    ile = _sprawdz_strone(d, limit, strona)
+def _lista(d, limit, strona, a=None):
+    ile = _sprawdz_strone(d, limit, strona, a)
     tresc = d.get("content") or []
     print(f"Pasujących umów: {ile}  (strona {strona}, po {limit})\n")
     for it in tresc:
@@ -355,6 +445,12 @@ def _lista(d, limit, strona):
         print(f"UWAGA: API przegląda maks. {OKNO} wyników na zapytanie — {ZAWEZ}.")
     if nastepny < min(ile, OKNO):
         print(f"Kolejna strona: --strona {strona + 1}")
+        if not getattr(a, "pub_do", None):
+            # 2026-11-13: między dwoma odczytami (kilkadziesiąt minut) 16 nowych umów weszło
+            # w pierwsze 150 pozycji „najnowszych”, a 18 wierszy przeszło na inną stronę
+            print("(rejestr rośnie w ciągu dnia: przeglądając wiele stron, dodaj --pub-do z datą "
+                  "wczorajszą, inaczej wiersze mogą przesunąć się między stronami — powtórzyć się albo "
+                  "wypaść)")
     elif nastepny >= OKNO and ile > nastepny:
         print(f"Okno {OKNO} wyników wyczerpane — {ZAWEZ}.")
     else:
@@ -370,7 +466,12 @@ def cmd_najnowsze(a):
     if a.json:
         print(json.dumps(d, ensure_ascii=False, indent=2)); return
     print(f"Ostatnio opublikowane w Centralnym Rejestrze Umów "
-          f"(wszystkich umów: {d.get('totalMatchingElements', '?')}):\n")
+          f"(wszystkich umów: {d.get('totalMatchingElements', '?')}):")
+    # 2026-11-13: dataPublikacji ma dokładność DNIA (13.11.2026 → 16 804 umowy), a przy równej dacie
+    # API układa wiersze rosnąco po idUmowy (150 wierszy z 3 stron: rosnące UUID 0000a8d3…→02525255).
+    # To więc umowy z ostatniego dnia publikacji, a nie N ostatnio dodanych w tym dniu.
+    print("(kolejność: data publikacji malejąco — rejestr podaje ją z dokładnością do dnia, więc w "
+          "obrębie dnia umowy idą wg idUmowy, nie wg godziny wpisu)\n")
     for it in d.get("content") or []:
         _wiersz(it)
 
@@ -400,10 +501,10 @@ def cmd_szukaj(a):
         d = _szukaj(body, a.limit, a.strona, a.sort)
     _sprawdz_liste(d)
     _sprawdz_okno_strict(a, d)
-    _sprawdz_strone(d, a.limit, a.strona)  # zero / poza zakresem / poza oknem → komunikat + exit ≠ 0, także z --json
+    _sprawdz_strone(d, a.limit, a.strona, a)  # zero / poza zakresem / poza oknem → komunikat + exit ≠ 0, także z --json
     if a.json:
         print(json.dumps(d, ensure_ascii=False, indent=2)); return
-    _lista(d, a.limit, a.strona)
+    _lista(d, a.limit, a.strona, a)
 
 
 def _strona_umowy(i, s):
@@ -486,8 +587,12 @@ def cmd_umowa(a):
     for pole, opis in (("niejawnoscPrzedmiotu", "przedmiotu"), ("niejawnoscWartosciPrzedmiotu", "wartości")):
         if szcz.get(pole):
             print(f"WYŁĄCZENIE JAWNOŚCI {opis}: {_niejawnosc(szcz[pole])}")
-    strony = d.get("stronyUmowy") or []
+    strony = _uporzadkuj_strony(d.get("stronyUmowy") or [])
     print(f"\n## Strony umowy ({len(strony)})")
+    if len(strony) > 2:
+        print("  (strona 1 = JSFP, która wpisała umowę — zamawiający z wiersza 'szukaj'; kolejność "
+              "pozostałych API zmienia między odczytami, silnik układa je: JSFP, przedsiębiorcy, "
+              "osoby fizyczne, potem nazwa)")
     for i, s in enumerate(strony, 1):
         _strona_umowy(i, s)
     zmiany = d.get("zmianyUmowy") or []
@@ -495,6 +600,59 @@ def cmd_umowa(a):
         print(f"\n## Zmiany umowy ({len(zmiany)})")
         for z in zmiany:
             _zmiana(z)
+    _uwaga_status(pd.get("statusUmowy"), zmiany)
+    _uwaga_wartosc_po_aneksie(zmiany)
+
+
+def _uwaga_wartosc_po_aneksie(zmiany):
+    """API ma JEDNO pole wartości, bez wartości pierwotnej. 2026-11-13, aneksy (TSU02) z „wartość”
+    w komentarzu: Pałac w Ostoi — komentarz „Dotychczasowa wartość: 5377,60 / Aktualna: 4443,09”,
+    rejestr 4443.09 (zaktualizowana); PSSE w Radomiu — komentarz „zmianie uległa wartość umowy na
+    kwotę 608 667,40 zł”, rejestr 534070 (niezaktualizowana albo inna podstawa). Nie zgadujemy,
+    która to kwota — każemy porównać z komentarzem aneksu."""
+    for z in zmiany:
+        if (isinstance(z, dict) and str(z.get("rodzajZmiany") or "").startswith("Aneks")
+                and re.search(r"warto[śs]|wynagrodz|kwot", str(z.get("komentarz") or ""), re.I)):
+            print("\nUWAGA: aneks dotyczy wartości. „Wartość” to jedyna kwota w rejestrze — jednostka "
+                  "bywa, że ją po aneksie aktualizuje, a bywa, że nie; rejestr nie podaje wartości "
+                  "pierwotnej. Porównaj z komentarzem aneksu wyżej.")
+            return
+
+
+KOLEJNOSC_RODZAJU = {"JSFP": 0, "Przedsiębiorca": 1, "Osoba fizyczna": 2}
+ZMIANY_KONCZACE = ("Rozwiązanie", "Wypowiedzenie", "Odstąpienie", "Wygaśnięcie")
+
+
+def _uporzadkuj_strony(strony):
+    """2026-11-13: przy 3+ stronach API oddaje strony 2..n w ZMIENNEJ kolejności między odczytami
+    (umowa 16d6af06-… Biblioteki w Tuliszkowie: na 4 odczyty dwa razy gmina przed ubezpieczycielem,
+    dwa razy odwrotnie; tak samo 3 z 3 umów z 3 stronami), a strona 1 = JSFP z wiersza wyszukiwania
+    (zamawiający) w 39 z 39 odczytów 13 umów. Zostawiamy stronę 1, resztę sortujemy — numeracja
+    „Strona 2/3” nie może zależeć od odczytu."""
+    if len(strony) <= 2 or not all(isinstance(s, dict) for s in strony):
+        return strony
+
+    def klucz(s):
+        nazwa = s.get("nazwa") or " ".join(x for x in (s.get("nazwisko"), s.get("imie")) if x)
+        return (KOLEJNOSC_RODZAJU.get(s.get("rodzaj"), 9), nazwa.casefold(),
+                s.get("nip") or "", s.get("regon") or "")
+    return strony[:1] + sorted(strony[1:], key=klucz)
+
+
+def _uwaga_status(status, zmiany):
+    """Status wpisuje jednostka. 2026-11-13: wśród umów z „Rozwiązaniem” (TSU05) 392 z 7 805 ma
+    status „Aktywna” (np. umowa centrum usług społecznych w Koszalinie — rozwiązanie wpisane
+    29.10.2026, status Aktywna, bez daty zakończenia). Rozwiązanie może działać od późniejszej
+    daty, więc to nie musi być błąd — ale użytkownik nie może wziąć „Aktywna” za pewnik."""
+    if status != "Aktywna":
+        return
+    konczace = [z for z in zmiany if isinstance(z, dict)
+                and str(z.get("rodzajZmiany") or "").startswith(ZMIANY_KONCZACE)]
+    if konczace:
+        z = konczace[-1]
+        print(f"\nUWAGA: status „Aktywna”, choć wśród zmian jest „{z.get('rodzajZmiany')}” "
+              f"({z.get('dataZmiany') or '?'}). Status i zmiany wpisuje jednostka — umowa może kończyć "
+              "się później albo status nie został zaktualizowany; potwierdź w jednostce.")
 
 
 def cmd_slownik(a):
@@ -574,8 +732,17 @@ def main():
         p.add_argument("--strict", action="store_true", default=argparse.SUPPRESS,
                        help="zakończ błędem, gdy nie udało się zweryfikować kompletności wyniku")
 
-    a = ap.parse_args()
-    a.func(a)
+    a = ap.parse_args()  # zły argument argparse → kod 2, --help/--version → 0 (bez zmian)
+    try:
+        a.func(a)
+    except SystemExit as e:
+        if e.code is None or isinstance(e.code, int):
+            raise
+        print(e.code, file=sys.stderr)
+        sys.exit(1 if isinstance(e, BrakWynikow) else 2)
+    except Exception as e:  # noqa: BLE001 — nieprzewidziany błąd nigdy nie może dać kodu 1 („brak wyników”)
+        print(f"BŁĄD: nieoczekiwany błąd helpera: {e!r}", file=sys.stderr)
+        sys.exit(2)
 
 
 if __name__ == "__main__":

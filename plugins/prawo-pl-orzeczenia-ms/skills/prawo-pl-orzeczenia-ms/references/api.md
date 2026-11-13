@@ -85,27 +85,46 @@ Opcja `szukaj`/`sygnatura`, domyślnie wyłączona. Mechanizm:
 1. Pierwsze zapytanie (strona 1, `--sort data`, kierunek z `--kierunek`) ustala `liczba_wynikow`.
    Powyżej **200 trafień** helper kończy się błędem (kod 2) po tym jednym zapytaniu — z liczbą
    trafień, limitem i wskazówką zawężenia (`--sad`, `--wydzial`, krótszy zakres `--od/--do`).
-   Limit i liczba rund to stałe w kodzie (ochrona portalu), bez flagi do ich podniesienia.
+   Limity (200 trafień, 60 zapytań na wywołanie) to stałe w kodzie (ochrona portalu), bez flagi do
+   ich podniesienia.
 2. Runda = strony 1…⌈N/10⌉; pozycje łączone po `id`. Gdy unikalnych jest dokładnie N, helper kończy
-   od razu (także w środku rundy). Inaczej kolejna runda, **najwyżej 3** — maksymalnie 20 × 3 = 60
-   zapytań w odstępach ≥0,6 s, bez równoległości. Pobierane są tylko pozycje listy (bez metryk i treści).
-3. Brak kompletu po 3 rundach → kod 2 (UNKNOWN) z liczbą zebranych/oczekiwanych; niepełnej listy
-   helper nie wypisuje.
+   od razu (także w środku rundy). Inaczej kolejna runda — dopóki starcza **budżetu 60 zapytań**
+   (odstępy ≥0,6 s, bez równoległości). Liczbę rund wyznacza więc rozmiar zapytania: 20 stron = 3
+   rundy, 8 stron = 7 pełnych rund i część ósmej, 3 strony = do 20 rund; ostatnia runda bywa niepełna.
+   Pobierane są tylko pozycje listy (bez metryk i treści). W wersji 2.3.0 było stałe 3 rundy, co przy
+   zapytaniu jednodniowym (3 strony) zużywało 9 z 60 zapytań i raz skończyło się błędem przy 26 z 28.
+3. Zatrzymanie bez kompletu → kod 2 (UNKNOWN), niepełnej listy helper nie wypisuje. Powody:
+   **3 rundy z rzędu bez nowej pozycji** albo wyczerpany budżet 60 zapytań. Komunikat podaje faktycznie
+   wykonane rundy i zapytania (z ponowieniami) oraz liczbę zebranych/oczekiwanych, np. „po 4 rundach
+   (12 zapytań) zebrano 24 z 25 unikalnych pozycji … (3 rundy z rzędu bez nowej pozycji)”.
+   Dlaczego 3: w pomiarze runda bez postępu, po której następna dała komplet, się zdarza (Giżycko:
+   71, 71, 72), więc 1 to za mało; zatrzymanie chroni budżet, gdy portal podaje liczbę trafień większą
+   niż liczba pozycji, które oddaje — helper traci wtedy 3 rundy ponad te, które zebrały wszystko,
+   co portal oddaje (np. 3 strony: zwykle 4 rundy = 12 zapytań), a nie cały budżet 60.
 4. Każda strona porównuje swoją liczbę trafień z ustaloną N. Inna liczba, pusta strona lub strona
    poza zakresem w trakcie albo więcej różnych ID niż N = lista się zmieniła: zebrane pozycje są
    odrzucane (usunięte orzeczenie mogłoby „dopełnić” licznik za brakujące), a następna runda zaczyna
-   od nowa i ustala N ponownie (w limicie 3 rund; zmiana także w ostatniej → kod 2). Wynik po takim
-   restarcie ma uwagę o zmianie. Zamiany jednej pozycji na inną przy niezmienionej liczbie trafień
-   między rundami nie da się wykryć licznikiem.
-5. `--strona` ≠ 1 i jawne `--sort` inne niż `data` są odrzucane przed pierwszym zapytaniem. Kolejność
+   od nowa i ustala N ponownie. Runda zakończona takim restartem liczy się jako runda bez nowej pozycji,
+   więc lista zmieniająca się w każdej rundzie kończy się po 3 rundach kodem 2 („lista portalu
+   zmieniała się w trakcie pobierania”). Wynik po restarcie ma uwagę o zmianie. Zamiany jednej
+   pozycji na inną przy niezmienionej liczbie trafień między rundami nie da się wykryć licznikiem.
+5. Ponawianie (w wersji 2.3.0 go nie było): stronę, której pobranie przerwał błąd sieci —
+   przekroczony czas (40 s), zerwane połączenie, niekompletna odpowiedź (`IncompleteRead`), błąd połączenia — helper ponawia
+   **raz**, po przerwie 5 s; obie próby liczą się do budżetu 60 (przy wyczerpanym budżecie bez
+   ponowienia). Drugie niepowodzenie tej samej strony → kod 2 bez listy, z numerem strony i stanem
+   („Stan: runda 1 (4 zapytania, w tym 1 ponowienie po błędzie sieci) zebrano 20 z 25 …”).
+   Bez ponawiania: odpowiedź F5/TSPD, strona błędu portalu (HTTP 400/404), inny błąd HTTP bez strony
+   portalu, nierozpoznana lub ucięta strona HTML — to nie są błędy przejściowe sieci. Bez
+   `--wszystkie` helper nie ponawia niczego.
+6. `--strona` ≠ 1 i jawne `--sort` inne niż `data` są odrzucane przed pierwszym zapytaniem. Kolejność
    portalu nie jest powtarzalna, więc wynik jest sortowany lokalnie: `data_orzeczenia` zgodnie
    z `--kierunek`, przy równej dacie po `id` (w tym samym kierunku).
-6. JSON: `zrodlo` (URL strony 1), `liczba_wynikow`, `kompletna: true`, `rundy`, `zapytania`, `wyniki`,
-   `uwagi` — bez pola `strona`. Uwagi z pozycji (oznaczenie „nieprawomocne”, typ „uzasadnienie”,
-   ta sama sygnatura w wielu sądach) liczone są z całej listy; uwagi o stronicowaniu brak.
+7. JSON: `zrodlo` (URL strony 1), `liczba_wynikow`, `kompletna: true`, `rundy`, `zapytania` (wszystkie
+   próby, z ponowieniami), `ponowienia`, `wyniki`, `uwagi` — bez pola `strona`. Uwagi z pozycji (oznaczenie
+   „nieprawomocne”, typ „uzasadnienie”, ta sama sygnatura w wielu sądach) liczone są z całej listy; uwagi o stronicowaniu brak.
    Zero trafień w pierwszym zapytaniu = kod 1, strona błędu portalu = kod 2, jak bez `--wszystkie`.
 
-Pomiar 2026-11-13 (helper z `--wszystkie`; „rundy/zapytania” do kompletu lub do błędu):
+Pomiar 2026-11-13 (helper 2.3.0 z `--wszystkie`, stałe 3 rundy, bez ponawiania; „rundy/zapytania” do kompletu lub do błędu):
 
 | Zapytanie | Przebieg | Unikalne ID po rundach | Rundy | Zapytania | Komplet |
 |---|---|---|---:|---:|---|
@@ -119,7 +138,8 @@ Pomiar 2026-11-13 (helper z `--wszystkie`; „rundy/zapytania” do kompletu lub
 | `sygnatura I ACa 1410/23` (1); `--sad 15050500 --od 2024-01-01 --do 2024-12-31` (9) | po 1 | 1; 9 | 1 | 1 | tak |
 
 Przy wielu remisach daty (wszystkie 28 pozycji z jednego dnia) pierwsza runda dawała 18–26 z 28
-unikalnych (6 przebiegów, z wariantem przemiennym) i 3 rundy nie zawsze wystarczają — helper zgłasza wtedy błąd zamiast niepełnej listy; zawężenie
+unikalnych (6 przebiegów, z wariantem przemiennym) i 3 rundy nie zawsze wystarczały — helper 2.3.0
+zgłaszał wtedy błąd zamiast niepełnej listy (stąd rundy ograniczone budżetem, punkt 2); zawężenie
 (`--sad`, `--wydzial`) zmniejsza liczbę remisów. W Giżycku (przebieg 1) dwie pierwsze rundy dały
 po 71 z 72, komplet dała dopiero trzecia (której pozycji brakowało, nie zapisano).
 Przemienny kierunek rund (malejąco, rosnąco, malejąco) sprawdzono na zapytaniu jednodniowym:
@@ -128,7 +148,14 @@ kierunku — przewagi nie potwierdzono, więc każda runda pyta tak samo. Przypa
 stron (Giżycko) z przemiennym kierunkiem nie mierzono. Portal odpowiadał tego dnia
 nierówno (do 17 s na zapytanie); pięć przebiegów (3 × Giżycko, 2 × SO w Białymstoku) przerwał
 błąd zapytania (kod 2, bez listy; zapisane komunikaty: 3 × przekroczenie 40 s, 1 × zerwane połączenie,
-jednego nie zapisano); nie wliczono ich do tabeli. Strony F5/TSPD nie było. Helper nie ponawia zapytań po błędzie transportu.
+jednego nie zapisano); nie wliczono ich do tabeli. Strony F5/TSPD nie było. Helper 2.3.0 nie ponawiał
+zapytań po błędzie transportu — stąd ponowienie z punktu 5.
+
+Pomiar 2026-11-13, po zmianie (rundy wg budżetu, ponawianie; 4 przebiegi po kolei, co ok. 75 s):
+zapytanie jednodniowe (28) — 2 × komplet w 3 rundach (8 zapytań); Giżycko (72) — komplet w 2
+rundach (11 zapytań) i w 1 rundzie (8). Czas przebiegu 5–11 s, bez błędów sieci, więc żadne
+ponowienie ani runda ponad trzecią nie były w tym pomiarze potrzebne — te ścieżki sprawdzają testy
+offline z mokowanym klientem.
 
 ## Orzeczenie
 

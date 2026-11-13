@@ -17,6 +17,31 @@ rejestrumow = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(rejestrumow)
 
 
+class Wyjscie:
+    """Zakończenie main(): kod wyjścia + komunikat ze stderr (main() wypisuje go tam i kończy kodem
+    1 = zweryfikowany brak wyników, 2 = wszystko inne)."""
+
+    def __init__(self, code, err):
+        self.code, self.err = code, err
+
+    def __str__(self):
+        return self.err
+
+
+def uruchom_main(argv, req=None, side_effect=None):
+    """main() z podmienionym _req; zwraca (stdout, Wyjscie albo None)."""
+    out, err = io.StringIO(), io.StringIO()
+    patch = (mock.patch.object(rejestrumow, "_req", side_effect=side_effect) if side_effect is not None
+             else mock.patch.object(rejestrumow, "_req", return_value=req))
+    with patch, mock.patch.object(sys, "argv", ["rejestrumow.py", *argv]), \
+            contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        try:
+            rejestrumow.main()
+        except SystemExit as e:
+            return out.getvalue(), Wyjscie(e.code, err.getvalue())
+    return out.getvalue(), None
+
+
 def ns(**kw):
     """Namespace jak z argparse dla komendy szukaj (wszystkie filtry puste, chyba że podane)."""
     base = dict(fraza=None, jsfp=None, regon=None, nip=None, rola="zamawiajacy",
@@ -42,13 +67,11 @@ class TestListResponseValidation(unittest.TestCase):
             for flags in ([], ["--json"], ["--strict"], ["--json", "--strict"]):
                 for response in responses:
                     with self.subTest(command=command, flags=flags, response=response):
-                        out = io.StringIO()
-                        with mock.patch.object(rejestrumow, "_req", return_value=response), \
-                                mock.patch.object(sys, "argv", ["rejestrumow.py", *command, *flags]), \
-                                contextlib.redirect_stdout(out):
-                            with self.assertRaisesRegex(SystemExit, "BŁĄD"):
-                                rejestrumow.main()
-                        self.assertEqual(out.getvalue(), "")
+                        out, e = uruchom_main([*command, *flags], req=response)
+                        self.assertIsNotNone(e)
+                        self.assertEqual(e.code, 2)      # nieoczekiwana odpowiedź ≠ „brak wyników”
+                        self.assertIn("BŁĄD", str(e))
+                        self.assertEqual(out, "")
 
     def test_valid_empty_latest_list_is_not_an_api_error(self):
         out = io.StringIO()
@@ -235,15 +258,7 @@ class TestStrict(unittest.TestCase):
              "wartoscPrzedmiotuUmowy": 1000, "przedmiotUmowy": "remont drogi"}
 
     def _uruchom(self, argv, odp):
-        out = io.StringIO()
-        with mock.patch.object(rejestrumow, "_req", return_value=odp), \
-                mock.patch.object(sys, "argv", ["rejestrumow.py", *argv]), \
-                contextlib.redirect_stdout(out):
-            try:
-                rejestrumow.main()
-            except SystemExit as e:
-                return out.getvalue(), e
-        return out.getvalue(), None
+        return uruchom_main(argv, req=odp)
 
     def test_strict_blokuje_zbior_ponad_oknem_api_i_stdout_jest_pusty(self):
         odp = {"content": [self.UMOWA], "totalMatchingElements": rejestrumow.OKNO + 1}
@@ -279,19 +294,13 @@ class TestStronicowanie(unittest.TestCase):
     UMOWA = TestStrict.UMOWA
 
     def _uruchom(self, argv, odp):
-        out, wywolania = io.StringIO(), []
+        wywolania = []
 
         def fake_req(path, params=None, body=None):
             wywolania.append(dict(params or {}))
             return odp(params) if callable(odp) else odp
-        with mock.patch.object(rejestrumow, "_req", side_effect=fake_req), \
-                mock.patch.object(sys, "argv", ["rejestrumow.py", *argv]), \
-                contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-            try:
-                rejestrumow.main()
-            except SystemExit as e:
-                return out.getvalue(), e, wywolania
-        return out.getvalue(), None, wywolania
+        out, e = uruchom_main(argv, side_effect=fake_req)
+        return out, e, wywolania
 
     def test_strona_poza_zakresem_nie_jest_zerem(self):
         odp = {"content": [], "totalMatchingElements": 455}
@@ -520,6 +529,248 @@ class TestLimit429(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "HTTP 503"):
                 rejestrumow._req("/agreements/search", {"limit": 1}, {})
         self.assertEqual(op.call_count, 2)
+
+
+class TestKodyWyjscia(unittest.TestCase):
+    """0 = wynik; 1 = ZWERYFIKOWANY brak wyników; 2 = wszystko inne (sieć, HTTP, 429, nieoczekiwana
+    odpowiedź, zły argument, nieistniejące idUmowy, nieprzewidziany wyjątek). Dotąd sys.exit("…")
+    dawał 1 w obu sytuacjach."""
+    ZERO = {"content": [], "totalMatchingElements": 0}
+    UMOWA = TestStrict.UMOWA
+
+    def test_zero_trafien_to_kod_1_takze_z_json(self):
+        for argv in (["szukaj", "zzqq"], ["szukaj", "zzqq", "--json"], ["--json", "szukaj", "--nip", "5732331963"]):
+            out, e = uruchom_main(argv, req=self.ZERO)
+            self.assertEqual(e.code, 1, argv)
+            self.assertIn("Brak wyników", str(e))
+            self.assertEqual(out, "")
+
+    def test_wynik_to_kod_0(self):
+        out, e = uruchom_main(["szukaj", "remont"], req={"content": [self.UMOWA], "totalMatchingElements": 1})
+        self.assertIsNone(e)
+        self.assertIn("remont drogi", out)
+
+    def test_strona_poza_zakresem_i_oknem_oraz_strict_to_kod_2(self):
+        out, e = uruchom_main(["szukaj", "--regon", "1", "--strona", "12", "--limit", "50"],
+                              req={"content": [], "totalMatchingElements": 455})
+        self.assertEqual(e.code, 2)
+        out, e = uruchom_main(["szukaj", "remont", "--strict"],
+                              req={"content": [self.UMOWA], "totalMatchingElements": rejestrumow.OKNO + 1})
+        self.assertEqual(e.code, 2)
+
+    def test_zle_argumenty_to_kod_2(self):
+        for argv in (["umowa", "xyz"], ["szukaj"], ["szukaj", "--od", "01.07.2026"],
+                     ["szukaj", "--wartosc-od", "sto"], ["szukaj", "--zmiana-rodzaj", "Aneks"],
+                     ["szukaj", "--zapytanie", "{zly"], ["szukaj", "x", "--strona", "-1"],
+                     ["szukaj", "--sort", "zly"]):          # ostatni: błąd argparse
+            out, e = uruchom_main(argv, req=self.ZERO)
+            self.assertEqual(e.code, 2, argv)
+
+    def test_bledy_http_i_sieci_to_kod_2(self):
+        err400 = rejestrumow.urllib.error.HTTPError(
+            "https://rejestrumow.gov.pl/api-dp/v1/agreement/x", 400, "Bad Request", {}, io.BytesIO(
+                '{"message": "Nie znaleziono umowy", "details": {"[0]": "Agreement not found for ID: x"}}'
+                .encode("utf-8")))
+        for blad in (err400, rejestrumow.urllib.error.URLError("timeout")):
+            out, err = io.StringIO(), io.StringIO()
+            with mock.patch.object(rejestrumow._opener, "open", side_effect=[blad, blad]), \
+                    mock.patch.object(rejestrumow.time, "sleep"), \
+                    mock.patch.object(sys, "argv", ["rejestrumow.py", "umowa",
+                                                    "11111111-2222-4333-8444-555555555555"]), \
+                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                with self.assertRaises(SystemExit) as c:
+                    rejestrumow.main()
+            self.assertEqual(c.exception.code, 2, blad)
+            self.assertIn("BŁĄD", err.getvalue())
+
+    def test_trwaly_429_to_kod_2(self):
+        e429 = rejestrumow.urllib.error.HTTPError("https://rejestrumow.gov.pl/api-dp/v1/agreements/search",
+                                                  429, "Too Many Requests", {"Retry-After": "3600"}, None)
+        err = io.StringIO()
+        with mock.patch.object(rejestrumow._opener, "open", side_effect=[e429]), \
+                mock.patch.object(sys, "argv", ["rejestrumow.py", "najnowsze"]), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            with self.assertRaises(SystemExit) as c:
+                rejestrumow.main()
+        self.assertEqual(c.exception.code, 2)
+        self.assertIn("HTTP 429", err.getvalue())
+
+    def test_nieprzewidziany_wyjatek_to_kod_2_z_krotkim_komunikatem(self):
+        out, e = uruchom_main(["umowa", "11111111-2222-4333-8444-555555555555"], req=["nie", "słownik"])
+        self.assertEqual(e.code, 2)
+        self.assertIn("BŁĄD: nieoczekiwany błąd", str(e))
+        self.assertNotIn("Traceback", str(e))
+
+    def test_version_to_kod_0(self):
+        with mock.patch.object(sys, "argv", ["rejestrumow.py", "--version"]), \
+                contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(SystemExit) as c:
+                rejestrumow.main()
+        self.assertEqual(c.exception.code, 0)
+
+
+class TestNieJson(unittest.TestCase):
+    """2026-11-13: po serii zapytań poprawne /agreement/{uuid} oddało nie-JSON, a po przerwie JSON —
+    komunikat nie może kazać „sprawdzić endpointu”."""
+
+    def _req_z_trescia(self, tresc):
+        odp = mock.MagicMock()
+        odp.__enter__.return_value.read.return_value = tresc.encode("utf-8")
+        with mock.patch.object(rejestrumow._opener, "open", return_value=odp):
+            with self.assertRaises(SystemExit) as c:
+                rejestrumow._req("/agreement/11111111-2222-4333-8444-555555555555")
+        return str(c.exception.code)
+
+    def test_strona_imperva(self):
+        # treść SYNTETYCZNA (typowa strona blokady Incapsula) — prawdziwej z 2026-11-13 nie zachowano
+        msg = self._req_z_trescia('<html><body>Request unsuccessful. Incapsula incident ID: 123-456'
+                                  '<iframe src="/_Incapsula_Resource?x=1"></iframe></body></html>')
+        self.assertIn("ochrona CDN", msg)
+        self.assertIn("odczekaj", msg)
+        self.assertIn("Incapsula incident ID", msg)   # próbka treści do diagnozy
+
+    def test_inny_html(self):
+        msg = self._req_z_trescia("<!doctype html><html><head><title>Centralny Rejestr Umów</title></head></html>")
+        self.assertIn("nie-JSON", msg)
+        self.assertIn("odczekaj", msg)
+        self.assertIn("Centralny Rejestr Umów", msg)
+        self.assertNotIn("sprawdź endpoint", msg)
+
+
+class TestBrakWynikowPodpowiedzi(unittest.TestCase):
+    """Komunikat zera dobiera podpowiedzi do użytych filtrów; zero ≠ „takich umów nie ma”.
+    Na żywo 2026-11-13: --wykonawca „…UBEZPIECZEN” 0, „…UBEZPIECZEŃ” 1342; --nip 5732331964 0."""
+
+    def _msg(self, **kw):
+        with self.assertRaises(rejestrumow.BrakWynikow) as c:
+            rejestrumow._brak_wynikow(ns(**kw))
+        return str(c.exception.code)
+
+    def test_wykonawca_pisownia_bez_frazy_przedmiotu(self):
+        msg = self._msg(wykonawca="COMPENSA TOWARZYSTWO UBEZPIECZEN")
+        self.assertIn("polskimi znakami", msg)
+        self.assertIn("rdzeniem nazwy", msg)
+        self.assertIn("tylko DRUGIEJ strony", msg)
+        self.assertNotIn("PRZEDMIOCIE", msg)
+        self.assertIn("NIE dowodzi", msg)
+        self.assertIn("1.07.2026", msg)
+
+    def test_nip_z_bledna_suma(self):
+        msg = self._msg(nip="573-233-19-64")
+        self.assertIn("NIP 5732331964 ma błędną sumę kontrolną", msg)
+        self.assertIn("tylko ZAMAWIAJĄCEGO", msg)
+
+    def test_poprawny_nip_bez_uwagi_o_sumie(self):
+        self.assertNotIn("sumę kontrolną", self._msg(nip="5732331963"))
+
+    def test_regon_zla_dlugosc_i_14_cyfr(self):
+        self.assertIn("nie ma 9 ani 14 cyfr", self._msg(wykonawca_regon="12345"))
+        self.assertNotIn("sumę", self._msg(regon="01751157500147"))   # GDDKiA O/Opole, 14 cyfr
+        self.assertIn("błędną sumę", self._msg(regon="01751157500148"))
+
+    def test_fraza_i_daty_przed_startem_rejestru(self):
+        msg = self._msg(fraza="remont", od="2026-06-01")
+        self.assertIn("PRZEDMIOCIE", msg)
+        self.assertIn("przed 1.07.2026", msg)
+
+    def test_suma_kontrolna_na_numerach_z_rejestru(self):
+        # NIP/REGON stron umów odczytanych 2026-11-13 (jednostki publiczne i spółki) — wszystkie poprawne
+        for nip in ("5732331963", "5751839378", "5291004197", "6681929905", "5260214686", "8361702207"):
+            self.assertIsNone(rejestrumow._uwaga_identyfikator("NIP", nip), nip)
+        for regon in ("150309847", "000525889", "311019527", "006216959", "750772302", "01751157500147"):
+            self.assertIsNone(rejestrumow._uwaga_identyfikator("REGON", regon), regon)
+
+
+class TestStronyKolejnosc(unittest.TestCase):
+    """API oddaje strony 2..n w zmiennej kolejności (umowa 16d6af06-…: 2 z 4 odczytów odwrotnie) —
+    wydruk ma być identyczny niezależnie od odczytu, a strona 1 (JSFP z wiersza 'szukaj') zostaje."""
+    BIBL = {"rodzaj": "JSFP", "nazwa": "MIEJSKO-GMINNA BIBLIOTEKA PUBLICZNA W TULISZKOWIE",
+            "nip": "6681721889", "regon": "000972039", "kraj": "Polska", "daneAdresowe": {}}
+    GMINA = {"rodzaj": "JSFP", "nazwa": "GMINA I MIASTO TULISZKÓW", "nip": "6681929905",
+             "regon": "311019527", "kraj": "Polska", "daneAdresowe": {}}
+    TU = {"rodzaj": "Przedsiębiorca", "nazwa": "COMPENSA TOWARZYSTWO UBEZPIECZEŃ SPÓŁKA AKCYJNA",
+          "nip": "5260214686", "regon": "006216959", "kraj": "Polska", "daneAdresowe": {}}
+
+    def _wydruk(self, strony):
+        d = {"idUmowy": "16d6af06-0c9e-4ff6-8abd-6105959013df",
+             "podstawoweDane": {"statusUmowy": "Aktywna", "dataZawarciaUmowy": "15.10.2026"},
+             "szczegolyUmowy": {"przedmiotUmowy": "ubezpieczenie mienia", "wartoscPrzedmiotu": 7455.75},
+             "stronyUmowy": strony}
+        out, e = uruchom_main(["umowa", d["idUmowy"]], req=d)
+        self.assertIsNone(e)
+        return out
+
+    def test_wydruk_niezalezny_od_kolejnosci_api(self):
+        a = self._wydruk([self.BIBL, self.TU, self.GMINA])
+        b = self._wydruk([self.BIBL, self.GMINA, self.TU])
+        self.assertEqual(a, b)
+        self.assertLess(a.index("1. [JSFP] MIEJSKO-GMINNA"), a.index("2. [JSFP] GMINA I MIASTO"))
+        self.assertLess(a.index("2. [JSFP] GMINA"), a.index("3. [Przedsiębiorca] COMPENSA"))
+        self.assertIn("strona 1 = JSFP, która wpisała umowę", a)
+
+    def test_dwie_strony_bez_zmian_i_bez_noty(self):
+        out = self._wydruk([self.BIBL, self.TU])
+        self.assertNotIn("strona 1 = JSFP", out)
+        self.assertEqual(rejestrumow._uporzadkuj_strony([self.TU, self.BIBL]), [self.TU, self.BIBL])
+
+
+class TestUwagaStatus(unittest.TestCase):
+    """2026-11-13: 392 z 7 805 umów z „Rozwiązaniem” ma status „Aktywna” (np. umowa CUS w Koszalinie)."""
+
+    def _out(self, status, zmiany):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rejestrumow._uwaga_status(status, zmiany)
+        return out.getvalue()
+
+    def test_aktywna_z_rozwiazaniem(self):
+        out = self._out("Aktywna", [{"rodzajZmiany": "Rozwiązanie umowy", "dataZmiany": "29.10.2026"}])
+        self.assertIn("UWAGA: status „Aktywna”", out)
+        self.assertIn("Rozwiązanie umowy", out)
+
+    def test_bez_uwagi(self):
+        self.assertEqual(self._out("Nieaktywna", [{"rodzajZmiany": "Wygaśnięcie umowy"}]), "")
+        self.assertEqual(self._out("Aktywna", [{"rodzajZmiany": "Aneks do umowy"}]), "")
+        self.assertEqual(self._out("Aktywna", []), "")
+
+
+class TestUwagaWartoscPoAneksie(unittest.TestCase):
+    """API ma jedno pole wartości. 2026-11-13: Pałac w Ostoi — rejestr = wartość po aneksie;
+    PSSE w Radomiu — komentarz aneksu 608 667,40, rejestr 534 070 — nie zgadujemy, ostrzegamy."""
+
+    def _out(self, zmiany):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rejestrumow._uwaga_wartosc_po_aneksie(zmiany)
+        return out.getvalue()
+
+    def test_aneks_o_wartosci(self):
+        out = self._out([{"rodzajZmiany": "Aneks do umowy", "dataZmiany": "29.10.2026",
+                          "komentarz": "Zmianie uległa wartość umowy na kwotę 608 667,40 zł"}])
+        self.assertIn("UWAGA: aneks dotyczy wartości", out)
+        self.assertIn("nie podaje wartości pierwotnej", out)
+
+    def test_aneks_bez_wartosci_i_inne_zmiany(self):
+        self.assertEqual(self._out([{"rodzajZmiany": "Aneks do umowy", "komentarz": "Zmiana numeru umowy"}]), "")
+        self.assertEqual(self._out([{"rodzajZmiany": "Inne", "komentarz": "zmiana wartości"}]), "")
+        self.assertEqual(self._out([]), "")
+
+
+class TestNajnowszeKolejnosc(unittest.TestCase):
+    def test_nota_o_dokladnosci_daty_publikacji(self):
+        out, e = uruchom_main(["najnowsze", "--limit", "1"],
+                              req={"content": [TestStrict.UMOWA], "totalMatchingElements": 1565760})
+        self.assertIsNone(e)
+        self.assertIn("wszystkich umów: 1565760", out)
+        self.assertIn("z dokładnością do dnia", out)
+        self.assertIn("wg idUmowy", out)
+
+    def test_kolejna_strona_ostrzega_o_rosnacym_zbiorze(self):
+        odp = {"content": [TestStrict.UMOWA] * 10, "totalMatchingElements": 455}
+        out, _ = uruchom_main(["szukaj", "--regon", "1"], req=odp)
+        self.assertIn("--pub-do", out)
+        out, _ = uruchom_main(["szukaj", "--regon", "1", "--pub-do", "2026-11-12"], req=odp)
+        self.assertNotIn("rejestr rośnie", out)
 
 
 if __name__ == "__main__":

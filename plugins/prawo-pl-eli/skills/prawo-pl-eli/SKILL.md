@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-eli
-version: 2.3.0
+version: 2.4.0
 description: >-
   Odpytuje OFICJALNE API ELI Sejmu (api.sejm.gov.pl/eli) — źródło pierwotne prawa polskiego
   (Dziennik Ustaw, Monitor Polski): wyszukiwanie aktów, TEKST JEDNOLITY, pojedyncze artykuły,
@@ -62,7 +62,7 @@ ELI="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-eli/scripts/eli.py"
 #    sprawdzana w kodzie przed zapisem i przed każdym uruchomieniem; niezgodna = helper nie startuje.
 [ -f "$ELI" ] || ELI=$(python3 - <<'EOF'
 import hashlib, os, sys, urllib.request
-WERSJA, SHA256 = "2.3.0", "dd36e0be449b07268b32d6e4d948d9e632d74d9062627546368c943797365ff7"
+WERSJA, SHA256 = "2.4.0", "b25581d395f5db53993a0f933db1c24d9d28c34228bce68745ebde47454054df"
 URL = f"https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/v{WERSJA}/plugins/prawo-pl-eli/skills/prawo-pl-eli/scripts/eli.py"
 p = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"prawo-pl-eli-{WERSJA}", "eli.py")
 try:
@@ -89,7 +89,11 @@ Sygnaturę można podać w wielu formach: `DU 2000 1037`, `DU/2024/18`, `"Dz.U. 
 
 - **szukaj** — znajdź akt po tytule/typie/roku/haśle:
   `python3 scripts/eli.py szukaj "Kodeks spółek handlowych" --typ Ustawa --limit 5`
-  (opcje: `--typ`, `--rok`, `--wyd DU|MP`, `--haslo`, `--obowiazujace`, `--limit`, `--offset`)
+  (opcje: `--typ`, `--rok`, `--wyd DU|MP`, `--haslo`, `--obowiazujace`, `--limit`, `--offset`; sam filtr bez
+  frazy też działa, np. `szukaj --wyd MP --rok 2026`). `--haslo` musi być hasłem ze słownika API
+  (`/keywords`; wielkość liter bez znaczenia, polskie znaki — tak): hasło spoza słownika kończy się błędem
+  z podobnymi hasłami, a nie „brakiem wyników". Gdy akt o tytule równym frazie (akt bazowy) nie zmieścił się
+  na stronie, `szukaj` wskazuje jego pozycję (np. k.k. — pozycja 92 ze 101 trafień „Kodeks karny").
 - **meta** — metadane aktu (tytuł, typ, status, daty, czy obowiązuje, hasła, ELI, pliki tekstu):
   `python3 scripts/eli.py meta DU 2000 1037`
   Daty są rozdzielone, bo API ma dwa różne pola: **„Data aktu"** (`announcementDate` = data wydania,
@@ -100,6 +104,12 @@ Sygnaturę można podać w wielu formach: `DU 2000 1037`, `DU/2024/18`, `"Dz.U. 
   `meta` i `tekst` piszą „akt jeszcze NIE WSZEDŁ W ŻYCIE" (status API „obowiązujący" znaczy tylko „nie
   uchylony"), a przyszłe daty z „Uwag" — „część przepisów wchodzi w życie PÓŹNIEJ". „Cytat:" to urzędowa
   forma do pisma („Dz. U. z 2001 r. Nr 112, poz. 1198"); przy akcie uchylonym — „Uchylony przez: …".
+  Puste „WEJŚCIE W ŻYCIE" przy ustawie czy rozporządzeniu to luka API, nie brak terminu: gdy „Uwagi" mówią
+  „wchodzi w życie z dniem określonym w komunikacie/decyzji…", narzędzie ostrzega, że API nie wie, czy to
+  zdarzenie nastąpiło; inaczej każe odczytać przepis o wejściu w życie (`--fragment "wchodzi w życie"`).
+  „Stan prawny na" to pole API — wiąże data z obwieszczenia t.j. (w 1 z 9 sprawdzonych t.j., k.p.c.
+  DU 2026/468, API podaje dzień później). Na końcu `meta` wypisuje wyroki TK z kategorii „Orzeczenie TK" aktu
+  bazowego z datą skutku (utraty mocy) — lista obejmuje też wyroki „zgodny" i wyroki o innych aktach.
 - **tj** — znajdź AKTUALNY TEKST JEDNOLITY dla aktu (posortowane, najnowszy oznaczony; na starym t.j. ostrzega o nowszym):
   `python3 scripts/eli.py tj DU 2000 1037`
 - **tekst** — treść aktu (z `text.html` → czysty tekst; gdy API nie ma HTML dla aktu — `textHTML=false`,
@@ -113,21 +123,30 @@ Sygnaturę można podać w wielu formach: `DU 2000 1037`, `DU/2024/18`, `"Dz.U. 
   bez artykułu jest NIEJEDNOZNACZNE — wynik pokazuje wszystkie trafienia (do 8) z artykułem, w którym leżą
   („[§ 1 — w: Art. 25.]"); jeden przepis: `--fragment "art. 25 § 2"`. Paragrafy cytowane w akcie zmieniającym
   („„§ 7. …”") nie są traktowane jak paragrafy tego aktu.
-  `--pdf ŚCIEŻKA` zapisuje urzędowy PDF (preferuje tekst jednolity). Indeks górny podawaj w nawiasie
+  `--pdf ŚCIEŻKA` zapisuje urzędowy PDF (preferuje tekst jednolity); istniejącego pliku nie nadpisuje (błąd, kod 2 —
+  podaj nową nazwę). Indeks górny podawaj w nawiasie
   albo unicodem: art. 299¹ → `--fragment "art. 299(1)"` lub `"art. 299¹"` (zapis z `struktura`, „Art. 7_1.”,
-  też działa: `"art. 7_1"`); sufiks literowy normalnie: `"art. 66c"`, a z indeksem: `"art. 6b(3)"`. Nagłówki przepisów niedawno dodanych lub zmienionych mają w tekście jednolitym
+  też działa: `"art. 7_1"`); sufiks literowy normalnie: `"art. 66c"`, a z indeksem: `"art. 6b(3)"`, `"art. 130(1a)"`
+  albo `"art. 130¹ᵃ"`. Nagłówki przepisów niedawno dodanych lub zmienionych mają w tekście jednolitym
   odsyłacz do przypisu („Art. 66c 6)Dodany przez…") — `--fragment` to obsługuje.
   **„Nie znaleziono frazy" NIE znaczy, że przepisu nie ma w akcie** (zwłaszcza przy nietypowym
   oznaczeniu jednostki): sprawdź jeszcze samym numerem (`--fragment "66c"`) albo słowem z treści,
   zanim napiszesz, że przepis nie istnieje. Gdy nagłówka nie ma, narzędzie samo pokazuje trafienia
-  pełnotekstowe z ostrzeżeniem — mogą to być odesłania z innych przepisów, nie sam przepis.
+  pełnotekstowe z ostrzeżeniem — mogą to być odesłania z innych przepisów, nie sam przepis. Gdy w miejscu
+  szukanego artykułu stoi nagłówek z numerem spoza ciągu, narzędzie to wskazuje (dane API bywają błędne: k.p.c.
+  t.j. DU 2024/1568 ma art. 15 jako „Art. 1522.” w HTML i `/struct`) — numer sprawdź w PDF.
+  Gdy w wybranej części HTML API zamiast tabeli, wzoru albo rysunku stoi samo „patrz oryginał”, wynik to mówi
+  („…NIE MA poniżej”), a `--strict` blokuje taki niekompletny tekst — treść weź z `--pdf`.
 - **struktura** — spis jednostek redakcyjnych (tytuły/działy/rozdziały/artykuły):
   `python3 scripts/eli.py struktura DU 2024 18 --filtr "Art. 299"` (opcje: `--filtr`, `--poziom N`);
   indeks górny API zapisuje jako „Art. 7_1.” — obok stoi gotowa fraza `(--fragment "art. 7(1)")`
 - **odniesienia** — powiązania: nowelizacje, podstawa prawna, tekst jednolity, akty wykonawcze:
   `python3 scripts/eli.py odniesienia DU 2024 18`
 - każda komenda przyjmuje `--json` oraz `--strict`; obie flagi działają przed komendą i po niej.
-  Zero trafień / nierozpoznana odpowiedź API kończą się komunikatem i kodem wyjścia ≠ 0 — także z `--json`
+  **Kod wyjścia:** 0 — jest wynik; 1 — ZWERYFIKOWANY brak (API odpowiedziało, zero trafień, frazy nie ma
+  w pobranym tekście, filtr `struktura` nic nie znalazł); 2 — wszystko inne (błąd sieci/HTTP, nieoczekiwana
+  odpowiedź, zła sygnatura lub argument, blokada `--strict`, nieustalona aktualność, nieprzewidziany błąd).
+  Kod 1 przy `--fragment` nadal NIE dowodzi, że przepisu nie ma. Komunikat idzie na stderr, także z `--json`
   (nie dostaniesz pustego JSON-a, który wyglądałby jak „sprawdzone, nic nie ma”); `szukaj` pokazuje
   `totalCount` z API („Znaleziono: 58 (pokazuję 10, offset 0)") i jak stronicować (`--offset`/`--limit`) —
   akt bazowy bywa na KOŃCU listy, za nowelizacjami.
@@ -138,10 +157,16 @@ pobrać (awaria sieci/zapory) → blokada; (3) `text.html` puste i tekst pochodz
 `pdftotext` zawiódł → blokada (tekst z własnego urzędowego PDF aktu PRZECHODZI); (4) listy nowelizacji
 nie dało się uzupełnić z aktu bazowego → blokada; (5) tekst z PDF byłby NIEKOMPLETNY, bo część stron nie ma
 warstwy tekstowej (skan nieodczytany przez OCR, np. z `--bez-ocr`) → blokada (wtedy: OCR bez `--strict` albo
-`--pdf`); (6) tekst pochodziłby z OCR → blokada. **Czego `--strict` NIE sprawdza:** czy przepis został
-zmieniony PO stanie prawnym t.j. — to wiesz tylko z sekcji „Nowelizacje po tekście jednolitym" (czytaj ją
-i sprawdzaj „wejście w życie zmiany" względem daty sprawy); nie sprawdza też obcięcia listy `szukaj`
-(to jest jawnie wypisane) ani opóźnień indeksacji API.
+`--pdf`); (6) tekst pochodziłby z OCR → blokada; (6a) `pdftotext -bbox` nie dał współrzędnych słów dla stron PDF
+(indeksy górne i odsyłacze do przypisów niepotwierdzone — liczba tuż przed przypisem może być obcięta, „152,61" →
+„152,") → blokada, bez `--strict` ostrzeżenie „UWAGA: pdftotext -bbox nie zwrócił współrzędnych…"; (7) zmiana po stanie tekstu, która JUŻ obowiązuje, a której
+tekst nie zawiera (nie ma jej w obwieszczeniu t.j., w „Opracowano na podstawie" tekstu ujednoliconego ani
+w przypisach), dotyczy wypisywanego artykułu — albo nie da się tego ustalić → blokada; bez `--fragment` blokuje
+każda taka zmiana (cały tekst ma wtedy gdzieś stare brzmienie); (8) wyrok TK ogłoszony po stanie tekstu
+uznał wypisywany przepis (albo jego ust./§/pkt) za niezgodny bez zastrzeżenia zakresu → blokada (wyrok
+zakresowy/interpretacyjny i odroczona utrata mocy — tylko ostrzeżenie). **Czego `--strict` NIE sprawdza:**
+obcięcia listy `szukaj` (to jest jawnie wypisane) ani opóźnień indeksacji API (zmiany, której API jeszcze
+nie zna, narzędzie nie zobaczy).
 
 Narzędzie samo ostrzega: `tekst` na akcie, który ma tekst jednolity, każe cytować z najnowszego t.j.;
 na tekście jednolitym wypisuje „Nowelizacje po tekście jednolitym" — własną listę t.j. UZUPEŁNIONĄ o
@@ -160,6 +185,31 @@ Gdy `text.html` jest puste w API (`textHTML=false`), narzędzie czyta WŁASNY ur
 (`pdftotext`); tylko bez `pdftotext` sięga po najnowszy STARSZY t.j. z HTML — wtedy nagłówek mówi
 „NIEAKTUALNE BRZMIENIE MOŻLIWE", wymienia pominięte t.j. i wypisuje INLINE zmiany aktu bazowego po stanie
 prawnym tego starszego t.j., które trzeba nałożyć samemu. Nie ignoruj tych ostrzeżeń.
+
+**Ostrzeżenie imienne przy `--fragment`.** Dla każdej zmiany po stanie tekstu, której tekst nie zawiera, narzędzie
+pobiera TREŚĆ aktu zmieniającego (do 8 aktów), znajduje przepis, który zmienia TEN akt (po pierwszej pozycji
+cytatu „(Dz. U. …)" — akt albo jego t.j.), i odczytuje polecenia zmian poza cudzysłowami („w art. 5…", „art. 5b
+otrzymuje brzmienie", „uchyla się art. 7", nagłówki „Art. N." w nowym brzmieniu). Wynik: „UWAGA — TEN PRZEPIS
+ZMIENIONO po stanie tego tekstu: art. 5b zmienia Dz.U. 2026 poz. 731 (art. 1 aktu zmieniającego), wejście
+w życie zmiany 2026-06-18 … Poniżej brzmienie SPRZED tej zmiany", „zmienia … z dniem X" (zmiana przyszła) albo
+„Informacja: w treści … nie znalazłem zmiany art. N". Gdy aktu zmieniającego nie da się pobrać lub odczytać
+(zmiana „w całej ustawie", niedomknięty cudzysłów, tekst z OCR) — „nie ustaliłem, czy te zmiany … dotyczą"
+(i blokada w `--strict`). Artykuł DODANY po stanie tekstu: zamiast „Nie znaleziono frazy" (kod 1) — kod 2
+i wskazanie aktu, który go dodał. Akt BEZ tekstu jednolitego ma listę wszystkich swoich zmian („ten akt NIE MA
+tekstu jednolitego… brzmienie PIERWOTNE") — dotąd nie miał żadnego ostrzeżenia. Brzmienie po zmianie bierz
+z aktu zmieniającego (`tekst <akt zmieniający> --fragment "art. K"`), nie z pamięci.
+
+**Wyroki TK.** API ma przy akcie bazowym kategorię „Orzeczenie TK" (bez numerów artykułów), a wyrok, który
+coś zmienił, także w „Akty zmieniające" z datą skutku (również odroczonego). `tekst` wypisuje wyroki ogłoszone
+PO stanie tekstu („ich skutków NIE MA w tekście"), a przy `--fragment` czyta sentencję („orzeka: …") i mówi
+imiennie: „PRZEPIS UTRACIŁ MOC (wyrok TK …, skutek od …): art. N" (blokada `--strict`), „WYROK TK ZAKRESOWY
+albo częściowy … brzmienie się nie zmienia" (ostrzeżenie), „utrata mocy ODROCZONA do …" albo „sentencja nie
+wymienia art. N". Wyroki sprzed stanu t.j. t.j. oddaje przypisem („Z dniem … na podstawie wyroku Trybunału
+Konstytucyjnego…") i oznaczeniem „(utracił moc)" — `--fragment` ostrzega wtedy „WYROK TK W PRZYPISIE TEGO
+FRAGMENTU". Przypis o wyroku, którego odsyłacza w treści PDF nie ustalono, daje osobne „WYROK TK W PRZYPISIE
+NIEPRZYPISANYM DO JEDNOSTKI" — nie wiadomo, którego przepisu dotyczy; sprawdź w PDF (`--strict` tego nie blokuje). Gdy API zapisało skutek wyroku dla aktu, a sentencja nie wskazuje go wprost (wyrok o przepisie
+innej ustawy), narzędzie pisze „nie ustaliłem" (blokada `--strict`). Stan 13.11.2026: w Dz.U. z 2025 i 2026 r.
+nie ma żadnej pozycji typu „Orzeczenie".
 
 **Tekst ujednolicony (PDF typu U) i brzmienie PRZYSZŁE.** Dla wielu kodeksów (k.p.c., k.k., u.k.s.c.,
 Konstytucja) urzędowy PDF to „tekst ujednolicony" Kancelarii Sejmu — t.j. z WPISANYMI późniejszymi zmianami,
@@ -218,9 +268,10 @@ potem `tekst <t.j.> --fragment "art. N"` (dwie komendy zamiast trzech):
    oznacza, że nawet t.j. bywa już nieaktualny. Zanim powiesz „przepis brzmi…":
    - **Akt OGŁOSZONY ≠ OBOWIĄZUJĄCY.** W nowelizacji sprawdź artykuł „wchodzi w życie" — możliwe vacatio
      legis oraz RÓŻNE daty dla różnych jednostek redakcyjnych — i odnieś do **DATY zdarzenia/sprawy**
-     (przepis sprzed/po zmianie). Tekst jednolity oddaje stan na `legalStatusDate`; pozycje z listy
-     „Nowelizacje po tekście jednolitym" z „wejście w życie zmiany" po tej dacie trzeba nałożyć ręcznie
-     i sprawdzić, czy już obowiązują — `--strict` tego NIE robi za Ciebie.
+     (przepis sprzed/po zmianie). Tekst jednolity oddaje stan z obwieszczenia; pozycje z listy
+     „Nowelizacje po tekście jednolitym" bez oznaczenia „UWZGLĘDNIONA" trzeba nałożyć ręcznie — przy
+     `--fragment` narzędzie mówi imiennie, czy zmieniają TEN artykuł, a `--strict` blokuje stare brzmienie
+     zmienionego artykułu.
    - **Baza może NIE mieć najświeższej zmiany.** Brak nowelizacji w API ≠ pewność, że jej nie ma
      (indeksacja bywa opóźniona). Przy sprawie na konkretną datę zweryfikuj dodatkowo (np. najnowsze
      pozycje `dziennikustaw.gov.pl`, proces legislacyjny), a w odpowiedzi zaznacz:
@@ -237,7 +288,12 @@ potem `tekst <t.j.> --fragment "art. N"` (dwie komendy zamiast trzech):
    wyrazy; `--fragment` jest świetny do szybkiego odczytu i analizy.
    Linia zaczynająca się od `[przypis N)]` to **komentarz redakcyjny tekstu jednolitego** (kiedy przepis
    dodano lub zmieniono, z jaką datą wejścia w życie), a NIE treść normy — nigdy jej nie cytuj jako
-   przepisu; sam numer odsyłacza nie wchodzi już w numer jednostki („§ 1.", „pkt 2)").
+   przepisu; sam numer odsyłacza nie wchodzi już w numer jednostki („§ 1.", „pkt 2)") ani w liczbę („152,61"
+   z odsyłaczem 3 to „152,61" + `[przypis 3)]`, nie „152,613"). „(treści przypisu nie odnaleziono…)” znaczy, że
+   przypisu (np. objaśnienia pod tabelą) nie udało się dopasować — sprawdź go w PDF. Odwrotnie
+   `[przypis N) — bez odsyłacza w treści tej strony; nie przypisuj go do sąsiedniego przepisu]`: treść jest, ale
+   nie wiadomo, której jednostki dotyczy (stoi przed najbliższym artykułem/paragrafem/ustępem strony) — NIE
+   przypisuj jej przepisowi, przy którym stoi; jednostkę ustal w PDF.
 5. **Zawsze podawaj sygnaturę Dz.U./M.P. i ELI** przy cytacie (np. „art. 299 § 1 k.s.h., Dz.U. 2024
    poz. 18"). To pozwala odbiorcy zweryfikować źródło.
 6. Pełna lista endpointów i parametrów: `references/api.md` (czytaj przy zapytaniach spoza powyższych

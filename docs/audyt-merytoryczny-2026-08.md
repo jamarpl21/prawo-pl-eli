@@ -23,13 +23,41 @@
 > - SAOS/MS: kolizje sygnatur w różnych sądach, data uzasadnienia a data wyroku, „Data uprawomocnienia”.
 > - Rejestr umów: kwoty bez „zł” — rejestr nie podaje waluty ani netto/brutto.
 >
-> **Nadal otwarte (bez wpisu w CHANGELOG):** porównanie przepisu znowelizowanego w ostatnich 90 dniach
-> z aktem zmieniającym (k.p.c. DU 2026/830, 2026/1003); przepis utracił moc po wyroku TK; indeksy w k.k.
-> (178a, 190a); kwoty obok cyfr przypisów; treść załączników i tabel; `struktura` a spis treści PDF;
-> zerowe wyniki i `--haslo`; „Stan prawny na” a preambuła PDF; data „Ogłoszono” w M.P. przy różnych
-> datach; ponowny pomiar przestarzałego cache'u `limit=100000`; host ZP; AIA dla LS/LD; wybór wersji
-> skonsolidowanej i rozbieżność PL/EN w EUR-Lex; luki pokrycia SAOS; NIP/REGON i daty w rejestrze umów
-> wobec interfejsu rejestru oraz kompletność `najnowsze`.
+> **Nota o stanie (wydanie 2.4.0, listopad 2026).** Punkty, które po wydaniu 2.2.0 pozostawały otwarte,
+> sprawdzono 13.11.2026; wyniki z liczbą próbek są w `CHANGELOG.md`, sekcja 2.4.0.
+>
+> **Wykonane, z naprawą:**
+> - ELI, przepis znowelizowany w ostatnich 90 dniach (k.p.c. po DU 2026/830 i 2026/1003): `--fragment`
+>   czyta akty zmieniające i mówi, czy TEN artykuł zmieniono; `--strict` blokuje stare brzmienie.
+> - ELI, przepis po wyroku TK: „PRZEPIS UTRACIŁ MOC” blokuje `--strict`, wyrok zakresowy ostrzega.
+> - ELI, indeksy i litery (k.k. 178a, 190a, 115 § 2; k.p.c. 130¹ᵃ, 139 i 139¹, 505³⁷, 4 i 4¹): granice
+>   artykułów zgodne z PDF; zapytanie z literą indeksu górnego działa.
+> - ELI, kwoty obok cyfr przypisów: odsyłacz do przypisu rozpoznawany ze współrzędnych słów PDF — kwoty
+>   i kody nie tracą cyfr, przypis nie trafia do sąsiedniego artykułu.
+> - ELI, zerowe wyniki i `--haslo`; „Stan prawny na” a obwieszczenie w PDF.
+> - e-dzienniki: treść załączników i tabel (stawki przy swojej literze, ostrzeżenie o stronach-obrazach).
+> - EUR-Lex: wybór wersji skonsolidowanej (wersja z datą przyszłą nie jest już „aktualna”), granice
+>   `--fragment` po polsku i angielsku, publikacja w Dz.U. UE w `meta`.
+> - SAOS: zerowe wyniki i `--haslo`; data dokumentu „uzasadnienie”; luki pokrycia wobec portalu MS.
+> - Rejestr umów: NIP/REGON, daty i kwoty wobec interfejsu rejestru; kompletność `najnowsze`.
+> - UODO: wpisy kontroli sądowej i status decyzji wobec strony portalu.
+>
+> **Wykonane, bez zmiany działania:** ELI — treść załączników i tabel, `struktura` a spis treści PDF
+> (znalezione błędy leżą w danych API: k.p.c. DU 2024/1568 art. 15 jako „Art. 1522.”, brak „DZIAŁ IIda”),
+> data „Ogłoszono” w M.P. przy różnych datach; e-dzienniki — ponowny pomiar `limit=100000` (silnik
+> go nie używa), host ZP (działa), AIA dla LS i LD; rejestr umów — waluta (API jej nie podaje).
+>
+> **Nadal otwarte:**
+> - UODO → CBOSA: porównanie z wyrokami w CBOSA oraz data orzeczenia a data publikacji w CBOSA —
+>   serwer CBOSA w dniu kontroli nie odpowiadał.
+> - SAOS: daty orzeczeń SN (sn.pl stoi za filtrem antybotowym — świadomie bez zapytań) i TK oraz
+>   oznaczenie prawomocności.
+> - e-dzienniki: host MZ (w dniu kontroli HTTP 503) — jedyny z 16 dzienników bez porównania z PDF.
+> - EUR-Lex: porównanie ze stroną eur-lex.europa.eu (odpowiada automatom wyzwaniem antybotowym);
+>   źródłem porównania były urzędowe PDF z CELLAR.
+> - ELI: `struktura` dla tekstów jednolitych bez HTML (wszystkie z lat 2025–2026) — API nie ma dla nich
+>   `/struct`, więc porównania nie da się wykonać; „Stan prawny na” w tekstach ujednoliconych Kancelarii
+>   Sejmu — nie mają obwieszczenia; tabele w PDF sprawdzone na poziomie wierszy tylko w 3 przypadkach.
 
 Cel: sprawdzić, czy to, co zwracają silniki, jest w 100% prawdą — nie jakość kodu, tylko **zgodność z niezależnym źródłem urzędowym**.
 

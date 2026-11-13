@@ -24,11 +24,14 @@ Komendy:
 Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
            --strict  (decyzja: blokuje wynik bez treści, UCHYLONY przez sąd albo z rozpatrzeniem
                       sądowym bez rozstrzygnięcia w portalu; na listach nie działa)
+Kody wyjścia: 0 = jest wynik; 1 = ZWERYFIKOWANY brak wyników (zapytanie poprawne, zero trafień albo
+frazy --fragment nie ma w treści); 2 = wszystko inne (sieć/HTTP, zła odpowiedź API, zły argument,
+nieznana sygnatura, blokada --strict, pusty wynik będący artefaktem zapytania, nieprzewidziany błąd).
 """
-import sys, json, re, time, argparse, urllib.request, urllib.parse, urllib.error
+import sys, json, re, time, warnings, argparse, urllib.request, urllib.parse, urllib.error
 from html.parser import HTMLParser
 
-__version__ = "2.3.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "2.4.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://orzeczenia.uodo.gov.pl/api"
 CONTENT_HOSTS = ("orzeczenia.uodo.gov.pl",)
 POLA = "id,refid,refname,title,dates,kind,parts,publication"  # domyślne pola listy wyników
@@ -49,6 +52,14 @@ MIESIACE_DOPELNIACZ = ("stycznia", "lutego", "marca", "kwietnia", "maja", "czerw
                       "września", "października", "listopada", "grudnia")
 HEDGE_BRAK = ("UWAGA: brak w portalu ≠ nieistnienie decyzji (portal działa od 2025 r., starsze decyzje "
               "dodawane sukcesywnie) — sprawdź wyszukiwarkę na https://uodo.gov.pl i zaznacz to w odpowiedzi.")
+
+
+class BrakWynikow(SystemExit):
+    """ZWERYFIKOWANY brak wyników → kod wyjścia 1: zapytanie poprawne, API odpowiedziało, zero trafień
+    (albo frazy nie ma w pobranej treści). Wszystko inne — błąd sieci/HTTP, nieoczekiwana odpowiedź,
+    zły argument, nieznana sygnatura, blokada --strict, brak będący artefaktem zapytania — to kod 2
+    (zwykłe sys.exit("tekst") przechwytuje main()). Ujednolicone z orzeczenia_ms.py (2026-11): przy
+    jednym kodzie 1 dla wszystkiego model brał awarię portalu za „UODO nie wydał takiej decyzji”."""
 
 
 def _wymus_https(url):
@@ -253,10 +264,19 @@ def _kontrola_sadowa(item):
     for d in item.get("dates") or []:
         use = d.get("use", "")
         refid = d.get("refid") or ""
-        if use in DATY_PODSTAWOWE or (not refid and use not in ("repealed", "defended", "trial")):
+        # „Uprawomocnienie” z refid orzeczenia też jest śladem kontroli sądowej — bez tego blok i zapytania
+        # CBOSA gubiły wyrok NSA (kontrola 2026-11-13: ZSOŚS.440.8.2018 → III OSK 2986/21, status
+        # wpisu nonfinal; DKN.5131.49.2021 → III OSK 251/24; DKN.5112.1.2020 → III OSK 2694/23)
+        if use == "validation" and refid:
+            znaczenie = ("uprawomocnienie (wpis z orzeczeniem sądu)" if d.get("status") == "final" else
+                         f"wpis „Uprawomocnienie” ze statusem {d.get('status') or '?'} — NIE potwierdza "
+                         "prawomocności")
+        elif use in DATY_PODSTAWOWE or (not refid and use not in ("repealed", "defended", "trial")):
             continue
+        else:
+            znaczenie = ZNACZENIE_USE.get(use, use)
         out.append({"date": _data_wpisu(d), "use": use,
-                    "znaczenie": ZNACZENIE_USE.get(use, use), "refid": refid,
+                    "znaczenie": znaczenie, "refid": refid,
                     "sygnatura": _sygnatura_z_urn(refid) if refid else "", "sad": ""})
     return out
 
@@ -326,7 +346,7 @@ def _stan_prawny(meta, kontrola):
         status = status_api
     return {"status": status, "status_api": status_api,
             "uprawomocnienie": _data_wpisu(wal) if wal else None, "zakres": zakres,
-            "otwarte": otwarte}
+            "otwarte": otwarte, "uchylenia": [k for k in kontrola if k["use"] == "repealed"]}
 
 
 def _status_stanu(stan):
@@ -342,6 +362,15 @@ def _status_stanu(stan):
     if st == "czesciowo":
         return (f"CZĘŚCIOWO prawomocna (uprawomocnienie {data} tylko: {stan['zakres']}; "
                 f"pole API status: {api or '?'})")
+    # uchylenie z historii przy innym polu API: wiersz statusu mówił „nonfinal (NIEPRAWOMOCNA)” albo
+    # „final (prawomocna wg portalu)” pod nagłówkiem „DECYZJA UCHYLONA” (kontrola 2026-11-13: 9 z 12
+    # uchylonych, np. DKN.5130.3114.2020 — WSA II SA/Wa 2465/21 uchylił, pole API „nonfinal”).
+    # Prawomocności WYROKU nie wywodzimy z dates[].status — to status decyzji po zdarzeniu, nie wyroku.
+    if st == "repealed" and api != "repealed":
+        wyroki = ", ".join(f"{k['sygnatura'] or k['refid'] or '?'} z {k['date'] or '?'}"
+                           for k in stan.get("uchylenia") or [])
+        return (f"UCHYLONA wg historii portalu (w całości lub w części{': ' + wyroki if wyroki else ''}); "
+                f"pole API status: „{api or '?'}” nie odzwierciedla uchylenia")
     return _status_opis(api)
 
 
@@ -440,9 +469,95 @@ _ZABORCZY_LUB_ATOMOWY = re.compile(r"[*+?}]\+|\(\?>")
 PODPOWIEDZ_REGEX_5XX = (
     "Warunek zawiera wyrażenie regularne (operator regex): przyczyną HTTP 5xx może być SKŁADNIA "
     "wyrażenia, a nie awaria portalu — silnik API nie jest zgodny z pythonowym (odrzuca m.in. "
-    "grupy nazwane (?P<…>), kwantyfikatory zaborcze ++ i grupy atomowe (?>…)). Aby szukać "
+    "grupy nazwane (?P<…>), kwantyfikatory zaborcze ++, grupy atomowe (?>…), \\Z i \\z oraz "
+    "powtórzenia {m,n} powyżej 255). Aby szukać "
     "dosłownie, poprzedź znaki . ^ $ * + ? ( ) [ ] { } | \\ ukośnikiem odwrotnym, np. 'lit\\. f\\)'. "
     "Jeśli zwykła fraza (np. 'monitoring') też daje 5xx — to awaria portalu, spróbuj później.")
+
+# Pomiar na żywo 2026-11-13 (ok. 90 zapytań, content_pl/title_pl:regex:…): API ZAMIENIA WZORZEC NA MAŁE
+# LITERY (stąd brak rozróżniania wielkości liter; tekst najpewniej też — [[:upper:]] i \x41 dają 0) i stosuje składnię POSIX/Tcl, nie pythonową. Skutki
+# bez błędu HTTP: \b (tam: znak backspace) → zawsze 0 (\bmonitor → 0, \ymonitor → trafienia); \B → \b
+# → 0; \A → \a (znak dzwonka) → 0; \M → \m (początek słowa) → monitoring\M → 0; \D \S \W → \d \s \w
+# po cichu ODWRÓCONE (^\S i ^\s dają po 0, choć ^. trafia; ^\W = ^\w); \Y → \y. ^ i $ działają, ale
+# kotwiczą CAŁE pole: w treści (content_pl) ^monitoring → 0, a ^.{0,20}decyzj → trafienia; w tytule
+# ^nałożenie działa jak należy. \Z i \z → HTTP 500. Działają: \y (granica słowa, także przy polskich
+# literach: \yśrodk = środk, \ykażdego = każdego, \ydego → 0, choć „każdego” jest w 100+ decyzjach), \m, [[:<:]], [^0-9], [^[:space:]], [^[:alnum:]_], \d \s \w, klasy POSIX.
+# Fraza w `szukaj`/`--tytul` jest więc przepisywana na równoważnik albo NADZBIÓR (usunięta kotwica
+# tylko poszerza wynik), z komunikatem; --warunek idzie surowo i dostaje podpowiedź przy pustym wyniku.
+_ZAMIANY_API = {   # konstrukcja → (zamiennik w content_pl, zamiennik w title_pl, opis)
+    "\\b": ("\\y", "\\y", "\\b to w API znak backspace (zawsze 0 trafień); granica słowa w API to \\y"),
+    "\\B": ("", "", "\\B zmienia się w API w \\b (zawsze 0 trafień); odpowiednika brak — usunięte"),
+    "\\A": ("", "^", "\\A zmienia się w API w \\a (zawsze 0 trafień)"),
+    "\\Z": ("", "$", "\\Z daje w API błąd HTTP 500"),
+    "\\z": ("", "$", "\\z daje w API błąd HTTP 500"),
+    "\\M": ("\\y", "\\y", "\\M zmienia się w API w \\m (początek słowa); koniec słowa: \\y"),
+    "\\Y": ("", "", "\\Y zmienia się w API w \\y (granica słowa — odwrotność); usunięte"),
+    "\\D": ("[^0-9]", "[^0-9]", "\\D zmienia się w API w \\d (cyfra — odwrotność)"),
+    "\\S": ("[^[:space:]]", "[^[:space:]]", "\\S zmienia się w API w \\s (biały znak — odwrotność)"),
+    "\\W": ("[^[:alnum:]_]", "[^[:alnum:]_]", "\\W zmienia się w API w \\w (znak słowa — odwrotność)"),
+}
+_KOTWICE_TRESCI = ("^ i $ kotwiczą w API początek/koniec CAŁEJ treści decyzji (nie wiersza ani słowa) "
+                   "— w treści praktycznie zawsze 0 trafień")
+
+
+def _zamien_pulapki(wzorzec, pole):
+    """Wzorzec pythonowy → postać, która na API UODO znaczy to samo albo WIĘCEJ (zob. pomiar wyżej).
+    Pomija ucieczki (\\^, \\\\b) i wnętrze klas znaków ([^0-9], [\\b]). Zwraca (wzorzec, zmiany), gdzie
+    zmiany = [(konstrukcja, zamiennik, opis)]; pusty zamiennik = usunięta asercja → wynik to nadzbiór."""
+    tresc = pole != "title_pl"
+    out, zmiany, i, n, w_klasie = [], [], 0, len(wzorzec), False
+    while i < n:
+        z = wzorzec[i]
+        if z == "\\" and i + 1 < n:
+            tok = wzorzec[i:i + 2]
+            i += 2
+            if not w_klasie and tok in _ZAMIANY_API:
+                w_tresci, w_tytule, opis = _ZAMIANY_API[tok]
+                zam = w_tresci if tresc else w_tytule
+                out.append(zam)
+                zmiany.append((tok, zam, opis))
+            else:
+                out.append(tok)
+            continue
+        if w_klasie:
+            if wzorzec.startswith("[:", i) and ":]" in wzorzec[i + 2:]:
+                k = wzorzec.index(":]", i + 2) + 2   # klasa POSIX [:alpha:] — jej „]” nie zamyka klasy
+                out.append(wzorzec[i:k])
+                i = k
+                continue
+            w_klasie = z != "]"
+            out.append(z)
+            i += 1
+            continue
+        if z == "[":
+            j = i + 1
+            if j < n and wzorzec[j] == "^":
+                j += 1
+            if j < n and wzorzec[j] == "]":
+                j += 1   # „]” tuż po „[” albo „[^” jest dosłowny
+            out.append(wzorzec[i:j])
+            i, w_klasie = j, True
+            continue
+        if z in "^$" and tresc:
+            zmiany.append((z, "", _KOTWICE_TRESCI))
+            i += 1
+            continue
+        out.append(z)
+        i += 1
+    return "".join(out), zmiany
+
+
+def _opis_zmian(zmiany):
+    widziane, czesci = set(), []
+    for tok, zam, opis in zmiany:
+        if tok not in widziane:
+            widziane.add(tok)
+            czesci.append(f"{tok} → {zam or 'usunięte'} ({opis})")
+    return "; ".join(czesci)
+
+
+def _nadzbior(zmiany):
+    return any(not zam or tok == "\\M" for tok, zam, _ in zmiany)
 
 
 def _doslownie(fraza):
@@ -454,25 +569,48 @@ def _doslownie(fraza):
 
 def _poprawny_regex(fraza):
     """Przybliżenie składni silnika API: kompiluje się w Pythonie ORAZ (po usunięciu ucieczek
-    i klas znaków) nie ma kwantyfikatora zaborczego ani grupy atomowej (zob. pomiar wyżej)."""
+    i klas znaków) nie ma kwantyfikatora zaborczego ani grupy atomowej (zob. pomiar wyżej).
+    Ucieczki dialektu API \\y \\m (oraz \\M \\Y \\z, które silnik przepisuje) Python odrzuca, a \\z
+    przyjmuje dopiero od 3.14 — sprawdzamy je jak \\b, by wynik nie zależał od wersji Pythona."""
     try:
-        re.compile(fraza)
+        with warnings.catch_warnings():   # klasy POSIX [[:space:]] → FutureWarning „nested set” w Pythonie
+            warnings.simplefilter("ignore")
+            re.compile(re.sub(r"\\(.)", lambda m: "\\b" if m.group(1) in "ymMYz" else m.group(0), fraza))
     except re.error:
         return False
     bez_ucieczek = re.sub(r"\\.|\[(?:\\.|[^\]\\])*\]", "_", fraza)
     return not _ZABORCZY_LUB_ATOMOWY.search(bez_ucieczek)
 
 
-def _regex_lub_doslownie(fraza, opis):
-    """Fraza poprawna jako regex → bez zmian (świadome „monitoring|biometr” działa jak dotąd);
-    niepoprawna („lit. f)”, „(monitoring”, „C++”) → dosłownie, z jednym wierszem na stderr."""
+def _regex_lub_doslownie(fraza, opis, pole="content_pl"):
+    """Fraza poprawna jako regex → bez zmian (świadome „monitoring|biometr” działa jak dotąd), poza
+    konstrukcjami, które API rozumie inaczej (\\b, ^ w treści, \\S… — zob. _zamien_pulapki);
+    niepoprawna („lit. f)”, „(monitoring”, „C++”) → dosłownie, z jednym wierszem na stderr.
+    Zwraca (wzorzec wysyłany do API, lista zmian)."""
     if _poprawny_regex(fraza):
-        return fraza
+        wzorzec, zmiany = _zamien_pulapki(fraza, pole)
+        if zmiany:
+            print(f"UWAGA: {opis} '{fraza}' zawiera konstrukcje, które API UODO rozumie inaczej niż "
+                  f"Python (zmierzone 2026-11-13): {_opis_zmian(zmiany)}. Wysyłam: '{wzorzec}'."
+                  + (" Usunięta kotwica/asercja tylko POSZERZA wynik — lista może zawierać trafienia, "
+                     "których oryginalna fraza by nie dopuściła (nadzbiór); sprawdź je w treści "
+                     "(decyzja <sygnatura> --fragment)." if _nadzbior(zmiany) else ""),
+                  file=sys.stderr)
+        return wzorzec, zmiany
     doslowna = _doslownie(fraza)
     # bez !r — repr podwoiłby ukośniki i pokazał inną postać niż faktycznie wysłana
     print(f"UWAGA: {opis} '{fraza}' nie jest poprawnym wyrażeniem regularnym dla API UODO — "
           f"traktuję ją DOSŁOWNIE: '{doslowna}'.", file=sys.stderr)
-    return doslowna
+    return doslowna, []
+
+
+def _pulapki_warunku(warunek):
+    """Surowy --warunek z regex na content_pl/title_pl: (konstrukcje-pułapki, warunek bez nich)."""
+    czesci = (warunek or "").split(":", 2)
+    if len(czesci) < 3 or czesci[1] != "regex" or czesci[0] not in ("content_pl", "title_pl"):
+        return [], warunek
+    wzorzec, zmiany = _zamien_pulapki(czesci[2], czesci[0])
+    return zmiany, f"{czesci[0]}:regex:{wzorzec}"
 
 
 def _wiersz(item):
@@ -503,8 +641,9 @@ def _wiersz(item):
 def cmd_najnowsze(a):
     a.limit = _limit(a.limit, glosno=True)
     d = _expect_list(_szukaj(_timespan(None, None), limit=a.limit), "najnowsze dokumenty")
-    if not d:
-        sys.exit("Brak wyników — spróbuj ponownie za chwilę.")
+    if not d:   # portal ma setki dokumentów — pusta lista bez warunku to anomalia API (kod 2), nie brak
+        sys.exit("BŁĄD: API UODO zwróciło pustą listę najnowszych dokumentów (bez żadnego warunku) — "
+                 "to anomalia portalu, nie brak decyzji; spróbuj ponownie za chwilę.")
     if a.json:
         print(json.dumps(d, ensure_ascii=False, indent=2)); return
     print(f"Ostatnio WYDANE dokumenty w portalu orzeczeń UODO ({len(d)}) — API sortuje po dacie "
@@ -519,13 +658,15 @@ def _w_zakresie(data, od, do):
 
 
 def cmd_szukaj(a):
-    warunki = []
+    warunki, zmiany = [], {}   # zmiany: warunek → konstrukcje przepisane przez _zamien_pulapki
     if a.warunek:
         warunki.append(a.warunek)
-    if a.fraza:   # --warunek zostaje surowy (zaawansowany); fraza i tytuł — zabezpieczane
-        warunki.append(f"content_pl:regex:{_regex_lub_doslownie(a.fraza, 'fraza')}")
-    if a.tytul:
-        warunki.append(f"title_pl:regex:{_regex_lub_doslownie(a.tytul, 'fraza --tytul')}")
+    for wartosc, pole, opis in ((a.fraza, "content_pl", "fraza"), (a.tytul, "title_pl", "fraza --tytul")):
+        if wartosc:   # --warunek zostaje surowy (zaawansowany); fraza i tytuł — zabezpieczane
+            wzorzec, zm = _regex_lub_doslownie(wartosc, opis, pole)
+            warunki.append(f"{pole}:regex:{wzorzec}")
+            if zm:
+                zmiany[warunki[-1]] = zm
     pub_od, pub_do = a.pub_od, a.pub_do
     if not warunki and not (a.od or a.do or pub_od or pub_do):
         sys.exit("Podaj kryterium: frazę (pełnotekstowo) albo --tytul / --warunek / zakres dat "
@@ -540,25 +681,52 @@ def cmd_szukaj(a):
     if pub_do and (not do or pub_do < do):
         do = pub_do  # data decyzji ≤ data publikacji — bezpieczne zawężenie okna API
     a.limit = _limit(a.limit, glosno=True)
-    d = _szukaj(_timespan(a.od, do), warunki[0] if warunki else None, a.limit, a.strona)
+    warunek = warunki[0] if warunki else None
+    pulapki_surowe, warunek_bez_pulapek = ([], None) if warunek in zmiany else _pulapki_warunku(warunek)
+    if pulapki_surowe:
+        print(f"UWAGA: surowy --warunek '{warunek}' zawiera konstrukcje, które API UODO rozumie inaczej "
+              f"niż Python (zmierzone 2026-11-13): {_opis_zmian(pulapki_surowe)}. Wysyłam bez zmian; "
+              f"odpowiednik: '{warunek_bez_pulapek}'.", file=sys.stderr)
+    d = _szukaj(_timespan(a.od, do), warunek, a.limit, a.strona)
     d = _expect_list(d, "wyniki wyszukiwania")
     pobrane = len(d)
     if pub_od or pub_do:
         d = [it for it in d if _w_zakresie(_daty(it).get("publication"), pub_od, pub_do)]
     if not d:
+        # tylko pusty wynik POPRAWNEGO zapytania na pierwszej stronie jest zweryfikowanym brakiem (kod 1)
         if pobrane:
             sys.exit(f"Brak wyników po filtrze daty publikacji ({pub_od or '…'}–{pub_do or '…'}) "
                      f"spośród {pobrane} pobranych rekordów tej strony. Filtr publikacji działa "
                      "po stronie klienta (API przyjmuje jeden warunek) — sprawdź kolejne strony "
                      f"(--strona {a.strona + 1}) albo zawęź --od/--do po dacie decyzji. "
                      "To NIE dowód, że takich decyzji nie ma.")
-        sys.exit("Brak wyników. Fraza działa jak regex (bez rozróżniania wielkości liter) i szuka "
-                 "DOSŁOWNIE — a tytuły i treści są po polsku ODMIENIONE ('nałożenie kary "
-                 "pieniężnej', nie 'kara pieniężna'). Podaj RDZEŃ bez końcówki: 'pieniężn', "
-                 "'biometr', 'monitoring'. To NIE dowód, że takich decyzji nie ma.")
+        if pulapki_surowe:
+            sys.exit(f"Brak wyników, ale to ARTEFAKT zapytania, nie zweryfikowany brak: surowy --warunek "
+                     f"'{warunek}' zawiera konstrukcje, które na API UODO dają fałszywe zero albo inny "
+                     f"wynik niż w Pythonie: {_opis_zmian(pulapki_surowe)}. Ponów bez nich: "
+                     f"--warunek '{warunek_bez_pulapek}' (albo zwykłe `szukaj \"<fraza>\"` / `--tytul`, "
+                     "które przepisują je same).")
+        if a.strona > 0:
+            sys.exit(f"Brak wyników na stronie {a.strona} (--strona liczy od 0, po {a.limit}) — lista "
+                     "skończyła się na wcześniejszej stronie. To NIE jest zweryfikowany brak trafień: "
+                     "sprawdź --strona 0.")
+        wyslana = (f" Wysłano do API: '{warunek}'"
+                   + (f" (po zamianie konstrukcji: {_opis_zmian(zmiany[warunek])} — zapytanie znaczy "
+                      "to samo albo więcej niż fraza, więc zero jest wiarygodne)" if warunek in zmiany else "")
+                   + "." if warunek else "")
+        raise BrakWynikow(
+            "Brak wyników." + wyslana + " Fraza działa jak regex (bez rozróżniania wielkości liter) i szuka "
+            "DOSŁOWNIE — a tytuły i treści są po polsku ODMIENIONE ('nałożenie kary "
+            "pieniężnej', nie 'kara pieniężna'). Podaj RDZEŃ bez końcówki: 'pieniężn', "
+            "'biometr', 'monitoring'. To NIE dowód, że takich decyzji nie ma.")
     if a.json:
         print(json.dumps(d, ensure_ascii=False, indent=2)); return
     filtry = []
+    if warunek in zmiany:
+        filtry.append(f"fraza wysłana do API: '{warunek}' — zamienione konstrukcje: "
+                      f"{_opis_zmian(zmiany[warunek])}"
+                      + (" — wynik może być NADZBIOREM (usunięta kotwica/asercja)"
+                         if _nadzbior(zmiany[warunek]) else ""))
     if a.od or do:
         filtry.append(f"filtr po dacie decyzji (announcement): {a.od or '…'}–{do or '…'}")
     if pub_od or pub_do:
@@ -855,8 +1023,8 @@ def cmd_decyzja(a):
         return
     if a.fragment:
         spans = _fragmenty(txt, a.fragment)
-        if not spans:
-            sys.exit(f"Nie znaleziono frazy {a.fragment!r} w treści ({len(txt)} znaków). Tekst jest "
+        if not spans:   # treść pobrana, frazy w niej nie ma — zweryfikowany brak (kod 1)
+            raise BrakWynikow(f"Nie znaleziono frazy {a.fragment!r} w treści ({len(txt)} znaków). Tekst jest "
                      "po polsku odmieniony — podaj RDZEŃ bez końcówki ('pieniężn' zamiast 'kara "
                      "pieniężna'). To NIE dowód, że decyzja o tym nie mówi.")
         for i, (s, e) in enumerate(spans):
@@ -934,8 +1102,21 @@ def main():
                        help="decyzja: zakończ błędem przy braku treści, uchyleniu przez sąd albo "
                             "rozpatrzeniu sądowym bez rozstrzygnięcia w portalu")
 
-    a = ap.parse_args()
-    a.func(a)
+    a = ap.parse_args()   # błędy argparse: SystemExit(2), --help/--version: SystemExit(0) — bez zmian
+    try:
+        a.func(a)
+    except BrakWynikow as e:   # zweryfikowany brak — jedyna droga do kodu 1
+        print(e.code, file=sys.stderr)
+        sys.exit(1)
+    except SystemExit as e:
+        if e.code is None or isinstance(e.code, int):
+            raise
+        print(e.code, file=sys.stderr)   # sys.exit("tekst"): błąd, blokada --strict, artefakt → kod 2
+        sys.exit(2)
+    except Exception as e:  # noqa: BLE001 — nieprzewidziany wyjątek nigdy nie może wyglądać jak „brak”
+        print(f"BŁĄD: nieoczekiwany błąd helpera uodo.py: {e!r} — to NIE jest brak wyników; "
+              "spróbuj ponownie, a przy powtórce zgłoś błąd.", file=sys.stderr)
+        sys.exit(2)
 
 
 if __name__ == "__main__":

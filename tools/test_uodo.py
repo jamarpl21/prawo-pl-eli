@@ -104,9 +104,10 @@ def _fake_get(odpowiedzi):
 
 
 def _uruchom(argv, odpowiedzi=None, szukaj=None):
-    """main() z podmienioną siecią; zwraca (stdout, kod wyjścia albo None)."""
-    out = io.StringIO()
-    patches = [mock.patch.object(sys, "argv", ["uodo.py"] + argv), contextlib.redirect_stdout(out)]
+    """main() z podmienioną siecią; zwraca (stdout, None) albo (stdout, (kod wyjścia, stderr))."""
+    out, err = io.StringIO(), io.StringIO()
+    patches = [mock.patch.object(sys, "argv", ["uodo.py"] + argv), contextlib.redirect_stdout(out),
+               contextlib.redirect_stderr(err)]
     if odpowiedzi is not None:
         patches.append(mock.patch.object(uodo, "_get", side_effect=_fake_get(odpowiedzi)))
     if szukaj is not None:
@@ -118,9 +119,7 @@ def _uruchom(argv, odpowiedzi=None, szukaj=None):
         try:
             uodo.main()
         except SystemExit as e:
-            kod = e.code if isinstance(e.code, int) else 1
-            if not isinstance(e.code, int):
-                kod = (1, str(e.code))
+            kod = (e.code, err.getvalue())
     return out.getvalue(), kod
 
 
@@ -390,7 +389,7 @@ class TestDecyzja(unittest.TestCase):
         for argv in (["--strict", "decyzja", "ZSPR.421.3.2018"], ["decyzja", "ZSPR.421.3.2018", "--strict", "--json"]):
             out, kod = _uruchom(argv, self.SIEC_BISNODE)
             self.assertEqual(out, "")
-            self.assertEqual(kod[0], 1)
+            self.assertEqual(kod[0], 2)
             self.assertIn("UCHYLONA", kod[1])
             self.assertIn('prawo-pl-cbosa sygnatura "II SA/Wa 1030/19"', kod[1])
         out, kod = _uruchom(["decyzja", "ZSPR.421.2.2019", "--strict"],
@@ -424,7 +423,7 @@ class TestDecyzja(unittest.TestCase):
         for ident in ("III OSK 377/23", "urn:ndoc:court:pl:sa:2023:iii_osk_377"):
             out, kod = _uruchom(["decyzja", ident], {"iii_osk_377/meta.json": META_WYROK})
             self.assertEqual(out, "")
-            self.assertEqual(kod[0], 1)
+            self.assertEqual(kod[0], 2)
             self.assertIn("To NIE jest decyzja Prezesa UODO", kod[1])
             self.assertIn('prawo-pl-cbosa sygnatura "III OSK 377/23"', kod[1])
             self.assertNotIn("Sprawdź sygnaturę", kod[1])
@@ -442,7 +441,7 @@ class TestDecyzja(unittest.TestCase):
         out, kod = _uruchom(["decyzja", "DKN.5131.34.2023", "--strict"],
                             {"dkn_5131_34/meta.json": META_NONFINAL, "body.txt": ""})
         self.assertEqual(out, "")
-        self.assertEqual(kod[0], 1)
+        self.assertEqual(kod[0], 2)
         self.assertIn("bez zweryfikowanej pełnej treści", kod[1])
 
     def test_awaria_pobrania_tresci_nie_zostawia_czesciowego_stdout(self):
@@ -497,7 +496,7 @@ class TestListy(unittest.TestCase):
     def test_pub_filtr_zero_po_filtrze_konczy_bledem_takze_json(self):
         out, kod = _uruchom(["szukaj", "--pub-od", "2027-01-01", "--json"], szukaj=self.WIERSZE)
         self.assertEqual(out, "")
-        self.assertEqual(kod[0], 1)
+        self.assertEqual(kod[0], 2)
         self.assertIn("To NIE dowód", kod[1])
 
     def test_t15_json_strict_nie_emituje_wyniku_gdy_kontrola_nie_przeszla(self):
@@ -555,13 +554,15 @@ class TestFrazaRegexDoslownie(unittest.TestCase):
     """Fraza niepoprawna jako regex → HTTP 500 portalu (pomiar 2026-11-13); silnik ją zabezpiecza."""
 
     def _szukaj(self, argv):
+        """Zwraca (wysłany warunek, wiersze UWAGA ze stderr) — bez końcowego komunikatu o braku."""
         err = io.StringIO()
         with mock.patch.object(uodo, "_szukaj", return_value=[]) as sz, \
                 mock.patch.object(sys, "argv", ["uodo.py", "szukaj"] + argv), \
                 contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
             with self.assertRaises(SystemExit):
                 uodo.main()
-        return sz.call_args.args[1], err.getvalue()
+        uwagi = "".join(w for w in err.getvalue().splitlines(True) if w.startswith("UWAGA"))
+        return sz.call_args.args[1], uwagi
 
     def test_fraza_z_nawiasem_doslownie_z_komunikatem(self):
         warunek, err = self._szukaj(["lit. f)"])
@@ -791,7 +792,7 @@ class TestStanPrawny(unittest.TestCase):
                      ["--strict", "decyzja", "DKN.5131.32.2023", "--json"]):
             out, kod = _uruchom(argv, self.SIEC32)
             self.assertEqual(out, "")
-            self.assertEqual(kod[0], 1)
+            self.assertEqual(kod[0], 2)
             self.assertIn("prawomocności nie da się potwierdzić", kod[1])
             self.assertIn("decyzja mogła zostać uchylona", kod[1])
             self.assertIn('cbosa.py sygnatura "II SA/Wa 285/24"', kod[1])
@@ -891,6 +892,223 @@ class TestStanPrawny(unittest.TestCase):
         self.assertIn("status: final (PRAWOMOCNA od 2025-07-31", w)
         w = TestWiersz._wiersz(None, META_DKN32)
         self.assertIn("status: NIEUSTALONY — sąd rozpatrywał sprawę (II SA/Wa 285/24, III OZ 542/24)", w)
+
+
+class TestPulapkiDialektuApi(unittest.TestCase):
+    """Pomiar 2026-11-13: API zamienia wzorzec na małe litery i ma składnię POSIX/Tcl — \\b, \\A, ^ w treści
+    dają fałszywe zero, \\D \\S \\W odwracają się po cichu. Fraza ma być przepisana na równoważnik/nadzbiór."""
+
+    def test_zamiany_w_tresci(self):
+        for fraza, oczekiwana in (("\\bmonitor", "\\ymonitor"), ("^monitoring", "monitoring"),
+                                  ("monitoring$", "monitoring"), ("\\Amonitoring\\Z", "monitoring"),
+                                  ("monitoring\\z", "monitoring"), ("monitoring\\M", "monitoring\\y"),
+                                  ("\\Bonitor", "onitor"), ("art\\. \\D", "art\\. [^0-9]"),
+                                  ("monitoring\\S", "monitoring[^[:space:]]"),
+                                  ("\\Wmonitoring", "[^[:alnum:]_]monitoring")):
+            with self.subTest(fraza=fraza):
+                wzorzec, zmiany = uodo._zamien_pulapki(fraza, "content_pl")
+                self.assertEqual(wzorzec, oczekiwana)
+                self.assertTrue(zmiany)
+
+    def test_tytul_zachowuje_kotwice_ktore_tam_dzialaja(self):
+        # title_pl:regex:^nałożenie → trafienia (pomiar 2026-11-13) — w tytule ^ i $ są sensowne
+        self.assertEqual(uodo._zamien_pulapki("^nałożenie", "title_pl"), ("^nałożenie", []))
+        self.assertEqual(uodo._zamien_pulapki("2016/679\\.$", "title_pl"), ("2016/679\\.$", []))
+        self.assertEqual(uodo._zamien_pulapki("\\Anałożenie", "title_pl")[0], "^nałożenie")
+        self.assertEqual(uodo._zamien_pulapki("\\bkar", "title_pl")[0], "\\ykar")
+
+    def test_bez_falszywych_alarmow(self):
+        for fraza in ("[^0-9]monitoring", "\\^monitoring", "a\\$", "\\\\b", "[\\b]", "[[:alpha:]^]",
+                      "[]^]", "[^]$]", "\\ymonitor", "\\mmonitor", "monitoring|biometr", "lit\\. f\\)"):
+            with self.subTest(fraza=fraza):
+                self.assertEqual(uodo._zamien_pulapki(fraza, "content_pl"), (fraza, []))
+
+    def test_ucieczki_api_nie_sa_brane_doslownie_na_zadnej_wersji_pythona(self):
+        # Python odrzuca \y \m \M \Y, a \z przyjmuje dopiero od 3.14 — bez tego fraza szłaby jako '\\y'
+        for fraza in ("\\ymonitor", "\\mmonitor", "monitoring\\M", "\\Ymonitor", "monitoring\\z"):
+            with self.subTest(fraza=fraza):
+                self.assertTrue(uodo._poprawny_regex(fraza))
+
+    def test_klasy_posix_bez_futurewarning(self):
+        # api.md zaleca [^[:space:]] — re.compile emituje na nie FutureWarning „nested set” na stderr
+        import warnings
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            self.assertTrue(uodo._poprawny_regex("[^[:space:]]monitoring[[:digit:]]"))
+        self.assertEqual(w, [])
+
+    def _szukaj(self, argv, wynik=()):
+        out, err = io.StringIO(), io.StringIO()
+        kod = None
+        with mock.patch.object(uodo, "_szukaj", return_value=list(wynik)) as sz, \
+                mock.patch.object(sys, "argv", ["uodo.py", "szukaj"] + argv), \
+                contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
+            try:
+                uodo.main()
+            except SystemExit as e:
+                kod = e.code
+        return sz.call_args.args[1], kod, out.getvalue(), err.getvalue()
+
+    def test_fraza_z_b_przepisana_a_zero_jest_wiarygodne(self):
+        warunek, kod, out, err = self._szukaj(["\\bmonitor"])
+        self.assertEqual(warunek, "content_pl:regex:\\ymonitor")
+        self.assertEqual(kod, 1)   # zapytanie po zamianie znaczy to samo — zero jest zweryfikowane
+        self.assertIn("\\b to w API znak backspace", err)
+        self.assertIn("Wysyłam: '\\ymonitor'", err)
+        self.assertIn("po zamianie konstrukcji", err)
+
+    def test_kotwica_w_tresci_usunieta_wynik_nadzbiorem(self):
+        warunek, kod, out, err = self._szukaj(["^monitoring"], wynik=TestListy.WIERSZE[:1])
+        self.assertEqual(warunek, "content_pl:regex:monitoring")
+        self.assertIsNone(kod)
+        self.assertIn("nadzbiór", err)
+        self.assertIn("fraza wysłana do API: 'content_pl:regex:monitoring'", out)
+        self.assertIn("NADZBIOREM", out)
+
+    def test_surowy_warunek_z_kotwica_pusty_to_artefakt_kod_2(self):
+        warunek, kod, out, err = self._szukaj(["--warunek", "content_pl:regex:\\bmonitor"])
+        self.assertEqual(warunek, "content_pl:regex:\\bmonitor")   # --warunek idzie surowo
+        self.assertEqual(kod, 2)
+        self.assertIn("ARTEFAKT zapytania", err)
+        self.assertIn("--warunek 'content_pl:regex:\\ymonitor'", err)
+
+    def test_surowy_warunek_z_odwrocona_klasa_ostrzega_takze_przy_wynikach(self):
+        warunek, kod, out, err = self._szukaj(["--warunek", "content_pl:regex:art\\. \\D"],
+                                              wynik=TestListy.WIERSZE[:1])
+        self.assertIsNone(kod)
+        self.assertIn("UWAGA: surowy --warunek", err)
+        self.assertIn("\\D zmienia się w API w \\d", err)
+
+    def test_surowy_warunek_bez_pulapek_i_inne_indeksy_bez_komentarza(self):
+        for w in ("content_pl:regex:monitoring", "date_publication:ge:2026-01-01", "refname:eq:^x"):
+            with self.subTest(w=w):
+                _, kod, _, err = self._szukaj(["--warunek", w])
+                self.assertEqual(kod, 1)
+                self.assertNotIn("UWAGA", err)
+
+
+class TestKodyWyjscia(unittest.TestCase):
+    """0 = wynik; 1 = ZWERYFIKOWANY brak; 2 = wszystko inne (ujednolicone z orzeczenia_ms.py, 2026-11)."""
+
+    def test_zero_trafien_to_kod_1_takze_z_json(self):
+        for argv in (["szukaj", "zzz-nie-ma"], ["szukaj", "zzz-nie-ma", "--json"], ["szukaj", "--od", "2030-01-01"]):
+            with self.subTest(argv=argv):
+                out, kod = _uruchom(argv, szukaj=[])
+                self.assertEqual(out, "")
+                self.assertEqual(kod[0], 1)
+                self.assertIn("Brak wyników.", kod[1])
+
+    def test_pusta_dalsza_strona_i_pusta_lista_najnowszych_to_kod_2(self):
+        out, kod = _uruchom(["szukaj", "monitoring", "--strona", "3"], szukaj=[])
+        self.assertEqual(kod[0], 2)
+        self.assertIn("NIE jest zweryfikowany brak", kod[1])
+        out, kod = _uruchom(["najnowsze"], szukaj=[])
+        self.assertEqual(kod[0], 2)
+        self.assertIn("anomalia portalu", kod[1])
+
+    def test_blad_http_i_zla_odpowiedz_to_kod_2(self):
+        with mock.patch.object(uodo, "_szukaj", side_effect=SystemExit("BŁĄD HTTP 503: https://x")):
+            out, kod = _uruchom(["szukaj", "monitoring"])
+        self.assertEqual(kod, (2, "BŁĄD HTTP 503: https://x\n"))
+        out, kod = _uruchom(["szukaj", "monitoring"], szukaj={"error": "maintenance"})
+        self.assertEqual(kod[0], 2)
+        self.assertIn("nieoczekiwaną odpowiedź", kod[1])
+
+    def test_nieprzewidziany_wyjatek_to_kod_2_z_komunikatem(self):
+        with mock.patch.object(uodo, "_szukaj", side_effect=KeyError("dates")):
+            out, kod = _uruchom(["szukaj", "monitoring"])
+        self.assertEqual(kod[0], 2)
+        self.assertIn("BŁĄD: nieoczekiwany błąd helpera uodo.py: KeyError('dates')", kod[1])
+        self.assertIn("NIE jest brak wyników", kod[1])
+
+    def test_decyzja_nieznana_sygnatura_i_zly_identyfikator_to_kod_2(self):
+        for argv in (["decyzja", "DKN.9999.99.2025"], ["decyzja", "bez-roku"]):
+            with self.subTest(argv=argv):
+                out, kod = _uruchom(argv, {})
+                self.assertEqual(kod[0], 2)
+
+    def test_fragment_bez_trafien_to_kod_1(self):
+        out, kod = _uruchom(["decyzja", "DKN.5131.34.2023", "--fragment", "zzz-nie-ma"],
+                            {"dkn_5131_34/meta.json": META_NONFINAL, "body.html": HTML_DECYZJI})
+        self.assertEqual(kod[0], 1)
+        self.assertIn("Nie znaleziono frazy 'zzz-nie-ma'", kod[1])
+
+    def test_argparse_help_i_version_bez_zmian(self):
+        out, kod = _uruchom(["--version"])
+        self.assertEqual(kod[0], 0)
+        out, kod = _uruchom(["szukaj", "--limit", "dużo"])
+        self.assertEqual(kod[0], 2)
+
+    def test_get_opcjonalnie_nadal_polyka_awarie(self):
+        with mock.patch.object(uodo, "_get", side_effect=SystemExit("BŁĄD HTTP 500: x")):
+            self.assertIsNone(uodo._get_opcjonalnie("/x"))
+
+
+META_ZSOSS8 = {  # ZSOŚS.440.8.2018 — meta.json na żywo 2026-11-13: „Uprawomocnienie” z refid NSA, status nonfinal
+    "refid": "urn:ndoc:gov:pl:uodo:2018:zsoss_440_8", "refname": "ZSOŚS.440.8.2018", "kind": "decision",
+    "name": {"pl": "Decyzja Prezesa UODO nr ZSOŚS.440.8.2018"}, "title": {"pl": "nakaz."},
+    "publication": {"status": "nonfinal", "inforce": True}, "parts": 1,
+    "dates": [
+        {"date": "2019-03-05", "use": "announcement", "status": "nonfinal", "scope": "*"},
+        {"date": "2019-04-17", "use": "publication", "status": "nonfinal", "scope": "*"},
+        {"date": "2019-12-04", "use": "trial", "status": "nonfinal", "scope": "*",
+         "refid": "urn:ndoc:court:pl:sa:2019:ii_sa-wa_1050"},
+        {"date": "2021-01-20", "use": "validation", "status": "nonfinal", "scope": "*",
+         "refid": "urn:ndoc:court:pl:sa:2021:iii_osk_2986"},
+    ]}
+META_DKN3114 = {  # DKN.5130.3114.2020 — meta.json na żywo 2026-11-13: uchylenie WSA, pole API „nonfinal”
+    "refid": "urn:ndoc:gov:pl:uodo:2020:dkn_5130_3114", "refname": "DKN.5130.3114.2020", "kind": "decision",
+    "name": {"pl": "Decyzja Prezesa UODO nr DKN.5130.3114.2020"}, "title": {"pl": "nakaz."},
+    "publication": {"status": "nonfinal", "inforce": True}, "parts": 1,
+    "dates": [
+        {"date": "2021-04-22", "use": "announcement", "status": "nonfinal", "scope": "*"},
+        {"date": "2021-05-13", "use": "publication", "status": "nonfinal", "scope": "*"},
+        {"date": "2021-11-15", "use": "repealed", "status": "nonfinal", "scope": "*",
+         "refid": "urn:ndoc:court:pl:sa:2021:ii_sa-wa_2465"},
+    ]}
+
+
+class TestKontrolaProby2026_11(unittest.TestCase):
+    """Kontrola 15 decyzji z portalem (2026-11-13): dwie rozbieżności silnika."""
+
+    def test_uprawomocnienie_z_orzeczeniem_jest_w_kontroli_sadowej(self):
+        kontrola = uodo._kontrola_sadowa(META_ZSOSS8)
+        self.assertEqual([k["sygnatura"] for k in kontrola], ["II SA/Wa 1050/19", "III OSK 2986/21"])
+        self.assertIn("NIE potwierdza prawomocności", kontrola[1]["znaczenie"])
+        # stan bez zmian: wpis nonfinal nie zamyka „Rozpatrzenia”
+        self.assertEqual(uodo._stan_prawny(META_ZSOSS8, kontrola)["status"], "nieustalony")
+        self.assertIn('cbosa.py sygnatura "III OSK 2986/21"',
+                      [k for k, _ in uodo._zapytania_cbosa(META_ZSOSS8, kontrola)])
+        out, kod = _uruchom(["decyzja", "ZSOŚS.440.8.2018"],
+                            {"zsoss_440_8/meta.json": META_ZSOSS8, "body.html": HTML_DECYZJI})
+        self.assertIsNone(kod)
+        self.assertIn("2021-01-20  wpis „Uprawomocnienie” ze statusem nonfinal — NIE potwierdza prawomocności  "
+                      "III OSK 2986/21", out)
+
+    def test_uprawomocnienie_final_z_orzeczeniem(self):
+        meta = dict(META_ZSOSS8, dates=META_ZSOSS8["dates"][:3] + [
+            {"date": "2026-08-26", "use": "validation", "status": "final", "scope": "*",
+             "refid": "urn:ndoc:court:pl:sa:2024:iii_osk_251"}])
+        kontrola = uodo._kontrola_sadowa(meta)
+        self.assertEqual(kontrola[-1]["znaczenie"], "uprawomocnienie (wpis z orzeczeniem sądu)")
+        self.assertEqual(uodo._stan_prawny(meta, kontrola)["status"], "final")
+
+    def test_wiersz_statusu_uchylonej_nie_mowi_nieprawomocna(self):
+        out, kod = _uruchom(["decyzja", "DKN.5130.3114.2020"],
+                            {"dkn_5130_3114/meta.json": META_DKN3114, "body.html": HTML_DECYZJI})
+        self.assertIsNone(kod)
+        self.assertTrue(out.startswith("!!! DECYZJA UCHYLONA PRZEZ SĄD"))
+        self.assertIn("status: UCHYLONA wg historii portalu (w całości lub w części: II SA/Wa 2465/21 z "
+                      "2021-11-15); pole API status: „nonfinal” nie odzwierciedla uchylenia", out)
+        self.assertNotIn("nonfinal (NIEPRAWOMOCNA)", out)
+        out, kod = _uruchom(["decyzja", "DKN.5130.3114.2020", "--json"],
+                            {"dkn_5130_3114/meta.json": META_DKN3114, "body.html": HTML_DECYZJI})
+        stan = json.loads(out)["_stan_prawny"]
+        self.assertEqual(stan["status"], "repealed")
+        self.assertTrue(stan["opis"].startswith("UCHYLONA wg historii portalu"))
+        # status API „repealed” — opis jak dotąd
+        self.assertEqual(uodo._status_stanu(uodo._stan_prawny(META_MORELE, uodo._kontrola_sadowa(META_MORELE))),
+                         "repealed (UCHYLONA)")
 
 
 if __name__ == "__main__":

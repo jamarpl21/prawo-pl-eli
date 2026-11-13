@@ -17,19 +17,31 @@ Komendy:
          [--od RRRR-MM-DD] [--do RRRR-MM-DD] [--limit N] [--strona N]
   orzeczenie <id> [--fragment "<fraza>"]   pełne orzeczenie: metadane, powołane przepisy/orzeczenia, treść
   sygnatura <sygnatura...>                  znajdź orzeczenie po numerze sprawy (caseNumber)
-Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
+Globalnie: --json  (zrzut surowego JSON zamiast podsumowania; ostrzeżenia idą wtedy na stderr)
            --strict  (blokuje wynik, gdy nie udało się zweryfikować aktualności lub kompletności)
+Kody wyjścia: 0 = wynik; 1 = zweryfikowany brak (zero trafień, frazy nie ma w treści);
+              2 = wszystko inne (sieć, przerwa techniczna, zły argument, nieistniejące id, --strict…)
 """
 import sys, json, re, time, datetime, argparse, urllib.request, urllib.parse, urllib.error
 from html.parser import HTMLParser
 
-__version__ = "2.3.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "2.4.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://www.saos.org.pl/api"
 CONTENT_HOSTS = ("saos.org.pl",)
 
 
 class VerificationUnknown(RuntimeError):
     """Zapytanie nie pozwoliło ustalić, czy dane istnieją."""
+
+
+class BrakWynikow(SystemExit):
+    """ZWERYFIKOWANY brak wyników: zapytanie poprawne, SAOS odpowiedział, zero trafień (albo frazy nie
+    ma w pobranym tekście). main() kończy go kodem 1; każde inne zakończenie z komunikatem — kodem 2.
+
+    Dlaczego osobna klasa: do wersji 2.3.0 każde sys.exit("tekst") dawało kod 1, więc awaria sieci,
+    przerwa techniczna, zły argument, nieistniejące id i blokada --strict wyglądały dla skryptu
+    tak samo jak „nic nie ma” (sprawdzone 2026-11-13: `orzeczenie 999999999` → HTTP 404 → kod 1).
+    Ujednolicone z orzeczenia_ms.py: 0 = wynik, 1 = zweryfikowany brak, 2 = wszystko inne."""
 
 
 def _wymus_https(url):
@@ -264,14 +276,15 @@ UWAGA_PRZERWA = (
     "na 22.06.2016).")
 
 
-def _get(path, params=None, soft=False):
+def _get(path, params=None, soft=False, baza=BASE):
     """GET z jednym ponowieniem (limit 90 s na żądanie — /search/judgments bywa bardzo wolny).
 
     Zwraca dane, w tym pusty wynik jako VERIFIED_ABSENT. Przy soft=True błąd
     żądania ma osobny stan UNKNOWN (VerificationUnknown), nigdy None/pusty wynik.
-    Przekroczenie czasu to „BŁĄD sieci" (kod ≠ 0) — nigdy fałszywe zero trafień.
+    Przekroczenie czasu to „BŁĄD sieci" (kod 2) — nigdy fałszywe zero trafień.
+    `baza` pozwala sięgnąć poza /api (słownik haseł: zob. _slownik_hasel).
     """
-    url = BASE + path
+    url = baza + path
     if params:
         q = urllib.parse.urlencode({k: v for k, v in params.items() if v not in (None, "", False)})
         if q:
@@ -474,7 +487,7 @@ def _court_type(s):
         return None
     ct = SADY.get(s.strip().upper())
     if not ct:
-        sys.exit(f"Nieznany sąd: {s!r}. Użyj: SN, TK, powszechne, admin, KIO.")
+        sys.exit(f"BŁĄD: nieznany sąd: {s!r}. Użyj: SN, TK, powszechne, admin, KIO.")
     return ct
 
 
@@ -483,7 +496,7 @@ def _jtype(s):
         return None
     t = TYPY.get(s.strip().upper())
     if not t:
-        sys.exit(f"Nieznany typ orzeczenia: {s!r}. Użyj: wyrok, postanowienie, uchwala, zarzadzenie, uzasadnienie.")
+        sys.exit(f"BŁĄD: nieznany typ orzeczenia: {s!r}. Użyj: wyrok, postanowienie, uchwala, zarzadzenie, uzasadnienie.")
     return t
 
 
@@ -666,6 +679,38 @@ def _sady_dla_sygnatury(sig):
     return list(ZASIEG)
 
 
+# Sygnatura sądu powszechnego: numer wydziału rzymski + repertorium z małą literą (C a, AC a, Ns, Kp —
+# ale nie SN-owskie NSNc), jednoliterowe (C, K, P, U, W) albo G…/R… (GC, GNc, RC). Sprawdzane PO
+# wzorcach SN/TK/KIO, więc „III CZP 81/16” i „IV CO 1/15” zostają SN.
+_SYGN_POWSZECHNY = re.compile(r"^[IVXL]+\s+(?:(?!NSN)[A-Z][A-Za-z-]*[a-z][A-Za-z-]*|[A-Z]|[GR][A-Za-z-]*)"
+                              r"\s*\d+/\d{2,4}$")
+
+
+def _ksztalt_sadu_powszechnego(sig):
+    sig = sig.strip()
+    return bool(_SYGN_POWSZECHNY.match(sig)) and not (
+        _SYGN_SN.match(sig) or _SYGN_TK.match(sig) or _SYGN_KIO.match(sig))
+
+
+# Pomiar luk sądów powszechnych (2026-11-13): 40 orzeczeń z Portalu Orzeczeń MS (po 10 z publikacji
+# 12.11.2026, 12–27.05.2026, 15–22.11.2024 i 15–18.11.2021), każde szukane w SAOS po sygnaturze
+# i dopasowane po identyfikatorze portalu w source.judgmentUrl: w SAOS było 39 z 40, także wszystkie
+# 10 opublikowanych w portalu dzień wcześniej. Brakujące (XXVIII C 22637/22) pochodzi z XXVIII Wydziału
+# Cywilnego SO w Warszawie, którego SAOS w ogóle nie zna (słownik /dump/commonCourts kończy się na
+# XXVII Wydziale; filtr ccDivisionName dla XXVIII → 0, dla XXVII → 1054). Luka jest więc wydziałowa,
+# nie czasowa — dlatego komunikat zera daje gotową komendę portalu MS, a nie „poczekaj na import".
+LUKA_SP = ("SAOS nie ma wszystkich orzeczeń sądów powszechnych: w próbie 13.11.2026 miał 39 z 40 "
+           "orzeczeń z Portalu Orzeczeń MS (publikacje 2021–2026, także te sprzed jednego dnia), a brakujące "
+           "pochodziło z wydziału, którego SAOS w ogóle nie zna (XXVIII Wydział Cywilny SO w Warszawie: "
+           "nie ma go w słowniku sądów SAOS, a wyszukiwanie po nazwie wydziału daje 0 trafień)")
+
+
+def _komenda_ms(*czesci):
+    """Komenda skilla prawo-pl-orzeczenia-ms z argumentami w cudzysłowach powłoki (shlex)."""
+    import shlex
+    return "orzeczenia_ms.py " + " ".join(shlex.quote(str(c)) for c in czesci)
+
+
 def _rok_sygnatury(sig):
     m = re.search(r"/(\d{2,4})\s*$", sig.strip())
     if not m:
@@ -681,13 +726,18 @@ def _wyjasnienie_zera_sygnatury(sig):
     NIE może dostać „nie ma" — tylko „może być późniejsze niż koniec zbioru".
     """
     rok = _rok_sygnatury(sig)
+    komenda = _komenda_ms("sygnatura", *sig.split())
+    if _ksztalt_sadu_powszechnego(sig):
+        # „XXVIII C 22637/22” to sygnatura SO, nie SN/TK/KIO — linie „jeśli to TK: NIE MA z założenia”
+        # były szumem i odsuwały jedyną użyteczną radę (2026-11-13)
+        return [f"sąd powszechny (kształt sygnatury SA/SO/SR): {LUKA_SP}. Sprawdź u źródła skillem "
+                f"prawo-pl-orzeczenia-ms: {komenda}"]
     sady = _sady_dla_sygnatury(sig)
     rozpoznany = len(sady) == 1
     linie = []
     if not rozpoznany:
-        linie.append("sąd powszechny (sygnatura nierozpoznana jako SN/TK/KIO): zbiór zasilany na bieżąco, "
-                     "ale z opóźnieniem i lukami — sprawdź portal orzeczeń sądów powszechnych "
-                     "(orzeczenia.ms.gov.pl)")
+        linie.append(f"sąd powszechny (sygnatura nierozpoznana jako SN/TK/KIO): {LUKA_SP}. Sprawdź u źródła "
+                     f"skillem prawo-pl-orzeczenia-ms: {komenda}")
     for ct in sady:
         granica = ZASIEG[ct][0]
         nazwa, gdzie = CT_PL[ct], ZASIEG[ct][1]
@@ -730,16 +780,61 @@ def _data_z_naglowka(tekst, okno=400):
     return f"{rok:04d}-{mies:02d}-{dzien:02d}"
 
 
+PROBA_UZASADNIEN = ("w próbie 13.11.2026 z 22 uzasadnień sądów powszechnych 12 miało datę uzasadnienia, "
+                    "6 — datę wyroku, 4 — nie do ustalenia")
+_DATA_ID_MS = re.compile(r"_(\d{4}-\d{2}-\d{2})_\d{3}$")
+
+
+def _data_dokumentu_ms(data):
+    """Data dokumentu zapisana w identyfikatorze Portalu Orzeczeń MS (…_Uz_2021-11-09_001) albo None.
+
+    To „Data orzeczenia” tego dokumentu w portalu MS — dla uzasadnienia: data uzasadnienia."""
+    m = _DATA_ID_MS.search(_id_portalu_ms((data.get("source") or {}).get("judgmentUrl")) or "")
+    return m.group(1) if m else None
+
+
 def _uwaga_uzasadnienie(data, tekst=""):
-    """Ostrzeżenie dla typu „uzasadnienie”: judgmentDate to data uzasadnienia, nie wyroku."""
+    """Ostrzeżenie dla typu „uzasadnienie”: judgmentDate bywa datą uzasadnienia, a bywa datą wyroku.
+
+    Do wersji 2.3.0 silnik twierdził zawsze „to data sporządzenia UZASADNIENIA”. Pomiar 2026-11-13
+    (22 uzasadnienia sądów powszechnych porównane z Portalem Orzeczeń MS, rozstrzygane nagłówkiem treści
+    i wyrokiem tej sprawy w SAOS): 12 — data uzasadnienia (wyrok sprawy ma wcześniejszą datę), 6 — data
+    wyroku, 4 — nie do ustalenia. Z tych 6: w 5 SAOS podał datę WCZEŚNIEJSZĄ niż data dokumentu w portalu
+    MS (VI Ka 468/21: „Warszawa, dnia 22 października 2021 r.”, portal MS: 9.11.2021; II C 1470/25 i
+    II K 403/24: data wyroku tej sprawy w SAOS), a w 1 data równa portalowi jest też datą z nagłówka
+    wyroku (I C 401/20: wyrok i uzasadnienie w jednym dokumencie). Rozstrzyga data w identyfikatorze
+    portalu MS z source.judgmentUrl i nagłówek treści."""
     if data.get("judgmentType") != "REASONS":
         return None
     d = data.get("judgmentDate") or "?"
-    portal = (" (portal orzeczeń MS podaje ją tak samo jako „Data orzeczenia”)"
-              if data.get("courtType") == "COMMON" else "")
-    linia = (f"UWAGA: typ „uzasadnienie” — {d} to data sporządzenia UZASADNIENIA{portal}, NIE data "
-             "wydania wyroku. Terminów i chronologii nie licz od tej daty.")
+    z_ms = _data_dokumentu_ms(data)
     z_naglowka = _data_z_naglowka(tekst)
+    if z_ms and re.match(r"^\d{4}-\d{2}-\d{2}$", d) and d < z_ms:
+        linia = (f"UWAGA: typ „uzasadnienie” — portal orzeczeń MS datuje ten dokument uzasadnienia na "
+                 f"{_data_pl(z_ms)}, a SAOS podaje {d}: tu {d} to najpewniej data WYROKU, nie uzasadnienia "
+                 f"(SAOS bywa niespójny — {PROBA_UZASADNIEN}). Potwierdź datę wyroku w sentencji albo w wyroku "
+                 "tej sprawy.")
+        if z_naglowka == d:
+            linia += f"\n          Nagłówek treści potwierdza: {_data_pl(z_naglowka)}."
+        return linia
+    if z_ms == d and z_naglowka == d:
+        # I C 401/20 (2026-11-13): „uzasadnienie” z 9.11.2021 zaczyna się „W Y R O K … Dnia 9 listopada
+        # 2021 roku” — data portalu jest tu zarazem datą wyroku; „NIE data wyroku” byłoby nieprawdą
+        return (f"UWAGA: typ „uzasadnienie” — {d} to data dokumentu w portalu orzeczeń MS i zarazem data "
+                "z nagłówka treści: może to być także data WYROKU (wyrok i uzasadnienie w jednym dokumencie). "
+                "Potwierdź w sentencji, zanim policzysz od niej terminy.")
+    if z_ms == d:
+        linia = (f"UWAGA: typ „uzasadnienie” — {d} to data sporządzenia UZASADNIENIA (portal orzeczeń MS "
+                 "datuje ten dokument tak samo), NIE data wydania wyroku. Terminów i chronologii nie licz "
+                 "od tej daty.")
+    elif z_ms:
+        linia = (f"UWAGA: typ „uzasadnienie” — SAOS podaje {d}, a portal orzeczeń MS datuje ten dokument na "
+                 f"{_data_pl(z_ms)}; nie wiadomo, która to data wyroku. Terminów i chronologii nie licz od "
+                 "żadnej z nich bez sprawdzenia w sentencji.")
+    else:
+        linia = (f"UWAGA: typ „uzasadnienie” — {d} bywa datą sporządzenia UZASADNIENIA, a bywa datą wyroku "
+                 f"({PROBA_UZASADNIEN}); tu nie da się tego rozstrzygnąć. Terminów i chronologii nie licz od tej "
+                 "daty bez sprawdzenia.")
     if z_naglowka and z_naglowka != d:
         linia += (f"\n          W nagłówku treści: {_data_pl(z_naglowka)} — prawdopodobna data wyroku "
                   "(heurystyka z początku tekstu — może to być data innego orzeczenia cytowanego na wstępie; "
@@ -750,11 +845,35 @@ def _uwaga_uzasadnienie(data, tekst=""):
 
 
 def _dopisek_daty(it):
-    """Dopisek przy dacie na liście wyników: data z przyszłości (błąd SAOS), typ „uzasadnienie”."""
+    """Dopisek przy dacie na liście wyników: data z przyszłości (błąd SAOS), typ „uzasadnienie”.
+
+    Lista wyszukiwania nie ma source.judgmentUrl, więc przy uzasadnieniu nie da się tu rozstrzygnąć,
+    czy data to data uzasadnienia, czy wyroku (zob. _uwaga_uzasadnienie) — rozstrzyga `orzeczenie <id>`."""
     dop = f" — {UWAGA_PRZYSZLOSC}" if _z_przyszlosci(it.get("judgmentDate")) else ""
     if it.get("judgmentType") == "REASONS":
-        dop += " — data uzasadnienia, nie wyroku"
+        dop += " — uzasadnienie: data uzasadnienia albo wyroku, nie licz od niej terminów (orzeczenie <id>)"
     return dop
+
+
+def _na_stderr(uwagi):
+    """Ostrzeżenia przy --json: na stderr, żeby stdout został czystym, nietkniętym JSON-em z API.
+
+    Do wersji 2.3.0 przy --json ginęły wszystkie ostrzeżenia poza granicą zbioru (np. data
+    3013-12-04 szła w surowym JSON bez słowa)."""
+    for u in uwagi:
+        if u:
+            print(u if u.startswith(("UWAGA", "BŁĄD")) else "UWAGA: " + u, file=sys.stderr)
+
+
+def _uwagi_pozycji(items):
+    """Ostrzeżenia dla pozycji listy (do stderr przy --json): data z przyszłości, typ „uzasadnienie”."""
+    uwagi = []
+    for it in items:
+        dop = _dopisek_daty(it) if isinstance(it, dict) else ""
+        if dop:
+            uwagi.append(f"UWAGA: [{it.get('id')}] {_case_numbers(it) or '—'} ({it.get('judgmentDate', '?')})"
+                         + dop)
+    return uwagi
 
 
 def _wiersz(it):
@@ -780,6 +899,76 @@ def _wiersz(it):
     print()
 
 
+# Hasła tematyczne (`keywords`) ma w SAOS TYLKO zbiór sądów powszechnych — sprawdzone 2026-11-13:
+# żadne ze 100 najnowszych orzeczeń SN, TK i KIO ani ze 100 najstarszych SN nie ma haseł, a --haslo
+# „odszkodowanie”, „umowa o pracę”, „zamówienia publiczne” dają dla SN/TK/KIO po 0 trafień (dla sądów
+# powszechnych 20 032 / 354 / 303). Zero z --haslo dla tych sądów to więc brak HASEŁ, nie orzeczeń.
+SADY_BEZ_HASEL = ("SUPREME", "CONSTITUTIONAL_TRIBUNAL", "NATIONAL_APPEAL_CHAMBER", "ADMINISTRATIVE")
+# Słownik haseł sądów powszechnych: podpowiadacz wyszukiwarki SAOS (poza /api; GET, JSON
+# [{"id", "phrase"}], dopasowanie od POCZĄTKU hasła, bez rozróżniania wielkości liter). Sprawdzone
+# 2026-11-13: każde ze 100 haseł z 300 orzeczeń sądów powszechnych jest w słowniku; --haslo to
+# DOKŁADNE hasło („przestępstwo przeciwko zdrowiu” 1882 trafienia, „przestępstwa przeciwko zdrowiu” 256,
+# „przestępstwo” 583 — to osobne hasła), więc odmiana daje inne albo zero trafień.
+SLOWNIK_HASEL = "https://www.saos.org.pl/keywords/COMMON/"
+
+
+def _rdzen(slowo):
+    return slowo[:max(3, len(slowo) - 2)]
+
+
+def _slownik_hasel(haslo):
+    """(czy hasło jest w słowniku, podobne hasła) albo None, gdy słownika nie udało się sprawdzić.
+
+    Jedno zapytanie o rdzeń pierwszego słowa; „podobne” = hasła zawierające rdzenie pozostałych słów
+    (przestępstwo przeciwko zdrowiu → przestępstwa przeciwko zdrowiu, … przeciwko życiu i zdrowiu)."""
+    slowa = haslo.lower().split()
+    if not slowa:
+        return None
+    try:
+        d = _get(urllib.parse.quote(_rdzen(slowa[0]), safe=""), soft=True, baza=SLOWNIK_HASEL)
+    except VerificationUnknown:
+        return None
+    if not isinstance(d, list):
+        return None
+    frazy = [x["phrase"] for x in d if isinstance(x, dict) and isinstance(x.get("phrase"), str)]
+    cel = " ".join(slowa)
+    jest = any(" ".join(f.lower().split()) == cel for f in frazy)
+    podobne = [f for f in frazy if " ".join(f.lower().split()) != cel
+               and all(_rdzen(s) in f.lower() for s in slowa[1:])]
+    return jest, podobne[:12]
+
+
+def _komenda_ms_szukaj(a):
+    """Odpowiednik zapytania w Portalu Orzeczeń MS (te kryteria, które portal ma) albo None."""
+    czesci = ["szukaj"] + ([a.fraza] if a.fraza else [])
+    for flaga, wartosc in (("--sygnatura", a.sygnatura), ("--od", _norma_data(a.od)),
+                           ("--do", _norma_data(a.do, koniec=True)), ("--sedzia", a.sedzia),
+                           ("--haslo", a.haslo), ("--przepis", a.przepis)):
+        if wartosc:
+            czesci += [flaga, wartosc]
+    return _komenda_ms(*czesci) if len(czesci) > 1 else None
+
+
+def _linia_portalu_ms(a):
+    kom = _komenda_ms_szukaj(a)
+    return (f"{LUKA_SP}. Sądy powszechne sprawdź u źródła skillem prawo-pl-orzeczenia-ms"
+            + (f": {kom}" if kom else " (portal wymaga co najmniej jednego kryterium: frazy, sygnatury, daty…)")
+            + ".")
+
+
+def _komenda_saos_fraza(a, fraza=None):
+    """To samo zapytanie SAOS z hasłem jako frazą pełnotekstową (bez --haslo)."""
+    import shlex
+    fraza = fraza or a.haslo
+    if not fraza:
+        return None
+    czesci = ["saos.py", "szukaj", fraza]
+    for flaga, wartosc in (("--sad", a.sad), ("--od", a.od), ("--do", a.do)):
+        if wartosc:
+            czesci += [flaga, wartosc]
+    return " ".join(shlex.quote(c) for c in czesci)
+
+
 def cmd_szukaj(a):
     ct = _court_type(a.sad)
     _sprawdz_zasieg_strict(a, ct)
@@ -802,42 +991,84 @@ def cmd_szukaj(a):
                    ("all", "caseNumber", "referencedRegulation", "judgeName", "keywords",
                     "courtType", "judgmentTypes", "judgmentDateFrom", "judgmentDateTo"))
     if not kryteria:
-        sys.exit("Podaj kryterium: frazę albo --sad / --sygnatura / --przepis / --sedzia / --haslo / --typ / zakres dat.")
+        sys.exit("BŁĄD: podaj kryterium: frazę albo --sad / --sygnatura / --przepis / --sedzia / --haslo / "
+                 "--typ / zakres dat.")
     d = _get("/search/judgments", params)
     d = _expect_search(d, "wyników wyszukiwania")
     items = d.get("items", [])
     total = (d.get("info") or {}).get("totalResults", "?")
+    bez_hasel = bool(a.haslo) and ct in SADY_BEZ_HASEL
     if not items:
-        # zero trafień = komunikat + kod ≠ 0, TAKŻE z --json (pusty JSON wyglądałby jak
+        # zero trafień = komunikat + kod 1, TAKŻE z --json (pusty JSON wyglądałby jak
         # „sprawdzone, nic nie ma") — z wyjaśnieniem granicy zamkniętego zbioru, gdy dotyczy
         linie = [f"Brak trafień w SAOS dla podanych kryteriów (totalResults: {total})."]
+        blad = None  # zero, które NIE jest zweryfikowanym brakiem (kod 2)
+        zle_haslo = False  # hasło spoza słownika — komenda portalu MS z tym samym hasłem nic nie da
+        if bez_hasel:
+            fraza = _komenda_saos_fraza(a)
+            blad = (f"BŁĄD: --haslo nie działa dla zbioru {CT_PL.get(ct, ct)}: SAOS ma hasła tematyczne TYLKO "
+                    "dla sądów powszechnych (sprawdzone 13.11.2026 — orzeczenia SN, TK i KIO nie mają w SAOS "
+                    "żadnych haseł), więc zero wynika z braku HASEŁ, nie orzeczeń. Szukaj frazą"
+                    + (f": {fraza}" if fraza else "") + ".")
+        elif a.haslo:
+            slownik = _slownik_hasel(a.haslo)
+            if slownik is None:
+                blad = (f"BŁĄD: nie udało się sprawdzić, czy hasło {a.haslo!r} istnieje w słowniku haseł SAOS — "
+                        "zero może wynikać z hasła spoza słownika (--haslo to DOKŁADNE hasło), a nie z braku "
+                        "orzeczeń. Szukaj też frazą.")
+            elif not slownik[0]:
+                zle_haslo = True
+                blad = (f"BŁĄD: hasła {a.haslo!r} NIE MA w słowniku haseł SAOS (sądy powszechne), więc zero "
+                        "wynika ze złego hasła, nie z braku orzeczeń. --haslo to DOKŁADNE hasło ze słownika: "
+                        "inna odmiana albo fragment to inne hasło. "
+                        + (f"Hasła ze słownika o podobnym brzmieniu: {'; '.join(slownik[1])}. " if slownik[1]
+                           else "W słowniku nie ma haseł o podobnym brzmieniu. ")
+                        + "Albo szukaj frazą: " + (_komenda_saos_fraza(a, a.haslo) or "") + ".")
+            else:
+                linie.append(f"Hasło {a.haslo!r} jest w słowniku SAOS — zero dotyczy orzeczeń z tym hasłem przy "
+                             "pozostałych kryteriach.")
         if ct == "ADMINISTRATIVE":
             linie.append("Sądy administracyjne (NSA/WSA) są w SAOS praktycznie nieobecne — orzecznictwo "
                          "administracyjne pobieraj skillem prawo-pl-cbosa (scripts/cbosa.py, baza CBOSA).")
         if ct in ZASIEG:
             granica, potwierdzona = _granica_zbioru(ct)
             linie.append(_ostrzezenie_zasiegu(ct, a.od, a.do, granica, potwierdzona))
+        if ct in (None, "COMMON") and not zle_haslo:
+            linie.append(_linia_portalu_ms(a))
         if a.przepis:
             linie.append("--przepis to luźne dopasowanie pełnotekstowe w polu powołanych przepisów "
-                         "(lista SAOS bywa niepełna) — spróbuj też samą frazą albo --haslo.")
+                         "(lista SAOS bywa niepełna) — spróbuj też samą frazą"
+                         + (" albo --haslo (tylko sądy powszechne)." if ct in (None, "COMMON") else "."))
         linie.append("SAOS to baza wtórna (agregat z lukami) — brak trafień tu nie dowodzi braku orzecznictwa.")
-        sys.exit("\n".join(linie))
+        if blad:
+            sys.exit("\n".join([blad] + linie[1:]))
+        raise BrakWynikow("\n".join(linie))
     granica = _ostrzezenie_zasiegu(ct, a.od, a.do, *(_granica_znana(ct, items) if ct in ZASIEG else ()))
+    uwagi = []
+    if ct == "ADMINISTRATIVE":
+        uwagi.append("UWAGA: sądy administracyjne (NSA/WSA) są w SAOS praktycznie nieobecne — orzecznictwo "
+                     "administracyjne pobieraj skillem prawo-pl-cbosa (scripts/cbosa.py, baza CBOSA).")
+    if granica:
+        uwagi.append(granica)
+    if a.przepis:
+        uwagi.append(f"UWAGA: --przepis {a.przepis!r} to LUŹNE dopasowanie pełnotekstowe w polu powołanych "
+                     "przepisów — „art. 415” trafia art. 415 k.c., k.p.c. i k.p.k. jednakowo, a lista powołanych "
+                     "przepisów w SAOS bywa niepełna. Dopisz nazwę aktu (np. \"Kodeks cywilny art. 415\") "
+                     "i sprawdź w 'orzeczenie <id>', którego aktu dotyczy trafienie.")
+    if a.haslo and not bez_hasel:
+        slownik = _slownik_hasel(a.haslo) if ct in (None, "COMMON") else None
+        uwagi.append(f"UWAGA: --haslo {a.haslo!r} to DOKŁADNE hasło ze słownika SAOS i działa tylko dla sądów "
+                     "powszechnych" + (" (SN, TK i KIO nie mają w SAOS haseł — wyniki ich nie obejmują)" if ct is None
+                                         else "") + ". Inna odmiana "
+                     "tematu to osobne hasło"
+                     + (f"; w słowniku są też: {'; '.join(slownik[1])} — sprawdź je osobno." if slownik and slownik[1]
+                        else "."))
     if a.json:
-        if granica:
-            print(granica, file=sys.stderr)
+        _na_stderr(uwagi + _uwagi_pozycji(items))
         print(json.dumps(d, ensure_ascii=False, indent=2)); return
     print(f"Znaleziono: {total}  (pokazuję {len(items)}, strona {params['pageNumber']}, po {params['pageSize']})\n")
-    if ct == "ADMINISTRATIVE":
-        print("UWAGA: sądy administracyjne (NSA/WSA) są w SAOS praktycznie nieobecne — orzecznictwo "
-              "administracyjne pobieraj skillem prawo-pl-cbosa (scripts/cbosa.py, baza CBOSA).\n")
-    if granica:
-        print(granica + "\n")
-    if a.przepis:
-        print(f"UWAGA: --przepis {a.przepis!r} to LUŹNE dopasowanie pełnotekstowe w polu powołanych "
-              "przepisów — „art. 415” trafia art. 415 k.c., k.p.c. i k.p.k. jednakowo, a lista powołanych "
-              "przepisów w SAOS bywa niepełna. Dopisz nazwę aktu (np. \"Kodeks cywilny art. 415\") "
-              "i sprawdź w 'orzeczenie <id>', którego aktu dotyczy trafienie.\n")
+    for u in uwagi:
+        print(u + "\n")
     for it in items:
         _wiersz(it)
     if items:
@@ -885,10 +1116,47 @@ def _uwaga_brak_tresci_ms(data, cn):
             "Nie odtwarzaj treści z pamięci ani z fragmentów.")
 
 
+def _uwagi_orzeczenia_json(data):
+    """Ostrzeżenia istotne dla poprawności cytatu, które tryb tekstowy drukuje przy `orzeczenie` —
+    przy --json idą na stderr (bez zapytania o link SN: to dane pomocnicze, nie ostrzeżenie)."""
+    if not isinstance(data, dict):
+        return []
+    ct = data.get("courtType", "")
+    cn = _case_numbers(data) or "—"
+    uwagi = []
+    if _z_przyszlosci(data.get("judgmentDate")):
+        uwagi.append(f"UWAGA: judgmentDate {data.get('judgmentDate')} — {UWAGA_PRZYSZLOSC} (sentencja/nagłówek) "
+                     "albo w źródle oryginalnym.")
+    txt = html_to_text(data.get("textContent") or "")
+    uwagi.append(_uwaga_uzasadnienie(data, txt))
+    if ct in ZASIEG:
+        uwagi.append(UWAGA_INDEKSY + ".")
+        if (data.get("source") or {}).get("judgmentUrl"):
+            uwagi.append("UWAGA: source.judgmentUrl dla SN/TK/KIO jest martwy albo ogólny — nie służy do "
+                         "weryfikacji; źródło urzędowe: " + {"SUPREME": SN_WYSZUKIWARKA,
+                                                             "CONSTITUTIONAL_TRIBUNAL": "https://ipo.trybunal.gov.pl/ipo/",
+                                                             "NATIONAL_APPEAL_CHAMBER": "https://orzeczenia.uzp.gov.pl/Home/Search"}[ct]
+                         + f" (sygnatura {cn}).")
+    reg = data.get("referencedRegulations") or []
+    zle = [r for r in reg if isinstance(r, dict) and "prawdopodobnie uszkodzony" in _wpis_przepisu(r)]
+    if zle:
+        uwagi.append(f"UWAGA: {len(zle)} z {len(reg)} wpisów referencedRegulations wygląda na uszkodzone "
+                     "(spłaszczone indeksy, „Nr 0”, sklejone słowa) — np. "
+                     f"{(zle[0].get('text') or '')[:120]!r}; zweryfikuj w treści orzeczenia.")
+    if reg:
+        uwagi.append("UWAGA: referencedRegulations to automatyczna ekstrakcja SAOS — bywa niepełna; przepisy "
+                     "rozstrzygnięcia czytaj z sentencji.")
+    if not txt:
+        uwagi.append(_uwaga_brak_tresci_ms(data, cn) if ct == "COMMON"
+                     else "UWAGA: brak treści w API SAOS — otwórz źródło urzędowe.")
+    return uwagi
+
+
 def cmd_orzeczenie(a):
     d = _get(f"/judgments/{a.id}")
     d = _expect_judgment(d, a.id)
     if a.json:
+        _na_stderr(_uwagi_orzeczenia_json(d.get("data", d)))
         print(json.dumps(d, ensure_ascii=False, indent=2)); return
     data = d.get("data", d)
     cn = _case_numbers(data) or "—"
@@ -949,11 +1217,16 @@ def cmd_orzeczenie(a):
         print("(brak treści w API — otwórz źródło urzędowe wyżej)")
         if ct == "COMMON":
             print(_uwaga_brak_tresci_ms(data, cn))
+        if a.fragment:
+            # bez treści nie da się sprawdzić frazy — to nie „frazy nie ma” (kod 2, nie 1 ani 0)
+            sys.exit(f"BŁĄD: nie można sprawdzić frazy {a.fragment!r} — SAOS nie ma treści tego orzeczenia. "
+                     "To NIE jest brak frazy w orzeczeniu; treść pobierz ze źródła wskazanego wyżej.")
         return
     if a.fragment:
         spans = _fragmenty(txt, a.fragment)
         if not spans:
-            sys.exit(f"Nie znaleziono frazy {a.fragment!r} w treści ({len(txt)} znaków). Spróbuj inną frazą.")
+            raise BrakWynikow(f"Nie znaleziono frazy {a.fragment!r} w treści ({len(txt)} znaków). "
+                              "Spróbuj inną frazą.")
         for i, (s, e) in enumerate(spans):
             if i:
                 print("\n[...]\n")
@@ -974,21 +1247,27 @@ def cmd_sygnatura(a):
     items = d.get("items", [])
     total = (d.get("info") or {}).get("totalResults", 0)
     if not items:
-        wyjasnienie = "\n".join("  - " + w for w in _wyjasnienie_zera_sygnatury(sig))
-        sys.exit(f"Nie znaleziono orzeczenia o sygnaturze {sig!r} w SAOS.\n"
-                 "SAOS to baza wtórna (nie ma wszystkiego) — sprawdź też portal właściwego sądu; "
-                 "sygnatury sądów administracyjnych (NSA/WSA) szukaj skillem prawo-pl-cbosa.\n"
-                 "Granice zamkniętych zbiorów (do DNIA; sądy powszechne są na bieżąco):\n" + wyjasnienie)
+        powody = _wyjasnienie_zera_sygnatury(sig)
+        granice = " (granice zamkniętych zbiorów SN/TK/KIO do DNIA)" if any(
+            "zbiór kończy się" in w or "mieści się w zbiorze" in w for w in powody) else ""
+        raise BrakWynikow(f"Nie znaleziono orzeczenia o sygnaturze {sig!r} w SAOS.\n"
+                          "SAOS to baza wtórna (nie ma wszystkiego) — brak tu nie dowodzi, że orzeczenia nie ma; "
+                          "sygnatury sądów administracyjnych (NSA/WSA) szukaj skillem prawo-pl-cbosa.\n"
+                          f"Dlaczego SAOS może jej nie mieć{granice}:\n"
+                          + "\n".join("  - " + w for w in powody))
+    sady = {_klucz_sadu(it) for it in items}
+    # ta sama sygnatura w różnych sądach (np. „I ACa 100/13” w 4 sądach apelacyjnych) to RÓŻNE
+    # sprawy — bez nazwy sądu przy trafieniu łatwo zacytować cudzy wyrok
+    kolizja = (f"UWAGA: sygnatura {sig!r} występuje w {len(sady)} RÓŻNYCH sądach — to RÓŻNE sprawy, "
+               "nie wersje jednego orzeczenia. Wybierz trafienie właściwego sądu (nazwa sądu przy "
+               "każdej pozycji); dopasowanie po samej sygnaturze nie identyfikuje sprawy.") \
+        if len(sady) > 1 else None
     if a.json:
+        _na_stderr([kolizja] + _uwagi_pozycji(items))
         print(json.dumps(d, ensure_ascii=False, indent=2)); return
     print(f"Sygnatura {sig!r}: dopasowań {total}\n")
-    sady = {_klucz_sadu(it) for it in items}
-    if len(sady) > 1:
-        # ta sama sygnatura w różnych sądach (np. „I ACa 100/13” w 4 sądach apelacyjnych) to RÓŻNE
-        # sprawy — bez nazwy sądu przy trafieniu łatwo zacytować cudzy wyrok
-        print(f"UWAGA: sygnatura {sig!r} występuje w {len(sady)} RÓŻNYCH sądach — to RÓŻNE sprawy, "
-              "nie wersje jednego orzeczenia. Wybierz trafienie właściwego sądu (nazwa sądu przy "
-              "każdej pozycji); dopasowanie po samej sygnaturze nie identyfikuje sprawy.\n")
+    if kolizja:
+        print(kolizja + "\n")
     for it in items:
         cn = _case_numbers(it)
         ctype = CT_PL.get(it.get("courtType", ""), it.get("courtType", ""))
@@ -1045,12 +1324,28 @@ def main():
         p.add_argument("--strict", action="store_true", default=argparse.SUPPRESS,
                        help="zakończ błędem, gdy nie udało się zweryfikować aktualności lub kompletności")
 
-    a = ap.parse_args()
+    a = ap.parse_args()  # zły argument wiersza poleceń: argparse sam kończy kodem 2
+    # Kody wyjścia jak w orzeczenia_ms.py: 0 = wynik, 1 = ZWERYFIKOWANY brak (BrakWynikow),
+    # 2 = wszystko inne (sieć/HTTP, przerwa techniczna, nieoczekiwana odpowiedź, zły argument,
+    # nieistniejące id, blokada --strict, VerificationUnknown, nieprzewidziany wyjątek).
     try:
         a.func(a)
+    except BrakWynikow as e:
+        print(e.code, file=sys.stderr)
+        sys.exit(1)
+    except SystemExit as e:
+        if e.code is None or isinstance(e.code, int):
+            raise
+        print(e.code, file=sys.stderr)
+        sys.exit(2)
     except VerificationUnknown as e:
-        sys.exit(f"BŁĄD: nie udało się zweryfikować danych w SAOS ({e}). "
-                 "Spróbuj ponownie za chwilę.")
+        print(f"BŁĄD: nie udało się zweryfikować danych w SAOS ({e}). Spróbuj ponownie za chwilę. "
+              "To NIE jest brak wyników.", file=sys.stderr)
+        sys.exit(2)
+    except Exception as e:  # noqa: BLE001 — nieprzewidziany błąd nigdy nie może dać kodu 1 („brak wyników”)
+        print(f"BŁĄD: nieoczekiwany błąd helpera ({e!r}). To NIE jest brak wyników — ponów albo zgłoś błąd.",
+              file=sys.stderr)
+        sys.exit(2)
 
 
 if __name__ == "__main__":

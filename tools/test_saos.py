@@ -381,9 +381,10 @@ class TestSygnaturaZero(unittest.TestCase):
         self.assertIn("mieści się w zbiorze", msg)
 
     def test_nierozpoznana_sygnatura_nie_twierdzi_ze_nie_ma(self):
-        msg = "\n".join(saos._wyjasnienie_zera_sygnatury("I C 374/25"))
+        msg = "\n".join(saos._wyjasnienie_zera_sygnatury("I NSNc 1/20"))
         self.assertIn("sąd powszechny", msg)
         self.assertIn("jeśli to Sąd Najwyższy", msg)
+        self.assertIn("orzeczenia_ms.py sygnatura I NSNc 1/20", msg)
 
     def test_cmd_sygnatura_zero_uzywa_granicy_do_dnia(self):
         args = argparse.Namespace(sygnatura=["III", "CZP", "81/16"], json=False)
@@ -533,14 +534,15 @@ class SaosVerificationContractTests(unittest.TestCase):
                      ["szukaj", "rękojmia", "--sad", "powszechne", "--json"]):
             with self.subTest(argv=argv):
                 saos._granice_na_zywo.clear()
-                out = io.StringIO()
+                out, err = io.StringIO(), io.StringIO()
                 with mock.patch.object(saos, "_get", return_value=odp), \
-                        mock.patch.object(sys, "argv", ["saos.py", *argv]), contextlib.redirect_stdout(out):
+                        mock.patch.object(sys, "argv", ["saos.py", *argv]), contextlib.redirect_stdout(out), \
+                        contextlib.redirect_stderr(err):
                     with self.assertRaises(SystemExit) as caught:
                         saos.main()
-                self.assertNotEqual(caught.exception.code, 0)
+                self.assertEqual(caught.exception.code, 1)  # zweryfikowany brak
                 self.assertEqual(out.getvalue(), "")
-                msg = str(caught.exception)
+                msg = err.getvalue()
                 self.assertIn("Brak trafień", msg)
                 if "--sad" in argv and argv[argv.index("--sad") + 1] in ("KIO", "SN"):
                     self.assertIn("POZA zbiorem", msg)
@@ -576,15 +578,15 @@ class SaosVerificationContractTests(unittest.TestCase):
             (["sygnatura", "III", "CSK", "203/09"],
              {"items": [], "info": {"totalResults": 0}}),
         ]
-        for komenda, odpowiedz in przypadki:
+        for (komenda, odpowiedz), kod in zip(przypadki, (2, 2, 1)):
             with self.subTest(komenda=komenda):
                 out = io.StringIO()
                 with mock.patch.object(saos, "_get", return_value=odpowiedz), \
                         mock.patch.object(sys, "argv", ["saos.py", *komenda, "--json", "--strict"]), \
-                        contextlib.redirect_stdout(out):
+                        contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
                     with self.assertRaises(SystemExit) as caught:
                         saos.main()
-                self.assertNotEqual(caught.exception.code, 0)
+                self.assertEqual(caught.exception.code, kod)
                 self.assertEqual(out.getvalue(), "")
 
 
@@ -607,15 +609,16 @@ class TestT13StrictZasiegKomunikat(unittest.TestCase):
 
     def _blokada(self, argv):
         saos._granice_na_zywo.clear()
-        out = io.StringIO()
+        out, err = io.StringIO(), io.StringIO()
         with mock.patch.object(sys, "argv", ["saos.py", *argv, "--strict"]), \
                 mock.patch.object(saos, "_get", side_effect=self._odp_granicy) as get, \
-                contextlib.redirect_stdout(out):
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             with self.assertRaises(SystemExit) as caught:
                 saos.main()
         get.assert_called_once()
         self.assertEqual(out.getvalue(), "")
-        return str(caught.exception)
+        self.assertEqual(caught.exception.code, 2)  # blokada --strict to nie „brak wyników”
+        return err.getvalue()
 
     def test_bez_gornej_granicy_podpowiada_do(self):
         msg = self._blokada(["szukaj", "--sad", "SN", "--przepis", "art. 415"])
@@ -640,14 +643,15 @@ class TestT13StrictZasiegKomunikat(unittest.TestCase):
         self.assertIn("--do 2016-06-22", msg)
 
     def test_blokada_bez_potwierdzenia_na_zywo(self):
-        out = io.StringIO()
+        out, err = io.StringIO(), io.StringIO()
         with mock.patch.object(sys, "argv", ["saos.py", "szukaj", "--sad", "SN", "--strict"]), \
                 mock.patch.object(saos, "_get", side_effect=saos.VerificationUnknown("przerwa")), \
-                contextlib.redirect_stdout(out):
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             with self.assertRaises(SystemExit) as caught:
                 saos.main()
-        self.assertIn("nie udało się potwierdzić granicy na żywo", str(caught.exception))
-        self.assertIn("--do 2016-06-22", str(caught.exception))
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn("nie udało się potwierdzić granicy na żywo", err.getvalue())
+        self.assertIn("--do 2016-06-22", err.getvalue())
         self.assertEqual(out.getvalue(), "")
 
     def test_wznowione_zasilanie_odblokowuje_zakres(self):
@@ -685,15 +689,17 @@ class TestT13StrictZasiegKomunikat(unittest.TestCase):
     def test_zakres_w_granicach_zbioru_przechodzi(self):
         """Zakres mieszczący się w zbiorze nie jest blokowany przez strict (bez zapytania o granicę);
         zero trafień to zwykły komunikat „Brak trafień", nie blokada zbioru."""
-        out = io.StringIO()
+        out, err = io.StringIO(), io.StringIO()
         odp = {"items": [], "info": {"totalResults": 0}}
         with mock.patch.object(sys, "argv", ["saos.py", "szukaj", "--sad", "KIO",
                                              "--od", "2017-01-01", "--do", "2018-09-06", "--strict"]), \
-                mock.patch.object(saos, "_get", return_value=odp) as get, contextlib.redirect_stdout(out):
+                mock.patch.object(saos, "_get", return_value=odp) as get, contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(err):
             with self.assertRaises(SystemExit) as caught:
                 saos.main()
-        self.assertNotIn("BŁĄD: zbiór", str(caught.exception))
-        self.assertIn("Brak trafień", str(caught.exception))
+        self.assertEqual(caught.exception.code, 1)
+        self.assertNotIn("BŁĄD: zbiór", err.getvalue())
+        self.assertIn("Brak trafień", err.getvalue())
         self.assertEqual(get.call_args_list[0].args[0], "/search/judgments")
         self.assertFalse(get.call_args_list[0].kwargs.get("soft"))
         self.assertEqual(out.getvalue(), "")
@@ -896,7 +902,7 @@ class TestSygnaturaKolizjaSadow(unittest.TestCase):
         out = self._uruchom(odp)
         self.assertNotIn("RÓŻNE", out)
         self.assertNotIn("Pełna treść: orzeczenie 2\n", out)
-        self.assertIn("data uzasadnienia, nie wyroku", out)
+        self.assertIn("uzasadnienie: data uzasadnienia albo wyroku", out)
 
 
 class TestUzasadnienieData(unittest.TestCase):
@@ -1029,7 +1035,7 @@ class TestDataZPrzyszlosci(unittest.TestCase):
         linie = [l for l in out.getvalue().splitlines() if l.startswith("  [")]
         self.assertIn("3013-12-04 — data z przyszłości — błąd w danych SAOS", linie[0])
         self.assertIn("data z przyszłości", linie[1])
-        self.assertIn("data uzasadnienia, nie wyroku", linie[1])
+        self.assertIn("uzasadnienie: data uzasadnienia albo wyroku", linie[1])
         self.assertNotIn("przyszłości", linie[2])
 
     def test_sygnatura_oznacza_date(self):
@@ -1069,13 +1075,15 @@ class TestDataZPrzyszlosci(unittest.TestCase):
 
     def test_strict_blokuje_mimo_rekordu_z_przyszlosci(self):
         odp = {"items": [_it(1, "3013-12-04")], "info": {"totalResults": 1}}
-        out = io.StringIO()
+        out, err = io.StringIO(), io.StringIO()
         with mock.patch.object(sys, "argv", ["saos.py", "szukaj", "--sad", "SN", "--strict"]), \
-                mock.patch.object(saos, "_get", return_value=odp), contextlib.redirect_stdout(out):
+                mock.patch.object(saos, "_get", return_value=odp), contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(err):
             with self.assertRaises(SystemExit) as caught:
                 saos.main()
-        self.assertIn("--do 2016-06-22", str(caught.exception))
-        self.assertNotIn("3013", str(caught.exception))
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn("--do 2016-06-22", err.getvalue())
+        self.assertNotIn("3013", err.getvalue())
         self.assertEqual(out.getvalue(), "")
 
     def test_ostrzezenie_o_koncu_zbioru_mimo_rekordu_z_przyszlosci(self):
@@ -1086,6 +1094,334 @@ class TestDataZPrzyszlosci(unittest.TestCase):
             saos.main()
         self.assertIn("kończy się DOKŁADNIE na 22.06.2016", out.getvalue())
         self.assertNotIn("04.12.3013", out.getvalue())
+
+
+def _uruchom_main(argv, get=None, get_side_effect=None):
+    """saos.main() z atrapą _get → (kod wyjścia, stdout, stderr). Kod 0, gdy main() wrócił normalnie."""
+    out, err = io.StringIO(), io.StringIO()
+    kw = {"side_effect": get_side_effect} if get_side_effect is not None else {"return_value": get}
+    kod = 0
+    with mock.patch.object(saos, "_get", **kw), mock.patch.object(saos, "_sn_id", return_value=None), \
+            mock.patch.object(saos.time, "sleep"), mock.patch.object(sys, "argv", ["saos.py", *argv]), \
+            contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        try:
+            saos.main()
+        except SystemExit as e:
+            kod = e.code
+    return kod, out.getvalue(), err.getvalue()
+
+
+ZERO = {"items": [], "info": {"totalResults": 0}}
+
+
+class TestKodyWyjscia(unittest.TestCase):
+    """0 = wynik, 1 = ZWERYFIKOWANY brak, 2 = wszystko inne (jak orzeczenia_ms.py). Do 2.3.0 każde
+    sys.exit("tekst") dawało 1 — np. `orzeczenie 999999999` (HTTP 404) wyglądało jak „brak wyników”."""
+
+    def setUp(self):
+        saos._granice_na_zywo.clear()
+
+    def test_zweryfikowany_brak_to_1(self):
+        for argv in (["szukaj", "rękojmia"], ["sygnatura", "I", "C", "1/99"], ["szukaj", "--sad", "SN", "--do", "2010"]):
+            with self.subTest(argv=argv):
+                kod, out, err = _uruchom_main(argv, ZERO)
+                self.assertEqual(kod, 1)
+                self.assertEqual(out, "")
+                self.assertTrue(err.strip())
+
+    def test_brak_frazy_w_tresci_to_1(self):
+        d = {"data": {**_it(5, "2015-01-01"), "textContent": "<p>Treść bez szukanej frazy.</p>"}}
+        kod, _, err = _uruchom_main(["orzeczenie", "5", "--fragment", "rękojmia"], d)
+        self.assertEqual(kod, 1)
+        self.assertIn("Nie znaleziono frazy", err)
+
+    def test_fraza_bez_tresci_to_2_nie_brak_frazy(self):
+        d = {"data": {**_it(5, "2026-09-16", "COMMON", sygn="II K 295/25"), "textContent": ""}}
+        kod, out, err = _uruchom_main(["orzeczenie", "5", "--fragment", "rękojmia"], d)
+        self.assertEqual(kod, 2)
+        self.assertIn("NIE jest brak frazy", err)
+        self.assertIn("orzeczenia_ms.py sygnatura II K 295/25", out)
+
+    def test_bledy_to_2(self):
+        http404 = urllib.error.HTTPError("https://www.saos.org.pl/api/judgments/999999999", 404, "Not Found", {}, None)
+        przypadki = [
+            (["orzeczenie", "999999999"], http404, "HTTP 404"),
+            (["szukaj", "x"], urllib.error.URLError("offline"), "BŁĄD sieci"),
+            (["szukaj", "x"], RuntimeError("niespodzianka"), "nieoczekiwany błąd"),
+            (["szukaj", "x"], saos.VerificationUnknown("przerwa"), "nie udało się zweryfikować"),
+        ]
+        for argv, wyjatek, fraza in przypadki:
+            with self.subTest(argv=argv, wyjatek=wyjatek):
+                if isinstance(wyjatek, urllib.error.URLError):
+                    # prawdziwy _get z atrapą połączenia — ścieżka sys.exit w _get
+                    err = io.StringIO()
+                    with mock.patch.object(saos._opener, "open", side_effect=wyjatek), \
+                            mock.patch.object(saos.time, "sleep"), \
+                            mock.patch.object(sys, "argv", ["saos.py", *argv]), \
+                            contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                        with self.assertRaises(SystemExit) as caught:
+                            saos.main()
+                    kod, err = caught.exception.code, err.getvalue()
+                else:
+                    kod, _, err = _uruchom_main(argv, get_side_effect=wyjatek)
+                self.assertEqual(kod, 2)
+                self.assertIn(fraza, err)
+
+    def test_zle_argumenty_i_nieoczekiwana_odpowiedz_to_2(self):
+        for argv, odp in ((["szukaj", "--sad", "kosmos"], ZERO), (["szukaj", "--od", "2020-13"], ZERO),
+                          (["szukaj"], ZERO), (["szukaj", "--typ", "apelacja"], ZERO),
+                          (["sygnatura", "III", "CSK", "203/09"], {"message": "maintenance"}),
+                          (["orzeczenie", "1"], {"data": {}})):
+            with self.subTest(argv=argv):
+                kod, out, err = _uruchom_main(argv, odp)
+                self.assertEqual(kod, 2)
+                self.assertEqual(out, "")
+                self.assertIn("BŁĄD", err)
+
+    def test_przerwa_techniczna_to_2(self):
+        html = _Response(b"<!DOCTYPE html><html><head><title>Przerwa techniczna</title></head></html>")
+        err = io.StringIO()
+        with mock.patch.object(saos._opener, "open", return_value=html), mock.patch.object(saos.time, "sleep"), \
+                mock.patch.object(sys, "argv", ["saos.py", "sygnatura", "I", "C", "1/20"]), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            with self.assertRaises(SystemExit) as caught:
+                saos.main()
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn("przerwę techniczną", err.getvalue())
+
+    def test_wynik_to_0(self):
+        kod, out, _ = _uruchom_main(["sygnatura", "III", "KK", "1/16"], {"items": [_it(1, "2016-01-01")],
+                                                                          "info": {"totalResults": 1}})
+        self.assertEqual(kod, 0)
+        self.assertIn("III KK 1/16", out)
+
+    def test_brak_wynikow_to_systemexit_z_komunikatem(self):
+        # bezpośrednie wywołanie komendy (bez main) nadal niesie tekst komunikatu
+        args = argparse.Namespace(sygnatura=["I", "C", "1/99"], json=False)
+        with mock.patch.object(saos, "_get", return_value=ZERO):
+            with self.assertRaises(saos.BrakWynikow) as caught:
+                saos.cmd_sygnatura(args)
+        self.assertIsInstance(caught.exception, SystemExit)
+        self.assertIn("Nie znaleziono orzeczenia", str(caught.exception))
+
+
+class TestLukiSadowPowszechnych(unittest.TestCase):
+    """Pomiar 2026-11-13: 39 z 40 orzeczeń portalu MS w SAOS; brak — XXVIII C 22637/22 (XXVIII Wydział
+    Cywilny SO w Warszawie, którego SAOS nie zna). Zero musi odsyłać do portalu MS konkretną komendą."""
+
+    def setUp(self):
+        saos._granice_na_zywo.clear()
+
+    def test_ksztalt_sygnatury_sadu_powszechnego(self):
+        for sig in ("XXVIII C 22637/22", "I ACa 772/13", "II K 295/25", "I Ns 356/22", "VI Ka 1622/25",
+                    "XXVI GC 1/20", "III RC 185/25", "XVII AmA 69/23", "II Kp 1/20", "I Co 5/21"):
+            with self.subTest(sig=sig):
+                self.assertTrue(saos._ksztalt_sadu_powszechnego(sig))
+        for sig in ("III CZP 81/16", "IV CO 1/15", "III KK 195/16", "I NSNc 1/20", "K 35/15", "KIO 1711/18",
+                    "SK 7/19", "cokolwiek"):
+            with self.subTest(sig=sig):
+                self.assertFalse(saos._ksztalt_sadu_powszechnego(sig))
+
+    def test_sygnatura_zero_sadu_powszechnego_tylko_portal_ms(self):
+        kod, _, err = _uruchom_main(["sygnatura", "XXVIII", "C", "22637/22"], ZERO)
+        self.assertEqual(kod, 1)
+        self.assertIn("orzeczenia_ms.py sygnatura XXVIII C 22637/22", err)
+        self.assertIn("39 z 40", err)
+        self.assertIn("XXVIII Wydział Cywilny SO w Warszawie", err)
+        self.assertNotIn("Trybunał", err)
+        self.assertNotIn("NIE MA z założenia", err)
+        self.assertNotIn("granice zamkniętych", err)
+
+    def test_szukaj_zero_odsyla_do_portalu_ms_z_komenda(self):
+        kod, _, err = _uruchom_main(["szukaj", "kredyt frankowy", "--sad", "powszechne", "--od", "2024",
+                                     "--sedzia", "Kowalski"], ZERO)
+        self.assertEqual(kod, 1)
+        self.assertIn("orzeczenia_ms.py szukaj 'kredyt frankowy' --od 2024-01-01 --sedzia Kowalski", err)
+        self.assertIn("39 z 40", err)
+
+    def test_szukaj_zero_bez_kryterium_portalu(self):
+        kod, _, err = _uruchom_main(["szukaj", "--sad", "powszechne", "--typ", "wyrok"], ZERO)
+        self.assertEqual(kod, 1)
+        self.assertIn("portal wymaga co najmniej jednego kryterium", err)
+
+    def test_szukaj_zero_sn_bez_odeslania_do_portalu_ms(self):
+        kod, _, err = _uruchom_main(["szukaj", "x", "--sad", "SN", "--do", "2010"], ZERO)
+        self.assertEqual(kod, 1)
+        self.assertNotIn("orzeczenia_ms.py", err)
+
+
+class TestHaslo(unittest.TestCase):
+    """2026-11-13: --haslo to DOKŁADNE hasło słownika SAOS i tylko dla sądów powszechnych; zero
+    nie może udawać braku orzeczeń, gdy hasła nie ma w słowniku albo sąd nie ma haseł w ogóle."""
+
+    SLOWNIK = [{"id": 1, "phrase": "przestępstwa przeciwko zdrowiu"},
+               {"id": 2, "phrase": "przestępstwa przeciwko życiu"},
+               {"id": 3, "phrase": "przestępstwo przeciwko zdrowiu"},
+               {"id": 4, "phrase": "przestępstwo"}]
+
+    def setUp(self):
+        saos._granice_na_zywo.clear()
+
+    def _api(self, wynik_szukania, slownik=None):
+        def get(path, params=None, soft=False, baza=saos.BASE):
+            if baza == saos.SLOWNIK_HASEL:
+                self.zapytanie_slownika = path
+                if isinstance(slownik, Exception):
+                    raise slownik
+                return self.SLOWNIK if slownik is None else slownik
+            return wynik_szukania
+        return get
+
+    def test_haslo_spoza_slownika_to_2_z_podpowiedzia(self):
+        kod, out, err = _uruchom_main(["szukaj", "--haslo", "przestępstwo przeciwko zdrowia"],
+                                      get_side_effect=self._api(ZERO))
+        self.assertEqual(kod, 2)
+        self.assertEqual(out, "")
+        self.assertIn("NIE MA w słowniku haseł SAOS", err)
+        self.assertIn("przestępstwo przeciwko zdrowiu", err)
+        self.assertIn("nie z braku orzeczeń", err)
+        self.assertNotIn("orzeczenia_ms.py", err)  # portal MS z tym samym złym hasłem nic nie da
+        self.assertEqual(self.zapytanie_slownika, "przest%C4%99pst")  # rdzeń pierwszego słowa
+
+    def test_haslo_w_slowniku_ale_zero_to_1(self):
+        kod, _, err = _uruchom_main(["szukaj", "--haslo", "Przestępstwo przeciwko zdrowiu", "--od", "2030-01-01"],
+                                    get_side_effect=self._api(ZERO))
+        self.assertEqual(kod, 1)
+        self.assertIn("jest w słowniku SAOS", err)
+        self.assertIn("orzeczenia_ms.py szukaj --od 2030-01-01 --haslo 'Przestępstwo przeciwko zdrowiu'", err)
+
+    def test_slownik_niedostepny_to_2(self):
+        kod, _, err = _uruchom_main(["szukaj", "--haslo", "cokolwiek"],
+                                    get_side_effect=self._api(ZERO, saos.VerificationUnknown("x")))
+        self.assertEqual(kod, 2)
+        self.assertIn("nie udało się sprawdzić", err)
+
+    def test_haslo_dla_sn_to_2_i_fraza(self):
+        kod, _, err = _uruchom_main(["szukaj", "--haslo", "odszkodowanie", "--sad", "SN", "--do", "2016-06-22"],
+                                    get_side_effect=self._api(ZERO))
+        self.assertEqual(kod, 2)
+        self.assertIn("TYLKO dla sądów powszechnych", err)
+        self.assertIn("saos.py szukaj odszkodowanie --sad SN --do 2016-06-22", err)
+        self.assertNotIn("zapytanie_slownika", vars(self))  # bez zapytania o słownik
+
+    def test_wyniki_z_haslem_podaja_warianty_takze_przy_json(self):
+        odp = {"items": [_it(1, "2020-01-01", "COMMON", sygn="II K 1/20")], "info": {"totalResults": 1}}
+        kod, out, err = _uruchom_main(["szukaj", "--haslo", "przestępstwo przeciwko zdrowiu"],
+                                      get_side_effect=self._api(odp))
+        self.assertEqual(kod, 0)
+        self.assertIn("DOKŁADNE hasło", out)
+        self.assertIn("przestępstwa przeciwko zdrowiu", out)
+        self.assertNotIn("przestępstwa przeciwko życiu", out)  # inny temat — nie „wariant”
+        kod, out, err = _uruchom_main(["szukaj", "--haslo", "przestępstwo przeciwko zdrowiu", "--json"],
+                                      get_side_effect=self._api(odp))
+        self.assertEqual(json.loads(out), odp)  # stdout = surowy JSON
+        self.assertIn("przestępstwa przeciwko zdrowiu", err)
+
+
+class TestJsonOstrzezeniaNaStderr(unittest.TestCase):
+    """--json: stdout to nietknięty JSON z API, a ostrzeżenia trybu tekstowego idą na stderr
+    (do 2.3.0 ginęły — np. data 3013-12-04 albo „uzasadnienie” bez słowa)."""
+
+    def setUp(self):
+        saos._granice_na_zywo.clear()
+
+    def test_szukaj_przyszlosc_uzasadnienie_przepis(self):
+        odp = {"items": [_it(31345, "3013-12-04", "COMMON", sygn="I ACa 772/13"),
+                         _it(2, "2020-01-01", "COMMON", "REASONS", sygn="I C 1/20")], "info": {"totalResults": 2}}
+        kod, out, err = _uruchom_main(["szukaj", "--przepis", "art. 415", "--json"], odp)
+        self.assertEqual(kod, 0)
+        self.assertEqual(json.loads(out), odp)
+        self.assertIn("[31345] I ACa 772/13 (3013-12-04) — data z przyszłości", err)
+        self.assertIn("[2] I C 1/20 (2020-01-01) — uzasadnienie", err)
+        self.assertIn("LUŹNE dopasowanie", err)
+
+    def test_szukaj_admin(self):
+        odp = {"items": [_it(1, "2010-01-01", "ADMINISTRATIVE")], "info": {"totalResults": 1}}
+        _, out, err = _uruchom_main(["szukaj", "--sad", "admin", "--json"], odp)
+        self.assertEqual(json.loads(out), odp)
+        self.assertIn("prawo-pl-cbosa", err)
+
+    def test_sygnatura_kolizja_sadow(self):
+        _, out, err = _uruchom_main(["sygnatura", "I", "ACa", "100/13", "--json"], TestSygnaturaKolizjaSadow.ODP)
+        self.assertEqual(json.loads(out), TestSygnaturaKolizjaSadow.ODP)
+        self.assertIn("4 RÓŻNYCH sądach", err)
+
+    def test_orzeczenie_sn(self):
+        d = {"data": TestOrzeczenieWyjscie.SN}
+        _, out, err = _uruchom_main(["orzeczenie", "245229", "--json"], d)
+        self.assertEqual(json.loads(out), d)
+        self.assertIn("spłaszcza indeksy górne", err)
+        self.assertIn("1 z 2 wpisów referencedRegulations wygląda na uszkodzone", err)
+        self.assertIn("nie służy do weryfikacji", err)
+
+    def test_orzeczenie_sp_bez_tresci_i_z_przyszlosci(self):
+        d = {"data": {**_it(553102, "3013-12-04", "COMMON", sygn="II K 295/25"), "textContent": "",
+                      "source": {"judgmentUrl": TestPustaTrescOdsylaDoPortaluMS.URL}}}
+        _, out, err = _uruchom_main(["orzeczenie", "553102", "--json"], d)
+        self.assertEqual(json.loads(out), d)
+        self.assertIn("data z przyszłości", err)
+        self.assertIn("orzeczenia_ms.py orzeczenie 150515150001006_II_K_000295_2025_Uz_2026-09-16_002", err)
+        self.assertNotIn("spłaszcza", err)
+
+    def test_orzeczenie_uzasadnienie(self):
+        d = {"data": TestUzasadnienieData.DANE}
+        _, out, err = _uruchom_main(["orzeczenie", "547117", "--json"], d)
+        self.assertEqual(json.loads(out), d)
+        self.assertIn("data sporządzenia UZASADNIENIA", err)
+
+    def test_bez_ostrzezen_pusty_stderr(self):
+        odp = {"items": [_it(1, "2010-01-01", "COMMON", sygn="I C 1/10")], "info": {"totalResults": 1}}
+        _, out, err = _uruchom_main(["szukaj", "x", "--json"], odp)
+        self.assertEqual(err, "")
+
+
+class TestUzasadnienieDataWyroku(unittest.TestCase):
+    """Pomiar 2026-11-13: z 22 uzasadnień 6 miało w SAOS datę WYROKU, nie uzasadnienia — np. 449645
+    (VI Ka 468/21): SAOS 2021-10-22 = „Warszawa, dnia 22 października 2021 r.” w nagłówku, a portal MS
+    datuje uzasadnienie na 2021-11-09. Silnik twierdził „2021-10-22 to data sporządzenia UZASADNIENIA”."""
+
+    DANE = {"id": 449645, "courtType": "COMMON", "judgmentType": "REASONS", "judgmentDate": "2021-10-22",
+            "courtCases": [{"caseNumber": "VI Ka 468/21"}],
+            "source": {"publicationDate": "2021-11-17", "judgmentUrl":
+                       "http://api.orzeczenia.wroclaw.sa.gov.pl/ncourt-api/judgement/details?id="
+                       "154510000003006_VI_Ka_000468_2021_Uz_2021-11-09_001"},
+            "textContent": "<p>Warszawa, dnia 22 października 2021 r.</p><p>Sygn. akt VI Ka 468/21</p><p>WYROK</p>"}
+
+    def test_data_wyroku_a_nie_uzasadnienia(self):
+        uw = saos._uwaga_uzasadnienie(self.DANE, saos.html_to_text(self.DANE["textContent"]))
+        self.assertIn("datuje ten dokument uzasadnienia na 09.11.2021", uw)
+        self.assertIn("2021-10-22 to najpewniej data WYROKU", uw)
+        self.assertIn("Nagłówek treści potwierdza: 22.10.2021", uw)
+        self.assertNotIn("to data sporządzenia UZASADNIENIA", uw)
+
+    def test_bez_naglowka_tez_data_wyroku(self):  # II C 1470/25: SAOS 2026-04-15, portal MS 2026-05-11
+        d = {**self.DANE, "judgmentDate": "2026-04-15", "source": {"judgmentUrl":
+             "https://x/details?id=152510000001003_II_C_001470_2025_Uz_2026-05-11_001"}}
+        uw = saos._uwaga_uzasadnienie(d, "UZASADNIENIE W pozwie z 13 października 2025 roku")
+        self.assertIn("najpewniej data WYROKU", uw)
+        self.assertNotIn("Nagłówek treści potwierdza", uw)
+
+    def test_data_pozniejsza_niz_w_portalu_nierozstrzygnieta(self):
+        d = {**self.DANE, "judgmentDate": "2021-12-01"}
+        uw = saos._uwaga_uzasadnienie(d, "")
+        self.assertIn("nie wiadomo, która to data wyroku", uw)
+
+    def test_data_dokumentu_ms(self):
+        self.assertEqual(saos._data_dokumentu_ms(self.DANE), "2021-11-09")
+        self.assertIsNone(saos._data_dokumentu_ms({"source": {"judgmentUrl": "https://x/?id=1"}}))
+        self.assertIsNone(saos._data_dokumentu_ms({}))
+
+    def test_data_portalu_rowna_naglowkowi_nie_twierdzi_ze_nie_wyrok(self):
+        # I C 401/20 (449473): SAOS i portal MS 2021-11-09, treść „W Y R O K … Dnia 9 listopada 2021 roku”
+        d = {**self.DANE, "judgmentDate": "2021-11-09"}
+        uw = saos._uwaga_uzasadnienie(d, "Sygn. akt I C 401/20 W Y R O K W IMIENIU RZECZYPOSPOLITEJ POLSKIEJ "
+                                         "Dnia 9 listopada 2021 roku Sąd Rejonowy w Żorach")
+        self.assertIn("może to być także data WYROKU", uw)
+        self.assertNotIn("NIE data wydania wyroku", uw)
+
+    def test_bez_identyfikatora_portalu_nie_twierdzi(self):
+        uw = saos._uwaga_uzasadnienie({"judgmentType": "REASONS", "judgmentDate": "2026-06-08"}, "")
+        self.assertIn("bywa datą sporządzenia UZASADNIENIA, a bywa datą wyroku", uw)
 
 
 if __name__ == "__main__":

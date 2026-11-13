@@ -25,12 +25,23 @@ Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
                       niepełna lista rocznika, tekst tylko z 1. strony, uszkodzony tekst; w `tekst`
                       także: brak rejestru powiązań, akt nieważny w całości, fragment z unieważnionej
                       jednostki)
+Kody wyjścia: 0 = jest wynik; 1 = ZWERYFIKOWANY brak wyników (pełny rocznik bez trafień, fraza nieobecna
+w pełnym tekście z PDF); 2 = wszystko inne (sieć/HTTP/TLS, nieoczekiwana odpowiedź, zły argument,
+nieistniejąca pozycja, blokada --strict, nieprzewidziany wyjątek). Komunikaty błędów idą na stderr.
 """
 import sys, json, re, time, argparse, base64, os, shutil, socket, ssl, subprocess, tempfile
 import urllib.request, urllib.parse, urllib.error
 from html.parser import HTMLParser
 
-__version__ = "2.3.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "2.4.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+
+
+class BrakWynikow(SystemExit):
+    """ZWERYFIKOWANY brak wyników → kod wyjścia 1 (jak w orzeczenia_ms.py): zapytanie wykonane poprawnie,
+    źródło odpowiedziało w całości, zero trafień albo frazy nie ma w pełnym tekście z PDF. Każde inne
+    zakończenie z komunikatem (sieć, HTTP, TLS, zły argument, nieistniejąca pozycja, blokada --strict,
+    niepełna lista rocznika, tekst tylko z 1. strony) = kod 2. Dotąd (do 2.3.0) `sys.exit("…")` dawało
+    kod 1 w obu sytuacjach, więc model nie odróżniał „nie ma takiej uchwały" od „serwer nie odpowiedział"."""
 
 # kod → (województwo, host, publisher ELI). Kody = sufiks publishera (POL_WOJ_XX).
 WOJEWODZTWA = {
@@ -109,17 +120,32 @@ def _woj(s):
                  "Kody: " + ", ".join(f"{k}={v[0]}" for k, v in sorted(WOJEWODZTWA.items())))
     kod = s.strip().upper()
     if kod in WOJEWODZTWA:
+        if kod == "LB":
+            # Kody silnika to sufiksy publishera ELI (POL_WOJ_LB = dziennik lubelski), a dawny kod ISO 3166-2
+            # PL-LB (do 2018) oznaczał LUBUSKIE. Jedyna kolizja, w której dokładny kod daje INNE
+            # województwo niż ISO (wyliczone 2026-11-13 dla 16 kodów ISO) — mówimy o tym na stderr.
+            print("UWAGA: LB = lubelskie (publisher POL_WOJ_LB, edziennik.lublin.uw.gov.pl). Dawny kod ISO "
+                  "PL-LB oznaczał lubuskie — dla lubuskiego podaj LS.", file=sys.stderr)
         return (kod,) + WOJEWODZTWA[kod]
     szukane = _ascii(s.strip())
     kandydaci = [(k, v) for k, v in WOJEWODZTWA.items() if _ascii(v[0]).startswith(szukane)]
     if len(kandydaci) == 1:
         k, (nazwa, host, pub) = kandydaci[0]
         return k, nazwa, host, pub
+    iso = _DAWNE_ISO.get(kod)
+    podpowiedz = (f" {kod} to dawny kod ISO 3166-2 ({iso[1]}) — w tym silniku: {iso[0]}." if iso else "")
     if kandydaci:
         sys.exit(f"Niejednoznaczne województwo {s!r} — pasuje: "
-                 + ", ".join(f"{k}={v[0]}" for k, v in kandydaci) + ". Podaj kod albo pełną nazwę.")
-    sys.exit(f"Nieznane województwo: {s!r}. Kody: "
+                 + ", ".join(f"{k}={v[0]}" for k, v in kandydaci) + ". Podaj kod albo pełną nazwę." + podpowiedz)
+    sys.exit(f"Nieznane województwo: {s!r}.{podpowiedz} Kody: "
              + ", ".join(f"{k}={v[0]}" for k, v in sorted(WOJEWODZTWA.items())))
+
+
+# Dawne literowe kody ISO 3166-2:PL (zastąpione liczbowymi 26.11.2018), które NIE są kodami silnika —
+# „LU" i „MA" i tak kończą się błędem niejednoznaczności, „PD" i „WN" błędem nieznanego kodu; podpowiedź
+# wskazuje właściwy kod zamiast samej listy.
+_DAWNE_ISO = {"LU": ("LB", "lubelskie"), "MA": ("MP", "małopolskie"), "PD": ("PL", "podlaskie"),
+              "WN": ("WM", "warmińsko-mazurskie")}
 
 
 def _norm(obj):
@@ -144,6 +170,13 @@ def _norm(obj):
 _SSL_CTX = None                      # kontekst z doładowanym pośrednim (wspólny w procesie)
 _OSTATNI_BLAD = None                 # przyczyna ostatniego błędu wywołania soft (do komunikatów wyżej)
 _OID_CA_ISSUERS = b"\x06\x08\x2b\x06\x01\x05\x05\x07\x30\x02"   # id-ad-caIssuers 1.3.6.1.5.5.7.48.2
+# X509_V_FLAG_PARTIAL_CHAIN = 0x80000 w OpenSSL (include/openssl/x509_vfy.h, od 1.0.2); stała
+# ssl.VERIFY_X509_PARTIAL_CHAIN jest dopiero od Pythona 3.10, a na 3.8/3.9 `getattr(…, 0)` dawało pustą
+# operację — flagi, gdyby była ustawiona, nikt by nie zdjął. Wartość liczbowa jako zapas działa na każdej
+# wersji (zweryfikowane 2026-11-13: Python 3.15 / OpenSSL 4.1 — ssl.VERIFY_X509_PARTIAL_CHAIN == 0x80000).
+# LibreSSL (systemowy Python 3.9 na macOS, LibreSSL 2.8.3) definiuje X509_V_FLAG_PARTIAL_CHAIN pod tą
+# samą wartością 0x80000 i z tą samą semantyką — zob. komentarz w _ctx_z_aia.
+_PARTIAL_CHAIN = getattr(ssl, "VERIFY_X509_PARTIAL_CHAIN", 0x80000)
 
 
 def _aia_urls(der):
@@ -192,8 +225,13 @@ def _ctx_z_aia(host):
         # Pośredni pochodzi z adresu podanego przez NIEZWERYFIKOWANY liść, więc nie może stać się
         # kotwicą zaufania: bez PARTIAL_CHAIN OpenSSL wymaga, by łańcuch kończył się na
         # samopodpisanym korzeniu z domyślnego magazynu — pobrany certyfikat służy tylko do
-        # zbudowania łańcucha (Python ≥3.10 włącza PARTIAL_CHAIN domyślnie).
-        ctx.verify_flags &= ~getattr(ssl, "VERIFY_X509_PARTIAL_CHAIN", 0)
+        # zbudowania łańcucha. ssl.create_default_context() włącza PARTIAL_CHAIN domyślnie od
+        # Pythona 3.13 (Lib/ssl.py; sama stała jest od 3.10) — sprawdzone 2026-11-13: na 3.15 domyślne
+        # verify_flags = 0x88020 (z bitem 0x80000), na 3.9 (LibreSSL 2.8.3) i 3.8 (OpenSSL 3.0) bez niego.
+        # Zapasowa wartość liczbowa (_PARTIAL_CHAIN) zdejmuje flagę także na 3.8/3.9; w LibreSSL 2.8.3
+        # X509_V_FLAG_PARTIAL_CHAIN = 0x80000 ma tę samą semantykę („Allow partial chains if at least one
+        # certificate is in trusted store", x509_vfy.h/x509_vfy.c tagu libressl-v2.8.3).
+        ctx.verify_flags &= ~_PARTIAL_CHAIN
         for u in urls[:3]:
             with urllib.request.urlopen(urllib.request.Request(u, headers={"User-Agent": _UA}),
                                         timeout=15) as r:
@@ -285,13 +323,22 @@ def _fetch(url, host, raw=False, timeout=25, soft=False, brak_none=False):
             if e.code >= 500 and attempt == 1:
                 time.sleep(2); continue
             if soft or (brak_none and e.code == 404):
-                _OSTATNI_BLAD = f"HTTP {e.code}"
+                _OSTATNI_BLAD = f"HTTP {e.code}" + (" — awaria po stronie serwera dziennika" if e.code >= 500 else "")
                 return None
             if e.code == 404:
                 sys.exit(f"BŁĄD HTTP 404 (nie znaleziono): {url}")
             if e.code == 403:
                 sys.exit(f"BŁĄD HTTP 403: {url}\n"
                          f"Host {host} odrzucił żądanie (WAF) — sprawdź akt w przeglądarce: https://{host}/")
+            if e.code >= 500:
+                # Sam „BŁĄD HTTP 504: <url>" model czytał jako „aktu nie ma" albo „zły numer". 2026-11-13
+                # edziennik.mazowieckie.pl (MZ) odpowiadał 503 na `akt MZ 2026 100` (wcześniej 504), a curl na
+                # stronę główną kończył się błędem HTTP/2 INTERNAL_ERROR — awaria serwera, nie brak aktu.
+                sys.exit(f"BŁĄD HTTP {e.code}: {url}\n"
+                         f"Serwer dziennika {host} nie odpowiada poprawnie (HTTP {e.code} także po ponowieniu) — to "
+                         "awaria PO STRONIE SERWERA dziennika, a NIE brak aktu ani błędny numer pozycji; nie wnioskuj "
+                         "stąd, że akt nie istnieje. Ponów za kilka–kilkanaście minut (pojedynczo, bez serii zapytań) "
+                         f"albo sprawdź akt w przeglądarce: https://{host}/")
             sys.exit(f"BŁĄD HTTP {e.code}: {url}")
         except Exception as e:  # noqa: BLE001
             if _blad_certyfikatu(e):
@@ -694,16 +741,80 @@ def _czysc_pdf(surowy):
     return _scal_linie(linie), len(strony), naglowek
 
 
+# Kwota w prawej kolumnie dwukolumnowej listy stawek („opis | stawka"): sama kwota w linii albo tekst
+# + ≥ 3 spacje + kwota na końcu, kwota od kolumny ≥ 40. pdftotext -layout stawia ją na wysokości ŚRODKA
+# wiersza, czyli często MIĘDZY liniami opisu litery. Zweryfikowane 2026-11-13 na SK 2026/3601 (Kielce):
+# dotąd silnik dawał „a) … bez względu na sposób" + nowy akapit „1,20 zł zakwalifikowania w ewidencji
+# gruntów…" i „…o przeznaczeniu  4,85 zł mieszanym…" — kwota w środku zdania, litera pocięta na dwa akapity.
+_RE_KWOTA_KOLUMNY = re.compile(r"^(?P<tekst>.*?\S)?[ \t]{3,}(?P<kwota>\d[\d .]*,\d{2}[ \t]*zł)[ \t]*$")
+
+
+def _kwota_z_prawej(surowa):
+    """→ (tekst bez kwoty albo '', kwota) dla linii z kwotą w prawej kolumnie, inaczej None. Wiersze
+    prawdziwych tabel (kilka komórek rozdzielonych ≥ 3 spacjami) zostają bez zmian."""
+    m = _RE_KWOTA_KOLUMNY.match(surowa)
+    if not m or m.start("kwota") < 40:
+        return None
+    tekst = (m.group("tekst") or "").strip()
+    if re.search(r"\S[ \t]{3,}\S", tekst):
+        return None
+    return tekst, re.sub(r"[ \t]+", " ", m.group("kwota"))
+
+
+def _strony_bez_tekstu(surowy):
+    """Numery stron PDF (od 1) bez warstwy tekstowej poza nagłówkiem/stopką dziennika — obraz albo skan.
+    Zweryfikowane 2026-11-13 na WP 2026/8451 (plan miejscowy, 16 str.): strony 9–15 to same obrazy —
+    rysunek planu i ZESKANOWANE załączniki tekstowe (rozstrzygnięcie o sposobie rozpatrzenia uwag);
+    dotąd `tekst` podawał „16 str." bez słowa, że ich treści w wyniku nie ma."""
+    strony = surowy.split("\f")
+    if strony and not strony[-1].strip():
+        strony.pop()
+    puste = []
+    for nr, strona in enumerate(strony, 1):
+        reszta = [l for l in strona.split("\n") if l.strip() and not (
+            _RE_NAGLOWEK_STRONY.match(l) or _RE_STOPKA_ID.match(l) or _RE_STRONA.match(l))]
+        if len(re.sub(r"\W", "", "".join(reszta))) < 20:
+            puste.append(nr)
+    return puste
+
+
+def _zakresy(nr):
+    """[9, 10, 11, 14] → „9–11, 14"."""
+    out, i = [], 0
+    while i < len(nr):
+        j = i
+        while j + 1 < len(nr) and nr[j + 1] == nr[j] + 1:
+            j += 1
+        out.append(f"{nr[i]}–{nr[j]}" if j > i else str(nr[i]))
+        i = j + 1
+    return ", ".join(out)
+
+
 def _scal_linie(linie):
     """Linie -layout → akapity. Nowy akapit: pusta linia przed, początek jednostki redakcyjnej,
     linia wycentrowana/wyrównana do prawej (wcięcie ≥ 16: tytuły, podpisy) albo wiersz tabeli
-    (≥ 3 spacje między komórkami); pozostałe linie doklejamy do poprzedniej spacją."""
-    akapity, pusta = [], True
+    (≥ 3 spacje między komórkami); pozostałe linie doklejamy do poprzedniej spacją. Kwotę z prawej
+    kolumny listy stawek (_kwota_z_prawej) dopisujemy na KONIEC akapitu jej litery/punktu — ale nie po
+    wierszu tabeli: tam „od 7 t i poniżej 12 t   2.588,54 zł" to kolejny wiersz (OP 2026/2845), nie ciąg opisu."""
+    akapity, pusta, kwoty, poprz_tabela = [], True, {}, False
     for l in linie:
         surowa = l.rstrip()
         if not surowa.strip():
             pusta = True
             continue
+        kz = _kwota_z_prawej(surowa) if akapity and not poprz_tabela else None
+        # tylko w obrębie jednostki redakcyjnej (lit./pkt/ust.): linia sama ją zaczyna albo ciągnie akapit,
+        # który ją zaczął. Bez tego wiersze tabeli bez oznaczeń („od sprzedaży z ręki   10,00 zł") pod
+        # zwykłym tytułem zlepiałyby się w jeden akapit z kwotami na końcu
+        if kz is not None and not (_RE_JEDNOSTKA.match(kz[0])
+                                   or (not pusta and _RE_JEDNOSTKA.match(akapity[-1]))):
+            kz = None
+        if kz is not None:
+            tekst, kwota = kz
+            if not tekst:   # sama kwota w linii → do bieżącego akapitu (litery, w której wierszu stoi)
+                kwoty.setdefault(len(akapity) - 1, []).append(kwota)
+                continue
+            surowa = surowa[:surowa.rindex(tekst) + len(tekst)]
         wciecie = len(surowa) - len(surowa.lstrip(" "))
         s = re.sub(r"[ \t]{3,}", "  ", surowa.strip())
         s = re.sub(r"(?<=\S)[ \t](?=\S)", " ", s)
@@ -712,7 +823,11 @@ def _scal_linie(linie):
             akapity.append(s)
         else:
             akapity[-1] += " " + s
-        pusta = False
+        if kz is not None:
+            kwoty.setdefault(len(akapity) - 1, []).append(kz[1])
+        pusta, poprz_tabela = False, tabela
+    for i, k in kwoty.items():
+        akapity[i] += "  " + "  ".join(k)
     return "\n".join(akapity).strip()
 
 
@@ -853,10 +968,11 @@ def cmd_dzienniki(a):
         return
     kod, nazwa, host, pub = _woj(a.woj)
     wpis = _roczniki(host, pub)
-    if a.json:
-        print(json.dumps(wpis, ensure_ascii=False, indent=2)); return
+    # brak wpisu = nieoczekiwana odpowiedź hosta — także z --json komunikat i kod 2, nie „null" z kodem 0
     if not wpis:
         sys.exit(f"Host {host} nie zwrócił wpisu publishera {pub} — sprawdź https://{host}/")
+    if a.json:
+        print(json.dumps(wpis, ensure_ascii=False, indent=2)); return
     lata = wpis.get("years") or []
     print(f"# Dziennik Urzędowy — województwo {nazwa}  ({pub}, https://{host}/)")
     print(f"  Aktów łącznie: {wpis.get('deedscount') or wpis.get('count') or '?'}")
@@ -916,14 +1032,19 @@ def cmd_szukaj(a):
     przeszukane = list(total_info)
     nieprzeszukane = [r for r in lata if r not in przeszukane and r not in pominiete]
     okno, start, strony = _stronicuj(zebrane, a.limit, a.strona)
-    if not zebrane:  # zweryfikowane zero — także z --json komunikat, nie pusty JSON
-        sys.exit(f"Brak wyników w {nazwa} ({', '.join(map(str, przeszukane or lata))}). Filtr frazy działa po "
-                 "TYTULE aktu (podłańcuch, bez diakrytyków) — spróbuj krótszej frazy albo innego "
-                 "roku (--rok)." + (f"\nUWAGA: rocznik(i) {', '.join(map(str, pominiete))} POMINIĘTE "
-                                    f"({host} zwrócił nieoczekiwaną odpowiedź) — to NIE jest pełne zero."
-                                    if pominiete else "")
-                 + (f"\nUWAGA: lista rocznika {', '.join(map(str, niepelne))} NIEPEŁNA — to NIE jest pełne zero."
-                    if niepelne else ""))
+    if not zebrane:  # zero — także z --json komunikat, nie pusty JSON
+        komunikat = (f"Brak wyników w {nazwa} ({', '.join(map(str, przeszukane or lata))}). Filtr frazy działa po "
+                     "TYTULE aktu (podłańcuch, bez diakrytyków) — spróbuj krótszej frazy albo innego "
+                     "roku (--rok)." + (f"\nUWAGA: rocznik(i) {', '.join(map(str, pominiete))} POMINIĘTE "
+                                        f"({host} zwrócił nieoczekiwaną odpowiedź) — to NIE jest pełne zero."
+                                        if pominiete else "")
+                     + (f"\nUWAGA: lista rocznika {', '.join(map(str, niepelne))} NIEPEŁNA — to NIE jest pełne zero."
+                        if niepelne else ""))
+        # kod 1 tylko dla zera zweryfikowanego: każdy rocznik pobrany w całości; pominięty albo
+        # niepełny rocznik = wynik niepewny → kod 2
+        if przeszukane and not pominiete and not niepelne:
+            raise BrakWynikow(komunikat)
+        sys.exit(komunikat)
     if not okno:
         sys.exit(f"Strona {a.strona} poza zakresem: {len(zebrane)} trafień = {strony} "
                  f"stron(y) przy --limit {a.limit}.")
@@ -1037,6 +1158,12 @@ def cmd_akt(a):
     kod, nazwa, host, pub = _woj(a.woj)
     d = _get(host, f"/acts/{pub}/{a.rok}/{a.poz}", brak_none=True)
     rej = None
+    if isinstance(d, str) and d.strip():
+        # odpowiedź nie-JSON (strona HTML, filtr) to nie „nie znaleziono" — nie mylić z brakiem aktu.
+        # PUSTA treść to brak pozycji: KP odpowiada na nieistniejącą pozycję HTTP 204 bez treści
+        # (2026-11-13: POL_WOJ_KP/2026/3013 i /999999; rejestr: „Nie znaleziono pozycji")
+        sys.exit(f"BŁĄD: {host} zwrócił nieoczekiwaną odpowiedź (nie JSON) dla {pub}/{a.rok}/{a.poz} — "
+                 f"to NIE znaczy, że aktu nie ma; ponów za chwilę albo sprawdź w przeglądarce: https://{host}/")
     if not isinstance(d, dict) or not d.get("title"):
         _pozycja_techniczna(host, kod, a.rok, a.poz)
         sys.exit(f"Nie znaleziono aktu {pub}/{a.rok}/{a.poz} na {host}.")
@@ -1105,6 +1232,11 @@ def cmd_akt(a):
     print(f"\nTreść: tekst {kod} {a.rok} {a.poz}  [--fragment \"<fraza>|§ N\"] [--pdf plik.pdf]")
 
 
+def _komunikat_pdf_istnieje(sciezka):
+    return (f"BŁĄD: plik {sciezka!r} już istnieje — `--pdf` nie nadpisuje istniejących plików (mógłby to być "
+            "PDF innego aktu). Podaj nową nazwę pliku albo najpierw sam usuń stary.")
+
+
 def _nakladanie(spans_a, spans_b):
     return any(s1 < e2 and s2 < e1 for s1, e1 in spans_a for s2, e2 in spans_b)
 
@@ -1112,6 +1244,10 @@ def _nakladanie(spans_a, spans_b):
 def cmd_tekst(a):
     kod, nazwa, host, pub = _woj(a.woj)
     strict = getattr(a, "strict", False)
+    if a.pdf and os.path.lexists(a.pdf):
+        # do 2.3.0 `--pdf` nadpisywał istniejący plik bez słowa (np. PDF innego aktu pod tą samą nazwą);
+        # sprawdzamy przed pobraniem, a zapis i tak idzie w trybie wyłącznego tworzenia („xb")
+        sys.exit(_komunikat_pdf_istnieje(a.pdf))
     # rejestr dziennika PRZED treścią (jak w `akt`): pozycja techniczna, nieważność, sprostowania, zmiany
     rej = _pozycja_techniczna(host, kod, a.rok, a.poz)
     if rej is None:
@@ -1128,8 +1264,13 @@ def cmd_tekst(a):
         dane = _get(host, f"/acts/{pub}/{a.rok}/{a.poz}/text.pdf", raw=True)
         if not dane.startswith(b"%PDF"):
             sys.exit(f"Host {host} nie zwrócił PDF dla {pub}/{a.rok}/{a.poz} — sprawdź: akt {kod} {a.rok} {a.poz}")
-        with open(a.pdf, "wb") as f:
-            f.write(dane)
+        try:
+            with open(a.pdf, "xb") as f:   # jak w orzeczenia_ms.py: nigdy nie nadpisuj istniejącego pliku
+                f.write(dane)
+        except FileExistsError:
+            sys.exit(_komunikat_pdf_istnieje(a.pdf))
+        except OSError as e:
+            sys.exit(f"BŁĄD: nie udało się zapisać PDF do {a.pdf!r} ({e.strerror or e}) — podaj inną ścieżkę.")
         print(f"Zapisano urzędowy PDF: {a.pdf} ({len(dane)} bajtów)")
         for u in pow_blok + pow_ostrz + ([brak_rejestru] if brak_rejestru else []):
             print(f"UWAGA: {u}")
@@ -1142,7 +1283,7 @@ def cmd_tekst(a):
         sys.exit("BŁĄD (strict): " + "; ".join(pow_blok)
                  + f".\nMetadane i powiązania: akt {kod} {a.rok} {a.poz}; urzędowy PDF jako dokument historyczny: "
                  f"tekst {kod} {a.rok} {a.poz} --pdf akt.pdf")
-    txt, zrodlo, strony, naglowek, uwagi = None, None, 0, None, []
+    txt, zrodlo, strony, naglowek, uwagi, bez_tekstu = None, None, 0, None, [], []
     if _pdftotext_dostepny():
         dane = _get(host, f"/acts/{pub}/{a.rok}/{a.poz}/text.pdf", raw=True)
         if dane.startswith(b"%PDF"):
@@ -1150,6 +1291,11 @@ def cmd_tekst(a):
             if surowy is not None:
                 txt, strony, naglowek = _czysc_pdf(surowy)
                 zrodlo = "pdf"
+                bez_tekstu = _strony_bez_tekstu(surowy)
+                if bez_tekstu:
+                    uwagi.append(f"strony {_zakresy(bez_tekstu)} z {strony} nie mają warstwy tekstowej (obraz albo "
+                                 "skan — np. rysunek planu, zeskanowany załącznik) — ich treści NIE MA w tekście "
+                                 f"niżej; sprawdź je w PDF: tekst {kod} {a.rok} {a.poz} --pdf akt.pdf")
             else:
                 uwagi.append("pdftotext nie przetworzył PDF — używam text.html")
         else:
@@ -1189,7 +1335,7 @@ def cmd_tekst(a):
                          + "; ".join(w["zakres"] for w, _ in trafione_niewazne) + ")")
     if a.json:
         print(json.dumps({"publisher": pub, "rok": a.rok, "poz": a.poz, "cytat": _cytat(kod, a.rok, a.poz),
-                          "zrodlo": zrodlo, "strony": strony,
+                          "zrodlo": zrodlo, "strony": strony, "strony_bez_tekstu": bez_tekstu,
                           "naglowek_dziennika": naglowek, "uwagi": uwagi + ostrz,
                           "powiazania": wpisy if rej is not None else None, "uwagi_powiazan": uwagi_pow,
                           "niezweryfikowany": blok, "tekst": txt},
@@ -1209,9 +1355,19 @@ def cmd_tekst(a):
     print()
     if a.fragment:
         if not spans:
+            # kod 1 (zweryfikowany brak) tylko dla pełnego, nieuszkodzonego tekstu z PDF; brak frazy
+            # w text.html (1. strona) albo w tekście z U+FFFD/bez jednostek NIE dowodzi braku przepisu → 2
             if zrodlo == "pdf":
-                sys.exit(f"Nie znaleziono frazy {a.fragment!r} w tekście PDF ({strony} str., {len(txt)} znaków). "
-                         "Spróbuj inną frazą.")
+                komunikat = (f"Nie znaleziono frazy {a.fragment!r} w tekście PDF ({strony} str., {len(txt)} znaków). "
+                             "Spróbuj inną frazą.")
+                if bez_tekstu and not blok:
+                    sys.exit(komunikat + f" Strony {_zakresy(bez_tekstu)} PDF to obraz/skan bez warstwy tekstowej — "
+                             "fraza może być na nich, więc to NIE jest zweryfikowany brak; sprawdź PDF: "
+                             f"tekst {kod} {a.rok} {a.poz} --pdf akt.pdf")
+                if not blok:
+                    raise BrakWynikow(komunikat)
+                sys.exit(komunikat + " Tekst jest NIEZWERYFIKOWANY (" + "; ".join(blok) + ") — brak frazy nie "
+                         f"dowodzi braku przepisu; sprawdź PDF: tekst {kod} {a.rok} {a.poz} --pdf akt.pdf")
             sys.exit(f"Nie znaleziono frazy {a.fragment!r} w text.html ({len(txt)} znaków) — to zwykle TYLKO "
                      f"1. strona aktu, treść jest dłuższa; sprawdź PDF: tekst {kod} {a.rok} {a.poz} --pdf akt.pdf")
         for i, (s, e) in enumerate(spans):
@@ -1234,7 +1390,28 @@ def cmd_tekst(a):
     print(txt)
 
 
-def main():
+def main(argv=None):
+    """Kody wyjścia (jak w orzeczenia_ms.py): 0 = jest wynik; 1 = ZWERYFIKOWANY brak wyników (BrakWynikow);
+    2 = wszystko inne — błąd sieci/HTTP/TLS, nieoczekiwana odpowiedź, zły argument, nieistniejąca pozycja,
+    blokada --strict, nieprzewidziany wyjątek. Komunikat idzie na stderr."""
+    a = _parser().parse_args(argv)
+    try:
+        a.func(a)
+    except BrakWynikow as e:
+        print(e.code, file=sys.stderr)
+        sys.exit(1)
+    except SystemExit as e:
+        if e.code is None or isinstance(e.code, int):
+            raise
+        print(e.code, file=sys.stderr)
+        sys.exit(2)
+    except Exception as e:  # noqa: BLE001 — nieprzewidziany błąd nigdy nie może dać kodu 1 („brak wyników")
+        print(f"BŁĄD: nieoczekiwany błąd helpera ({type(e).__name__}: {e}) — to NIE jest brak wyników; "
+              "nie wnioskuj stąd, że aktu nie ma. Ponów albo sprawdź akt w przeglądarce dziennika.", file=sys.stderr)
+        sys.exit(2)
+
+
+def _parser():
     ap = argparse.ArgumentParser(
         description="API ELI wojewódzkich dzienników urzędowych (read-only, bez klucza): "
                     "prawo miejscowe 16 województw. Prawo krajowe (Dz.U./M.P.): scripts/eli.py.")
@@ -1279,9 +1456,7 @@ def main():
                        help="zrzut surowego JSON")
         p.add_argument("--strict", action="store_true", default=argparse.SUPPRESS,
                        help="zakończ błędem, gdy nie udało się zweryfikować kompletności wyniku")
-
-    a = ap.parse_args()
-    a.func(a)
+    return ap
 
 
 if __name__ == "__main__":

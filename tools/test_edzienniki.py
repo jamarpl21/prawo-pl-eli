@@ -332,15 +332,15 @@ class TestStrict(unittest.TestCase):
         return None  # rocznik 2025 → nieoczekiwana odpowiedź
 
     def _uruchom(self, argv):
-        out = io.StringIO()
+        out, err = io.StringIO(), io.StringIO()
         with mock.patch.object(edz, "_get", side_effect=self._fake_get), \
                 mock.patch.object(edz, "_roczniki", return_value={"years": [2026, 2025]}), \
                 mock.patch.object(sys, "argv", ["edzienniki.py", *argv]), \
-                contextlib.redirect_stdout(out):
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             try:
                 edz.main()
             except SystemExit as e:
-                return out.getvalue(), e
+                return out.getvalue(), _wyjscie(e, err)
         return out.getvalue(), None
 
     def test_strict_blokuje_gdy_rocznik_pominiety_i_stdout_jest_pusty(self):
@@ -369,18 +369,27 @@ class TestStrict(unittest.TestCase):
             self.assertIn("statutu gminy X", out)
 
 
+def _wyjscie(e, err):
+    """SystemExit z main() niesie już tylko kod (0/1/2), a komunikat idzie na stderr → SystemExit
+    z komunikatem (str(e)) i atrybutem `kod`, żeby testy sprawdzały i treść, i kod wyjścia."""
+    w = SystemExit(err.getvalue().strip() or e.code)
+    w.kod = e.code
+    return w
+
+
 def _uruchom(argv, **patches):
-    """main() z podmienionymi funkcjami sieciowymi → (stdout, SystemExit|None)."""
-    out = io.StringIO()
+    """main() z podmienionymi funkcjami sieciowymi → (stdout, SystemExit|None); e.kod = kod wyjścia."""
+    out, err = io.StringIO(), io.StringIO()
     with contextlib.ExitStack() as st:
         for nazwa, wartosc in patches.items():
             st.enter_context(mock.patch.object(edz, nazwa, **wartosc))
         st.enter_context(mock.patch.object(sys, "argv", ["edzienniki.py", *argv]))
         st.enter_context(contextlib.redirect_stdout(out))
+        st.enter_context(contextlib.redirect_stderr(err))
         try:
             edz.main()
         except SystemExit as e:
-            return out.getvalue(), e
+            return out.getvalue(), _wyjscie(e, err)
     return out.getvalue(), None
 
 
@@ -644,6 +653,10 @@ class TestTls(unittest.TestCase):
         pem = edz._der_do_pem(b"\x30\x03\x02\x01\x01")
         zaladowane = []
         ctx = ssl.create_default_context()
+        # flaga ustawiona PRZED (domyślnie robi to Python ≥3.13; na 3.8–3.12 ustawiamy ją sami), bo test
+        # ma sprawdzać DZIAŁANIE silnika — zdjęcie flagi — na każdej wersji, a nie domyślne ustawienia
+        ctx.verify_flags |= edz._PARTIAL_CHAIN
+        self.assertTrue(ctx.verify_flags & edz._PARTIAL_CHAIN)
         with mock.patch.object(edz, "_lisc_der", return_value=der), \
                 mock.patch.object(edz, "_SSL_CTX", None), \
                 mock.patch.object(edz.ssl, "create_default_context", return_value=ctx), \
@@ -653,11 +666,15 @@ class TestTls(unittest.TestCase):
             wynik = edz._ctx_z_aia("edziennik.example")
         self.assertIs(wynik, ctx)
         self.assertEqual(zaladowane, [pem])
-        # ssl.VERIFY_X509_PARTIAL_CHAIN jest od Pythona 3.10; wcześniej sprawdzamy ten sam bit
-        # (X509_V_FLAG_PARTIAL_CHAIN = 0x80000 w OpenSSL) — silnik nie ma tam czego zdejmować,
-        # bo domyślny kontekst go nie ustawia, ale zwrócony kontekst nadal nie może go mieć
-        self.assertFalse(ctx.verify_flags & getattr(ssl, "VERIFY_X509_PARTIAL_CHAIN", 0x80000))
+        # bit 0x80000 (X509_V_FLAG_PARTIAL_CHAIN w OpenSSL i LibreSSL) zdjęty po wywołaniu na każdej wersji
+        self.assertFalse(int(ctx.verify_flags) & 0x80000)
         self.assertEqual(ctx.verify_mode, ssl.CERT_REQUIRED)
+
+    def test_zapasowa_wartosc_partial_chain_rowna_stalej_ssl(self):
+        # na 3.8/3.9 stałej nie ma — silnik używa 0x80000; tam, gdzie stała jest, musi być tą samą liczbą
+        self.assertEqual(int(edz._PARTIAL_CHAIN), 0x80000)
+        if hasattr(ssl, "VERIFY_X509_PARTIAL_CHAIN"):
+            self.assertEqual(int(ssl.VERIFY_X509_PARTIAL_CHAIN), 0x80000)
 
     def test_przekierowanie_http_na_hoscie_dziennika_jest_podnoszone_a_obce_odrzucane(self):
         req = edz.urllib.request.Request("https://edzienniki.duw.pl/api/eli/acts/POL_WOJ_DS/2026/1")
@@ -1189,6 +1206,381 @@ class TestE4ParagrafWTabeliZalacznika(unittest.TestCase):
         uchwala, statut = out.split("[...]")
         self.assertNotIn("[w załączniku", uchwala)
         self.assertIn("[w załączniku: Załącznik do uchwały]\n\n§ 1. 1. Żłobek nosi nazwę.", statut)
+
+
+
+class TestKodyWyjscia(unittest.TestCase):
+    """Kody wyjścia jak w orzeczenia_ms.py: 0 = wynik, 1 = ZWERYFIKOWANY brak wyników, 2 = wszystko inne.
+    Do 2.3.0 każde `sys.exit("…")` dawało 1 — także awaria serwera, zły argument i blokada --strict."""
+    ROCZNIK = {"items": [{"pos": 10, "title": "Uchwała w sprawie statutu gminy X", "year": 2026}], "totalcount": 1}
+
+    def test_zero_trafien_w_pelnym_roczniku_to_kod_1(self):
+        out, e = _uruchom(["szukaj", "zzqq", "--woj", "DS", "--rok", "2026"], _get={"return_value": self.ROCZNIK})
+        self.assertEqual(e.kod, 1)
+        self.assertIn("Brak wyników", str(e))
+        self.assertEqual(out, "")
+
+    def test_zero_trafien_przy_niepelnej_liscie_to_kod_2(self):
+        niepelny = {"items": self.ROCZNIK["items"], "totalcount": 5}
+        out, e = _uruchom(["szukaj", "zzqq", "--woj", "DS", "--rok", "2026"], _get={"return_value": niepelny})
+        self.assertEqual(e.kod, 2)
+        self.assertIn("NIE jest pełne zero", str(e))
+
+    def test_zero_trafien_przy_pominietym_roczniku_to_kod_2(self):
+        def fake_get(host, path, params=None, raw=False):
+            return self.ROCZNIK if path.endswith("/2026") else None
+        out, e = _uruchom(["szukaj", "zzqq", "--woj", "DS"], _get={"side_effect": fake_get},
+                          _roczniki={"return_value": {"years": [2026, 2025]}})
+        self.assertEqual(e.kod, 2)
+        self.assertIn("2025 POMINIĘTE", str(e))
+
+    def test_jest_wynik_to_kod_0(self):
+        out, e = _uruchom(["szukaj", "statut", "--woj", "DS", "--rok", "2026"], _get={"return_value": self.ROCZNIK})
+        self.assertIsNone(e)
+        self.assertIn("statutu gminy X", out)
+
+    def test_bledy_i_argumenty_to_kod_2(self):
+        for argv, oczek in ((["szukaj", "x", "--woj", "MA"], "Niejednoznaczne województwo"),
+                            (["szukaj", "x", "--woj", "XX"], "Nieznane województwo"),
+                            (["szukaj", "x", "--woj", "DS", "--limit", "0"], "--limit i --strona")):
+            out, e = _uruchom(argv, _get={"return_value": self.ROCZNIK})
+            self.assertEqual(e.kod, 2, argv)
+            self.assertIn(oczek, str(e))
+
+    def test_nieistniejaca_pozycja_to_kod_2(self):
+        out, e = _uruchom(["akt", "SL", "2026", "99999"], _get={"return_value": None},
+                          _get_rejestr={"return_value": None})
+        self.assertEqual(e.kod, 2)
+        self.assertIn("Nie znaleziono aktu", str(e))
+
+    def test_odpowiedz_nie_json_to_nie_brak_aktu(self):
+        out, e = _uruchom(["akt", "DS", "2026", "5"], _get={"return_value": "<html>filtr</html>"},
+                          _get_rejestr={"return_value": None})
+        self.assertEqual(e.kod, 2)
+        self.assertIn("nieoczekiwaną odpowiedź (nie JSON)", str(e))
+        self.assertNotIn("Nie znaleziono", str(e))
+
+    def test_pusta_odpowiedz_204_to_nie_znaleziono(self):
+        # KP: nieistniejąca pozycja = HTTP 204 bez treści (2026-11-13, POL_WOJ_KP/2026/3013)
+        out, e = _uruchom(["akt", "KP", "2026", "3013"], _get={"return_value": ""},
+                          _get_rejestr={"return_value": None})
+        self.assertEqual(e.kod, 2)
+        self.assertIn("Nie znaleziono aktu POL_WOJ_KP/2026/3013", str(e))
+
+    def test_dzienniki_json_bez_wpisu_to_kod_2_nie_null(self):
+        out, e = _uruchom(["dzienniki", "--woj", "DS", "--json"], _roczniki={"return_value": None})
+        self.assertEqual(e.kod, 2)
+        self.assertEqual(out, "")
+
+    def test_nieprzewidziany_wyjatek_to_kod_2(self):
+        out, e = _uruchom(["szukaj", "x", "--woj", "DS", "--rok", "2026"], _get={"side_effect": KeyError("items")})
+        self.assertEqual(e.kod, 2)
+        self.assertIn("BŁĄD: nieoczekiwany błąd helpera (KeyError", str(e))
+        self.assertIn("NIE jest brak wyników", str(e))
+
+    def test_argparse_i_version_bez_zmian(self):
+        out, e = _uruchom(["akt", "DS", "rok", "1"])
+        self.assertEqual(e.kod, 2)
+        out, e = _uruchom(["--version"])
+        self.assertEqual(e.kod, 0)
+
+    def test_blokada_strict_to_kod_2(self):
+        def fake_get(host, path, params=None, raw=False):
+            return self.ROCZNIK if path.endswith("/2026") else None
+        out, e = _uruchom(["szukaj", "statut", "--woj", "DS", "--strict"], _get={"side_effect": fake_get},
+                          _roczniki={"return_value": {"years": [2026, 2025]}})
+        self.assertEqual(e.kod, 2)
+
+    def _tekst_pdf(self, argv, pdf):
+        return _uruchom(argv, _get={"side_effect": _get_pdf},
+                        _get_rejestr={"return_value": {"actstatus": {}, "actrelations": []}},
+                        _pdftotext_dostepny={"return_value": "/usr/bin/pdftotext"}, _pdftotext={"return_value": pdf})
+
+    def test_fraza_nieobecna_w_pelnym_pdf_to_kod_1(self):
+        out, e = self._tekst_pdf(["tekst", "DS", "2026", "3654", "--fragment", "zzqq"], TestTekst.PDF_SUROWY)
+        self.assertEqual(e.kod, 1)
+        self.assertIn("Nie znaleziono frazy 'zzqq' w tekście PDF", str(e))
+
+    def test_fraza_nieobecna_w_uszkodzonym_pdf_to_kod_2(self):
+        pdf = TestTekst.PDF_SUROWY.replace("Druga strona", "Druga � strona")
+        out, e = self._tekst_pdf(["tekst", "DS", "2026", "3654", "--fragment", "zzqq"], pdf)
+        self.assertEqual(e.kod, 2)
+        self.assertIn("NIEZWERYFIKOWANY", str(e))
+
+    def test_fraza_nieobecna_w_text_html_to_kod_2(self):
+        out, e = _uruchom(["tekst", "DS", "2026", "3654", "--fragment", "budowli"],
+                          _get={"return_value": TestTekst.HTML},
+                          _get_rejestr={"return_value": {"actstatus": {}, "actrelations": []}},
+                          _pdftotext_dostepny={"return_value": None})
+        self.assertEqual(e.kod, 2)
+        self.assertIn("TYLKO 1. strona aktu", str(e))
+
+
+class TestHttp5xx(unittest.TestCase):
+    """B1: 5xx po ponowieniu = awaria serwera dziennika, nie brak aktu — z radą i linkiem do UI.
+    Dotąd `akt MZ 2026 100` kończył się samym „BŁĄD HTTP 504: <url>" (2026-11-13: 503)."""
+
+    def _http(self, kod):
+        return urllib.error.HTTPError("https://edziennik.mazowieckie.pl/api/eli/acts/POL_WOJ_MZ/2026/100",
+                                      kod, "Service Unavailable", {}, io.BytesIO(b""))
+
+    def test_5xx_po_ponowieniu_mowi_o_awarii_serwera(self):
+        otworz = mock.Mock(side_effect=[self._http(504), self._http(503)])
+        with mock.patch.object(edz, "_otworz", otworz), mock.patch.object(edz.time, "sleep"):
+            with self.assertRaises(SystemExit) as cm:
+                edz._fetch("https://edziennik.mazowieckie.pl/api/eli/acts/POL_WOJ_MZ/2026/100",
+                           "edziennik.mazowieckie.pl")
+        msg = str(cm.exception)
+        self.assertEqual(otworz.call_count, 2)
+        self.assertIn("BŁĄD HTTP 503", msg)
+        self.assertIn("awaria PO STRONIE SERWERA dziennika", msg)
+        self.assertIn("NIE brak aktu", msg)
+        self.assertIn("Ponów", msg)
+        self.assertIn("https://edziennik.mazowieckie.pl/", msg)
+
+    def test_5xx_przez_main_to_kod_2(self):
+        out, e = _uruchom(["akt", "MZ", "2026", "100"],
+                          _otworz={"side_effect": [self._http(504), self._http(504)]},
+                          _get_rejestr={"return_value": None}, time={"new": mock.Mock()})
+        self.assertEqual(e.kod, 2)
+        self.assertIn("awaria PO STRONIE SERWERA", str(e))
+
+    def test_5xx_soft_podaje_przyczyne(self):
+        otworz = mock.Mock(side_effect=[self._http(502), self._http(502)])
+        with mock.patch.object(edz, "_otworz", otworz), mock.patch.object(edz.time, "sleep"):
+            self.assertIsNone(edz._fetch("https://x/api/legalact", "edziennik.mazowieckie.pl", soft=True))
+        self.assertIn("awaria po stronie serwera", edz._OSTATNI_BLAD)
+
+
+class TestPdfNieNadpisuje(unittest.TestCase):
+    """B3: `tekst … --pdf plik` nie nadpisuje istniejącego pliku (tryb „xb", jak orzeczenia_ms.py)."""
+
+    def setUp(self):
+        import tempfile
+        self.kat = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, self.kat)
+
+    def test_istniejacy_plik_odmowa_przed_pobraniem(self):
+        sciezka = pathlib.Path(self.kat) / "akt.pdf"
+        sciezka.write_bytes(b"STARY")
+        out, e = _uruchom(["tekst", "DS", "2026", "584", "--pdf", str(sciezka)],
+                          _get={"side_effect": AssertionError("bez pobierania")},
+                          _get_rejestr={"side_effect": AssertionError("bez rejestru")})
+        self.assertEqual(e.kod, 2)
+        self.assertIn("już istnieje", str(e))
+        self.assertEqual(sciezka.read_bytes(), b"STARY")
+
+    def test_wyscig_plik_powstal_w_trakcie_tez_odmowa(self):
+        sciezka = pathlib.Path(self.kat) / "akt.pdf"
+
+        def get(host, path, params=None, raw=False):
+            sciezka.write_bytes(b"STARY")   # plik pojawia się między sprawdzeniem a zapisem
+            return b"%PDF-1.4 nowy"
+        out, e = _uruchom(["tekst", "DS", "2026", "584", "--pdf", str(sciezka)], _get={"side_effect": get},
+                          _get_rejestr={"return_value": {"actstatus": {}, "actrelations": []}})
+        self.assertEqual(e.kod, 2)
+        self.assertIn("już istnieje", str(e))
+        self.assertEqual(sciezka.read_bytes(), b"STARY")
+
+    def test_nowy_plik_zapisany(self):
+        sciezka = pathlib.Path(self.kat) / "akt.pdf"
+        out, e = _uruchom(["tekst", "DS", "2026", "584", "--pdf", str(sciezka)],
+                          _get={"return_value": b"%PDF-1.4 nowy"},
+                          _get_rejestr={"return_value": {"actstatus": {}, "actrelations": []}})
+        self.assertIsNone(e)
+        self.assertEqual(sciezka.read_bytes(), b"%PDF-1.4 nowy")
+        self.assertIn("Zapisano urzędowy PDF", out)
+
+    def test_brak_katalogu_to_kod_2(self):
+        sciezka = pathlib.Path(self.kat) / "nie_ma" / "akt.pdf"
+        out, e = _uruchom(["tekst", "DS", "2026", "584", "--pdf", str(sciezka)],
+                          _get={"return_value": b"%PDF-1.4 nowy"},
+                          _get_rejestr={"return_value": {"actstatus": {}, "actrelations": []}})
+        self.assertEqual(e.kod, 2)
+        self.assertIn("nie udało się zapisać PDF", str(e))
+
+
+
+class TestKolizjeWoj(unittest.TestCase):
+    """A5 (2026-11-13): każde wejście pasujące prefiksem do kilku województw = błąd z listą kandydatów,
+    nigdy cichy wybór; wyliczenie wszystkich prefiksów nazw (z diakrytykami i bez) i wszystkich par A–Z."""
+
+    def _wejscia(self):
+        import itertools, string
+        w = set()
+        for nazwa, _, _ in edz.WOJEWODZTWA.values():
+            for i in range(1, len(nazwa) + 1):
+                w.add(nazwa[:i]); w.add(edz._ascii(nazwa[:i]))
+        w.update(a + b for a, b in itertools.product(string.ascii_uppercase, repeat=2))
+        w.update(string.ascii_uppercase)
+        return sorted(w)
+
+    def test_brak_cichego_wyboru(self):
+        niejednoznaczne = set()
+        for s in self._wejscia():
+            pasuja = [k for k, v in edz.WOJEWODZTWA.items() if edz._ascii(v[0]).startswith(edz._ascii(s))]
+            with contextlib.redirect_stderr(io.StringIO()):
+                try:
+                    kod = edz._woj(s)[0]
+                except SystemExit as e:
+                    msg = str(e)
+                    if len(pasuja) > 1:
+                        self.assertTrue(msg.startswith("Niejednoznaczne"), s)
+                        for k in pasuja:
+                            self.assertIn(f"{k}={edz.WOJEWODZTWA[k][0]}", msg, s)
+                        niejednoznaczne.add(edz._ascii(s))
+                    else:
+                        self.assertTrue(msg.startswith("Nieznane"), s)
+                    continue
+            # sukces: albo dokładny kod, albo prefiks jednego województwa
+            self.assertTrue(s.upper() in edz.WOJEWODZTWA or pasuja == [kod], (s, kod, pasuja))
+        self.assertEqual(niejednoznaczne, {"l", "lu", "lub", "m", "ma", "p", "po", "pod", "s", "w"})
+
+    def test_lb_to_lubelskie_z_ostrzezeniem_o_iso(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(edz._woj("LB")[:2], ("LB", "lubelskie"))
+        self.assertIn("Dawny kod ISO PL-LB oznaczał lubuskie — dla lubuskiego podaj LS", err.getvalue())
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            edz._woj("LS")
+        self.assertEqual(err.getvalue(), "")
+
+    def test_dawne_kody_iso_z_podpowiedzia(self):
+        for iso, nasz in (("PD", "PL"), ("WN", "WM"), ("MA", "MP"), ("LU", "LB")):
+            with self.assertRaises(SystemExit) as cm:
+                edz._woj(iso)
+            self.assertIn(f"w tym silniku: {nasz}.", str(cm.exception))
+
+
+
+# Wycinek `pdftotext -layout` urzędowego PDF SK 2026/3601 (edziennik.kielce.uw.gov.pl, pobrany 2026-11-13):
+# stawka w prawej kolumnie stoi na wysokości ŚRODKA wiersza — między liniami opisu litery albo na końcu
+# linii w środku zdania. Odstępy jak w oryginale (kolumna kwot ~115).
+_K = " " * 99
+SK3601_LAYOUT = [
+    "   § 1. Określa się następujące stawki podatku od nieruchomości:",
+    " 1) od gruntów:",
+    "a) związanych z prowadzeniem działalności gospodarczej, bez względu na sposób",
+    _K + "                1,20 zł",
+    "zakwalifikowania w ewidencji gruntów i budynków od 1 m² powierzchni",
+    "b) pod wodami powierzchniowymi stojącymi lub wodami powierzchniowymi płynącymi jezior",
+    _K + "                7,35 zł",
+    "i zbiorników sztucznych od 1 ha powierzchni",
+    "c) od pozostałych, w tym zajętych na prowadzenie odpłatnej statutowej działalności pożytku" + " " * 25 + "0,50 zł",
+    "publicznego przez organizacje pożytku publicznego od 1 m² powierzchni",
+    "d) niezabudowanych objętych obszarem rewitalizacji, o którym mowa w ustawie z dnia 9",
+    "przeznaczenie pod zabudowę mieszkaniową, usługową albo zabudowę o przeznaczeniu" + " " * 36 + "4,85 zł",
+    "budowy zgodnie z przepisami prawa budowlanego od 1m2 powierzchni",
+    " 2) od budynków lub ich części:",
+    "a) mieszkalnych od 1 m² powierzchni użytkowej" + " " * 70 + "0,04 zł",
+    "b) związanych z prowadzeniem działalności gospodarczej oraz od budynków mieszkalnych lub",
+    _K + "               30,00 zł",
+    "ich części zajętych na prowadzenie działalności gospodarczej od 1 m² powierzchni użytkowej",
+]
+# OP 2026/2845, załącznik: wiersz tabeli „etykieta + kwota" po wierszu nagłówka tabeli — to NIE jest ciąg opisu
+OP2845_LAYOUT = [
+    "Dopuszczalna masa całkowita (w tonach)                              Stawka podatku w złotych",
+    "od 7 t i poniżej 12 t                                                     2.588,54 zł",
+]
+
+
+class TestKwotyZPrawejKolumny(unittest.TestCase):
+    """A3 (2026-11-13): stawka z prawej kolumny listy stawek trafia na koniec akapitu SWOJEJ litery;
+    dotąd SK 2026/3601 dawało „1,20 zł zakwalifikowania w ewidencji…" jako nowy akapit w środku lit. a."""
+
+    def setUp(self):
+        self.akapity = edz._scal_linie(SK3601_LAYOUT).split("\n")
+
+    def test_kazda_litera_jednym_akapitem_ze_stawka_na_koncu(self):
+        oczek = {"a) związanych": "od 1 m² powierzchni  1,20 zł", "b) pod wodami": "od 1 ha powierzchni  7,35 zł",
+                 "c) od pozostałych": "od 1 m² powierzchni  0,50 zł", "d) niezabudowanych": "od 1m2 powierzchni  4,85 zł",
+                 "a) mieszkalnych": "powierzchni użytkowej  0,04 zł",
+                 "b) związanych z prowadzeniem działalności gospodarczej oraz": "powierzchni użytkowej  30,00 zł"}
+        for poczatek, koniec in oczek.items():
+            trafione = [a for a in self.akapity if a.startswith(poczatek)]
+            self.assertEqual(len(trafione), 1, poczatek)
+            self.assertTrue(trafione[0].endswith(koniec), trafione[0])
+
+    def test_zaden_akapit_nie_zaczyna_sie_kwota_ani_nie_ma_jej_w_srodku_zdania(self):
+        for a in self.akapity:
+            self.assertNotRegex(a, r"^\d[\d .]*,\d{2} zł")
+            self.assertNotRegex(a, r"\d,\d{2} zł [a-ząćęłńóśźż]")
+
+    def test_wiersz_tabeli_po_naglowku_tabeli_bez_zmian(self):
+        self.assertEqual(edz._scal_linie(OP2845_LAYOUT).split("\n"),
+                         ["Dopuszczalna masa całkowita (w tonach)  Stawka podatku w złotych",
+                          "od 7 t i poniżej 12 t  2.588,54 zł"])
+
+    def test_wiersze_bez_oznaczen_jednostki_nie_sa_zlepiane(self):
+        # wiersze listy/tabeli bez „a)"/„1)" pod zwykłym tytułem albo pod nagłówkiem tabeli z zawiniętą
+        # etykietą — każdy wiersz zostaje osobno, jak przed poprawką
+        tytul = ["Stawki dziennej opłaty targowej wynoszą:",
+                 "od sprzedaży z samochodu osobowego lub przyczepy" + " " * 30 + "20,00 zł",
+                 "od sprzedaży z ręki, kosza lub skrzynki" + " " * 39 + "10,00 zł"]
+        self.assertEqual(edz._scal_linie(tytul).split("\n"),
+                         ["Stawki dziennej opłaty targowej wynoszą:",
+                          "od sprzedaży z samochodu osobowego lub przyczepy  20,00 zł",
+                          "od sprzedaży z ręki, kosza lub skrzynki  10,00 zł"])
+        tabela = ["Rodzaj sprzedaży                                              Stawka",
+                  "sprzedaż z samochodu osobowego" + " " * 32 + "20,00 zł", "lub przyczepy",
+                  "sprzedaż z ręki" + " " * 47 + "10,00 zł"]
+        self.assertEqual(edz._scal_linie(tabela).split("\n"),
+                         ["Rodzaj sprzedaży  Stawka", "sprzedaż z samochodu osobowego  20,00 zł lub przyczepy",
+                          "sprzedaż z ręki  10,00 zł"])
+
+    def test_wiersz_wielokomorkowy_bez_zmian(self):
+        wiersz = "powyżej 9,0 t i poniżej 12,0 t                                700,00zł                           2.588,54 zł"
+        self.assertIsNone(edz._kwota_z_prawej(wiersz))
+
+
+
+# WP 2026/8451 (plan miejscowy, 16 str., 2026-11-13): strony 9–15 to obrazy — rysunek planu i zeskanowane
+# załączniki tekstowe; w `pdftotext -layout` zostaje z nich tylko nagłówek strony dziennika.
+PDF_WP8451_SKROT = (
+    "                      DZIENNIK URZĘDOWY\n               WOJEWÓDZTWA WIELKOPOLSKIEGO\n"
+    "          Poznań, dnia 13 listopada 2026 r.\n                     Poz. 8451\n\n"
+    "   § 1. Uchwala się miejscowy plan zagospodarowania przestrzennego.\n"
+    "   § 20. Uchwała wchodzi w życie po upływie 14 dni od dnia ogłoszenia.\n"
+    "\x0cDziennik Urzędowy Województwa Wielkopolskiego        – 2 –        Poz. 8451\n\n\n"
+    "\x0cDziennik Urzędowy Województwa Wielkopolskiego        – 3 –        Poz. 8451\n\n"
+    "\x0cDziennik Urzędowy Województwa Wielkopolskiego        – 4 –        Poz. 8451\n"
+    "                              Załącznik Nr 4 do uchwały Nr XXXIII.315.2026\n"
+    "   Dane przestrzenne, o których mowa w art. 67a ust. 3 i 5 ustawy o planowaniu.\n\x0c")
+
+
+class TestStronyBezTekstu(unittest.TestCase):
+    """A3 (2026-11-13): strony-obrazy (rysunek planu, skan załącznika) nie mogą znikać bez słowa."""
+
+    def test_wykrywa_strony_z_samym_naglowkiem(self):
+        self.assertEqual(edz._strony_bez_tekstu(PDF_WP8451_SKROT), [2, 3])
+        self.assertEqual(edz._zakresy([9, 10, 11, 12, 13, 14, 15]), "9–15")
+        self.assertEqual(edz._zakresy([2, 3, 7]), "2–3, 7")
+
+    def test_zwykly_akt_bez_ostrzezenia(self):
+        self.assertEqual(edz._strony_bez_tekstu(TestTekst.PDF_SUROWY), [])
+
+    def _tekst(self, argv):
+        return _uruchom(argv, _get={"side_effect": _get_pdf},
+                        _get_rejestr={"return_value": {"actstatus": {}, "actrelations": []}},
+                        _pdftotext_dostepny={"return_value": "/usr/bin/pdftotext"},
+                        _pdftotext={"return_value": PDF_WP8451_SKROT})
+
+    def test_tekst_ostrzega(self):
+        out, e = self._tekst(["tekst", "WP", "2026", "8451"])
+        self.assertIsNone(e)
+        self.assertIn("UWAGA: strony 2–3 z 4 nie mają warstwy tekstowej (obraz albo skan", out)
+        self.assertIn("ich treści NIE MA w tekście niżej", out)
+
+    def test_brak_frazy_przy_stronach_obrazach_to_kod_2(self):
+        out, e = self._tekst(["tekst", "WP", "2026", "8451", "--fragment", "sposobie rozpatrzenia uwag"])
+        self.assertEqual(e.kod, 2)
+        self.assertIn("to NIE jest zweryfikowany brak", str(e))
+
+    def test_json_podaje_strony(self):
+        import json
+        out, e = self._tekst(["tekst", "WP", "2026", "8451", "--json"])
+        self.assertEqual(json.loads(out)["strony_bez_tekstu"], [2, 3])
 
 
 if __name__ == "__main__":

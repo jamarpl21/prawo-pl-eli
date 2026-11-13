@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-rejestr-umow
-version: 2.3.0
+version: 2.4.0
 description: >-
   Odpytuje publiczne API Centralnego Rejestru Umów JSFP (rejestrumow.gov.pl) — jawny
   rejestr umów zawieranych od 1.07.2026 przez jednostki sektora finansów publicznych:
@@ -56,7 +56,7 @@ REJ="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-rejestr-umow/scripts/rejestrumow.py"
 #    sprawdzana w kodzie przed zapisem i przed każdym uruchomieniem; niezgodna = helper nie startuje.
 [ -f "$REJ" ] || REJ=$(python3 - <<'EOF'
 import hashlib, os, sys, urllib.request
-WERSJA, SHA256 = "2.3.0", "f5353c10194330ad7097af1c03da8d8911c9930c1c29d23ae340205dff737448"
+WERSJA, SHA256 = "2.4.0", "afc5199d01ef6fc662bba0547b07f548ea8ea1cb5d1905ed1cb5d22224d0bd19"
 URL = f"https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/v{WERSJA}/plugins/prawo-pl-rejestr-umow/skills/prawo-pl-rejestr-umow/scripts/rejestrumow.py"
 p = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"prawo-pl-rejestr-umow-{WERSJA}", "rejestrumow.py")
 try:
@@ -81,6 +81,9 @@ jesteś w katalogu skilla.)
 
 - **najnowsze** — ostatnio opublikowane umowy:
   `python3 scripts/rejestrumow.py najnowsze --limit 10`
+  „wszystkich umów: N” = licznik z interfejsu rejestru. Data publikacji ma dokładność **dnia**,
+  a w obrębie dnia API układa umowy wg idUmowy — to umowy z ostatniego dnia publikacji, nie N
+  ostatnio wpisanych.
 - **szukaj** — wyszukiwarka umów (filtry można łączyć dowolnie):
   `python3 scripts/rejestrumow.py szukaj "remont drogi" --woj dolnośląskie --sort priceDesc`
   `python3 scripts/rejestrumow.py szukaj --jsfp "urząd gminy" --od 2026-07-01 --wartosc-od 100000`
@@ -102,7 +105,10 @@ jesteś w katalogu skilla.)
   (dokładnie tak), `--sort` (m.in. `priceDesc`, `publicationDateDesc`, `executionDateAsc`),
   `--limit N` (maks. 50 — większy jest obcinany z komunikatem), `--strona N` (od 0; silnik
   pisze „Kolejna strona" tylko gdy istnieje, „Ostatnia strona", „poza zakresem" albo „poza
-  oknem API"). Zaawansowane: `--zapytanie '<json>'` — surowe body ze wszystkimi sekcjami
+  oknem API"). Przy remisie klucza sortowania (np. `priceDesc` przy równych kwotach) kolejność
+  jest stała (wg idUmowy), ale rejestr rośnie w ciągu dnia o tysiące umów — przeglądając wiele
+  stron, dodaj `--pub-do` z datą wczorajszą, inaczej wiersze przesuwają się między stronami
+  (powtarzają się albo wypadają). Zaawansowane: `--zapytanie '<json>'` — surowe body ze wszystkimi sekcjami
   filtrów (`references/api.md`); **API ignoruje nieznane pola po cichu** — zła nazwa pola =
   cały rejestr (364 tys. umów) udający wynik; porównuj total z `najnowsze`.
 - **umowa** — pełne szczegóły po idUmowy (UUID z wyników szukania):
@@ -112,12 +118,22 @@ jesteś w katalogu skilla.)
   tekst jednostki, NIE gwarantowana kwota słownie), strony z NIP/REGON i pełnym adresem
   (ulica, kod, miejscowość, gmina/dzielnica, powiat, województwo), finansowanie ze środków
   UE/zagranicznych, aneksy i zmiany, wyłączenia jawności (zakres, podstawa, wyłączający).
+  **Strona 1 to JSFP, która wpisała umowę** (zamawiający z wiersza `szukaj`); kolejność
+  pozostałych stron API zmienia między odczytami, więc silnik je sortuje (JSFP, przedsiębiorcy,
+  osoby fizyczne, nazwa) — w `--json` kolejność jest surowa. „UWAGA: status Aktywna, choć…”
+  = wśród zmian jest rozwiązanie/wypowiedzenie/odstąpienie/wygaśnięcie; status wpisuje jednostka.
+  „UWAGA: aneks dotyczy wartości” = rejestr ma jedną kwotę, bez wartości pierwotnej; po aneksie
+  jednostka bywa, że ją aktualizuje, a bywa, że nie — porównaj z komentarzem aneksu.
 - **slownik** — słowniki API: `python3 scripts/rejestrumow.py slownik rodzaje_zmian_umowy`
   (`kraje`, `strony_umowy`, `rodzaje_zmian_umowy`, `podstawy_wylaczenia_jawnosci`,
   `zakres_wylaczenia_jawnosci`).
 - każda komenda przyjmuje `--json` oraz `--strict` (blokuje wynik bez zweryfikowanej kompletności); obie flagi działają przed komendą i po niej.
   Zero trafień / nierozpoznana odpowiedź API kończą się komunikatem i kodem wyjścia ≠ 0 — także z `--json`
   (nie dostaniesz pustego JSON-a, który wyglądałby jak „sprawdzone, nic nie ma”).
+  **Kody wyjścia:** 0 = jest wynik; 1 = zweryfikowany brak wyników (API odpowiedziało, zero
+  trafień — komunikat podpowiada pisownię, rolę strony i sumę kontrolną NIP/REGON); 2 = nie udało
+  się sprawdzić (sieć, HTTP, limit 429, blokada CDN, zły argument, nieistniejące idUmowy). Kod 2
+  nigdy nie znaczy „nie ma takich umów”.
 
 Typowy przepływ: `szukaj <filtry>` → wybierz idUmowy → `umowa <idUmowy>` → strony,
 kwoty, aneksy do odpowiedzi.
@@ -147,7 +163,10 @@ kwoty, aneksy do odpowiedzi.
    jawności (podstawę prawną wyłączenia wskazuje jednostka) i „opis wartości" (wolny tekst;
    bywa kwotą słownie, bywa powtórzeniem przedmiotu, często pusty).
 6. **Rejestr NIE podaje waluty ani informacji netto/brutto.** „Wartość” to kwota z rejestru bez
-   tych atrybutów — silnik drukuje ją bez „zł”. Nie zakładaj PLN ani brutto; w odpowiedzi pisz
+   tych atrybutów — silnik drukuje ją bez „zł”. (Stan na 13.11.2026: API nie ma pola waluty;
+   interfejs WWW pokazuje „zł” przy każdej kwocie — w 13 z 13 sprawdzonych umów, także przy
+   wykonawcy z Niemiec i Irlandii — i przy polach filtra wartości. Bywa, że kwota jest netto:
+   w 2 z 13 umów „opis wartości” nazywał kwotę z rejestru „wartością netto”.) Nie zakładaj PLN ani brutto; w odpowiedzi pisz
    „wartość wpisana do rejestru: 1 234 567,00 (rejestr nie podaje waluty ani czy to netto/brutto)”,
    chyba że walutę/VAT podaje sam „opis wartości” — wtedy zacytuj go jako wpis jednostki.
 7. **Limit zapytań (HTTP 429).** Po ~10 szybkich zapytaniach API odpowiada 429. Silnik czeka

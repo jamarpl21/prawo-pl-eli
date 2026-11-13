@@ -15,18 +15,20 @@ Komendy:
                                  z urzędowego PDF przez `pdftotext -layout`, jeśli jest w PATH);
                                  --fragment wycina tylko jednostki z frazą; --pdf zapisuje urzędowy
                                  PDF; na akcie bazowym ostrzega o sprostowaniach w danym języku
-  skonsolidowany <CELEX>         wersje skonsolidowane aktu (odpowiednik tekstu jednolitego)
+  skonsolidowany <CELEX>         wersje skonsolidowane aktu (odpowiednik tekstu jednolitego);
+                                 AKTUALNA = najnowsza z datą „stan na" ≤ dziś, PRZYSZŁE osobno
+Kody wyjścia: 0 = wynik, 1 = zweryfikowany brak wyników, 2 = błąd / wynik nieustalony.
   odniesienia <CELEX>            nowelizacje, sprostowania, uchylenia (w obie strony), podstawa prawna
 Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
            --strict  (blokuje wynik, gdy nie udało się zweryfikować aktualności lub kompletności)
 
 CELEX np.: 32016R0679 (RODO), 02016R0679-20160504 (wersja skonsolidowana), reg/2016/679 (ELI).
 """
-import sys, os, json, re, time, argparse, shutil, subprocess, tempfile, textwrap
+import sys, os, json, re, time, argparse, datetime, shutil, subprocess, tempfile, textwrap
 import urllib.request, urllib.parse, urllib.error
 from html.parser import HTMLParser
 
-__version__ = "2.3.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "2.4.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 SPARQL = "https://publications.europa.eu/webapi/rdf/sparql"
 CELLAR = "http://publications.europa.eu/resource/celex/"
 CDM = "http://publications.europa.eu/ontology/cdm#"
@@ -49,6 +51,15 @@ JEZYKI = {"pl": "POL", "pol": "POL", "en": "ENG", "eng": "ENG", "de": "DEU", "de
 
 class VerificationUnknown(RuntimeError):
     """Zapytanie nie pozwoliło ustalić, czy dane istnieją."""
+
+
+class BrakWynikow(SystemExit):
+    """ZWERYFIKOWANY brak wyników: zapytanie wykonane poprawnie, źródło odpowiedziało, zero trafień
+    (albo frazy nie ma w pobranym tekście XHTML/HTML). main() kończy wtedy kodem 1; każdy inny
+    komunikat przez sys.exit — błąd sieci/HTTP, zły argument, nieistniejący CELEX, blokada --strict,
+    VerificationUnknown — kodem 2. Dlaczego (2026-11-13): sys.exit("tekst") dawał kod 1 w obu
+    sytuacjach, więc skrypt nie odróżniał „RODO nie ma frazy »xyz«” od „CELLAR nie odpowiedział”.
+    Podklasa SystemExit: wewnętrzne `except SystemExit` (np. _sparql) działają bez zmian."""
 
 
 def _nie_zweryfikowano(co, blad):
@@ -167,6 +178,12 @@ _KLASY_GRANIC = frozenset(("oj-signatory", "oj-note", "footnote"))
 # <hr class="oj-doc-sep"/>. Bez niego „art. 2" decyzji 2006/370/WE i „Artykuł 2" załączonej Umowy
 # wychodziły jako dwa wystąpienia tego samego aktu. Też usuwany przed wydrukiem (_bez_granic).
 DOKUMENT = "\x1e"
+# Znak początku pozycji SPISU TREŚCI (ASCII group separator) przed tekstem p.toc-item. Wersje
+# skonsolidowane długich aktów zaczynają się od spisu z pozycjami „ZAŁĄCZNIK XII – TABELA KORELACJI";
+# bez znaku nagłówek ze spisu uchodził za początek załącznika i `tekst 02006L0112-20250414 --fragment
+# "art. 2"` (VAT) oznaczał art. 2 jako „[w załączniku: ZAŁĄCZNIK XII – TABELA KORELACJI]" (weryfikacja
+# PL/EN 2026-11-13). Linia spisu nie jest też granicą jednostki. Usuwany przed wydrukiem (_bez_granic).
+SPIS = "\x1d"
 
 
 class _Stripper(HTMLParser):
@@ -185,6 +202,8 @@ class _Stripper(HTMLParser):
                 self.out.append("\n" + GRANICA + "\n")
         if tag in ("p", "br", "div", "tr", "li", "h1", "h2", "h3", "h4", "table"):
             self.out.append("\n")
+        if tag == "p" and "toc-item" in (dict(attrs).get("class") or "").split():
+            self.out.append(SPIS)
 
     def handle_endtag(self, tag):
         if tag in ("script", "style", "title") and self.skip:
@@ -211,6 +230,7 @@ def _bez_granic(t):
     """Usuwa znaki granicy strukturalnej przed wydrukiem."""
     for znak in (GRANICA, DOKUMENT):
         t = t.replace(znak + "\n", "").replace(znak, "")
+    t = t.replace(SPIS, "")
     return t
 
 
@@ -222,8 +242,23 @@ def _bez_granic(t):
 # Nagłówek artykułu to CAŁA linia („Artykuł 113"); linia zaczynająca się odesłaniem („Article 6(1)
 # and the corresponding obligations… shall apply from 2 August 2027") nagłówkiem NIE jest — bez
 # kotwicy końca linii ucinała fragment art. 113 AI Act (EN) w połowie lit. c).
-_GRANICE = (r"(?m)^((?:Artykuł|Article|Artikel)\s+\d+[a-z]*\s*$|ROZDZIAŁ\s|CHAPTER\s|KAPITEL\s|"
-            r"SEKCJA\s|Sekcja\s|SECTION\s|TYTUŁ\s|TITLE\s|ZAŁĄCZNIK|ANNEX|ANHANG|PREAMBUŁA|"
+# Nagłówki części/rozdziałów/sekcji pisane WERSALIKAMI („ROZDZIAŁ III", „PART TWO") są granicą od razu;
+# pisane zwykłą czcionką („Section 2", „Rozdział 2 –", „Podsekcja 1", „Sub-Section 3") — tylko gdy
+# zajmują CAŁĄ linię (numer, ewentualnie myślnik i tytuł). Dlaczego (weryfikacja PL/EN 2026-11-13):
+# EN `tekst 02016R0679-20160504 --jezyk eng --fragment "art. 12"` kończył się nagłówkiem następnej
+# sekcji („Information and access to personal data"), a PL nie — bo granicą było „Sekcja\s", ale nie
+# „Section\s"; VAT („Rozdział 2 –"/„Chapter 2 —"), CRR („Podsekcja 1"/„Sub-Section 1") i „Część A"
+# doklejały nagłówek w obu językach. Bez kotwicy linia „Chapter III Section 4, Chapter V… shall apply"
+# (AI Act art. 113 lit. b) albo „Section II is amended as follows:" (DORA) ucinałaby artykuł.
+_NAGLOWEK_JEDNOSTKI = (r"(?:Section|Sub-?[Ss]ection|Chapter|Part|Title|Sekcja|Podsekcja|Rozdział|Część|Tytuł|"
+                       r"Abschnitt|Unterabschnitt|Kapitel|Teil|Titel|Chapitre|Sous-section|Partie|Titre)"
+                       r"\s+(?:\d+|[IVXLC]+|[A-Z])[a-zA-Z]?\s*(?:[—–.-].*)?$")
+# Numer z literą bywa w XHTML ze spacją: „Article 519 e" (CRR 02013R0575-20260626, EN; PL „Artykuł 519e").
+# Bez „ ?" EN `--fragment "art. 519e"` nic nie znajdował, a fragment art. 519d obejmował treść art. 519e
+# (weryfikacja PL/EN 2026-11-13; urzędowy PDF tej wersji ma oba nagłówki).
+_GRANICE = (r"(?m)^((?:Artykuł|Article|Artikel)\s+\d+(?: ?[a-z]+)?\s*$|" + _NAGLOWEK_JEDNOSTKI + r"|ROZDZIAŁ\s|CHAPTER\s|KAPITEL\s|"
+            r"SEKCJA\s|PODSEKCJA\s|SECTION\s|SUB-?SECTION\s|ABSCHNITT\s|TYTUŁ\s|TITLE\s|TITEL\s|TITRE\s|"
+            r"CZĘŚĆ\s|PART\s|TEIL\s|PARTIE\s|ZAŁĄCZNIK|ANNEX|ANHANG|PREAMBUŁA|"
             + GRANICA + "|" + DOKUMENT + r"|Sporządzono w\b|Done at\b|Geschehen zu\b|Fait à\b|"
             r"W imieniu (?:Parlamentu|Rady|Komisji)|For the (?:European Parliament|Council|Commission)|"
             r"Im Namen (?:des|der)\b|Par le (?:Parlement|Conseil)|\(1\)\s+(?:Dz\.U\.|OJ\s|ABl\.|JO\s))")
@@ -236,9 +271,9 @@ def _fragmenty(txt, fraza, maks=8):
     "Artykuł 6" w osobnej linii), nie w odesłania; inna fraza działa pełnotekstowo.
     """
     bounds = [m.start() for m in re.finditer(_GRANICE, txt)]
-    m = re.match(r"(?i)^art(?:\.|ykuł|icle|ikel)?\s*(\d+[a-z]*)\.?$", fraza.strip())
+    m = re.match(r"(?i)^art(?:\.|ykuł|icle|ikel)?\s*(\d+)\s?([a-z]*)\.?$", fraza.strip())
     if m:
-        n = m.group(1)
+        n = m.group(1) + (" ?" + m.group(2).lower() if m.group(2) else "")
         hits = [h.start() for h in re.finditer(
             rf"(?m)^(?:Artykuł|Article|Artikel)\s+{n}\s*$", txt)]
     else:
@@ -260,6 +295,11 @@ def _fragmenty(txt, fraza, maks=8):
     return spans
 
 
+# Znacznik zmiany wersji skonsolidowanej (p.modref: „▼B", „▼M8", „▼C1") stoi PRZED zmienioną treścią;
+# ostatni wiersz fragmentu „▼M8" należy do NASTĘPNEJ jednostki (CRR 02013R0575-20260626 art. 92 kończył
+# się „▼M8", który oznacza dodany art. 92a — weryfikacja PL/EN 2026-11-13). Usuwamy go z końca fragmentu.
+_RE_ZNACZNIK_NA_KONCU = re.compile(r"(?:\n[ \t]*[▼►][ \t]*[A-Z]\d*[ \t]*)+$")
+_RE_PIERWSZY_ARTYKUL = re.compile(r"(?m)^(?:Artykuł|Article|Artikel)\s+\d+(?: ?[a-z]+)?\s*$")
 _RE_ZALACZNIK = re.compile(r"(?m)^(?:ZAŁĄCZNIK|ANNEX|ANHANG|ANNEXE)\b[^\n]*")
 
 
@@ -281,13 +321,20 @@ def _poza_aktem(txt, start):
 
     Dokument dołączony (znak DOKUMENT z <hr class="oj-doc-sep"/>: umowa, protokół) i załącznik
     (nagłówek „ZAŁĄCZNIK…" na początku linii) — liczy się NAJBLIŻSZY poprzedzający. Bez tego drugie
-    trafienie „art. 2" w decyzji o podpisaniu umowy wyglądało jak kolejny przepis decyzji."""
+    trafienie „art. 2" w decyzji o podpisaniu umowy wyglądało jak kolejny przepis decyzji.
+    Nagłówek „ZAŁĄCZNIK…" PRZED pierwszym artykułem aktu to pozycja spisu treści, nie załącznik: akt
+    bazowy VAT 32006L0112 ma spis bez klasy toc-item (inaczej niż wersja skonsolidowana), a `tekst
+    32006L0112 --fragment "art. 2"` oznaczał art. 2 jako „[w załączniku: ZAŁĄCZNIK XII – TABELA
+    KORELACJI]" (weryfikacja 2026-11-13)."""
     dok = txt.rfind(DOKUMENT, 0, start + 1)
+    pierwszy = _RE_PIERWSZY_ARTYKUL.search(txt)
+    od = pierwszy.start() if pierwszy else 0
     zal = None
     for m in _RE_ZALACZNIK.finditer(txt):
         if m.start() > start:
             break
-        zal = m
+        if m.start() >= od:
+            zal = m
     if zal is not None and zal.start() > dok:
         return "w załączniku: " + _naglowek_po(txt, zal.start())
     if dok != -1:
@@ -327,6 +374,108 @@ SELECT DISTINCT ?celex WHERE {{
     return [c for c in (_v(b, "celex") for b in rows) if re.search(r"-\d{8}$", c)]
 
 
+# --- która wersja skonsolidowana obowiązuje DZIŚ ---------------------------------------------------
+# Urząd Publikacji publikuje wersje skonsolidowane także z datą „stan na" Z PRZYSZŁOŚCI (zmiany
+# stosowane od tej daty). Dlaczego (weryfikacja 2026-11-13): CRR 32013R0575 ma 02013R0575-20270101
+# (rozporządzenie delegowane 2026/1221; dokument sam podaje „EN — 01.01.2027”), Wypłacalność II
+# 32009L0138 — 02009L0138-20270130 (dyrektywa 2025/2). Narzędzie brało pierwszą z listy malejącej
+# i podawało ją jako „AKTUALNA", a --strict blokował wersję, która dziś obowiązuje (02013R0575-20260626),
+# „bo jest nowsza". Aktualna = najnowsza wersja z datą ≤ dziś.
+def _dzis():
+    """Dzisiejsza data jako RRRRMMDD (osobna funkcja, żeby testy mogły ją podmienić)."""
+    return datetime.date.today().strftime("%Y%m%d")
+
+
+def _data_wersji(c):
+    """RRRRMMDD z CELEX-u wersji skonsolidowanej („02013R0575-20270101" → „20270101") albo ''."""
+    m = re.search(r"-(\d{8})$", c or "")
+    return m.group(1) if m else ""
+
+
+def _data_iso(rrrrmmdd):
+    return f"{rrrrmmdd[:4]}-{rrrrmmdd[4:6]}-{rrrrmmdd[6:]}" if len(rrrrmmdd or "") == 8 else (rrrrmmdd or "")
+
+
+def _aktualna(kons, dzis=None):
+    """Najnowsza wersja skonsolidowana z datą „stan na" ≤ dziś albo None (brak wersji albo same przyszłe)."""
+    dzis = dzis or _dzis()
+    obow = [c for c in (kons or []) if _data_wersji(c) and _data_wersji(c) <= dzis]
+    return max(obow, key=_data_wersji) if obow else None
+
+
+def _przyszle(kons, dzis=None):
+    """Wersje z datą „stan na" PÓŹNIEJSZĄ niż dziś — od najbliższej."""
+    dzis = dzis or _dzis()
+    return sorted((c for c in (kons or []) if _data_wersji(c) > dzis), key=_data_wersji)
+
+
+def _zmiany_po_wersji(baza, wersja):
+    """Akty ZMIENIAJĄCE akt bazowy, przyjęte albo wchodzące w życie PO dacie „stan na" wersji
+    skonsolidowanej `wersja`, których ta ani żadna wcześniejsza wersja nie ujmuje (w składzie:
+    cdm:act_consolidated_consolidates_resource_legal):
+    [{"celex", "data", "eiv": [...], "w_przyszlej": [wersje przyszłe z tym aktem]}].
+
+    Dlaczego (weryfikacja 2026-11-13): rozporządzenie 883/2004 ma najnowszą konsolidację
+    02004R0883-20190731, a 2026/2359 (z 7.10.2026, w życiu od 1.11.2026) nie ma w żadnej wersji;
+    VAT 02006L0112-20250414 nie ujmuje dyrektywy 2025/1539 (z 18.07.2025, w życiu od 14.08.2025) —
+    narzędzie wskazywało te wersje jako aktualne bez słowa. Sam brak w składzie NIE wystarcza
+    (skład starych wersji bywa niepełny: CRR 32017R2188 nie figuruje w żadnej), więc liczą się tylko
+    akty z datą późniejszą niż „stan na". [] = brak takich aktów; awaria → VerificationUnknown."""
+    d = _data_iso(_data_wersji(wersja))
+    rows = _sparql(f"""PREFIX cdm: <{CDM}>
+SELECT DISTINCT ?c2 ?dd ?eiv ?kc WHERE {{
+  ?w cdm:resource_legal_id_celex "{baza}"^^<{XSD_STR}> .
+  ?x cdm:resource_legal_amends_resource_legal ?w . ?x cdm:resource_legal_id_celex ?c2 .
+  OPTIONAL {{ ?x cdm:work_date_document ?dd }}
+  OPTIONAL {{ ?x cdm:resource_legal_date_entry-into-force ?eiv }}
+  FILTER(STR(?dd) > "{d}" || STR(?eiv) > "{d}")
+  OPTIONAL {{ ?k cdm:act_consolidated_consolidates_resource_legal ?x . ?k cdm:resource_legal_id_celex ?kc }}
+}} ORDER BY ?c2 LIMIT 2000""", soft=True)
+    prefiks = "0" + baza[1:] + "-"
+    akty = {}
+    for b in rows:
+        c2 = _v(b, "c2")
+        if not c2:
+            continue
+        a = akty.setdefault(c2, {"celex": c2, "data": "", "eiv": set(), "kons": set()})
+        a["data"] = a["data"] or _v(b, "dd")
+        if _v(b, "eiv"):
+            a["eiv"].add(_v(b, "eiv"))
+        if _v(b, "kc").startswith(prefiks) and _data_wersji(_v(b, "kc")):
+            a["kons"].add(_v(b, "kc"))
+    out = []
+    for c2 in sorted(akty):
+        a = akty[c2]
+        if not (a["data"] > d or any(e > d for e in a["eiv"])):
+            continue  # filtr jak w zapytaniu (obrona przed inną postacią odpowiedzi)
+        if any(k <= wersja for k in a["kons"]):
+            continue  # ujęty w tej albo wcześniejszej wersji
+        out.append({"celex": c2, "data": a["data"], "eiv": sorted(a["eiv"]),
+                    "w_przyszlej": sorted(k for k in a["kons"] if k > wersja)})
+    return out
+
+
+def _ostrzezenia_zmian_po_wersji(wersja, zmiany):
+    """Linie UWAGA dla wyniku _zmiany_po_wersji."""
+    out = []
+    for z in zmiany:
+        szczeg = ([f"akt z {z['data']}"] if z["data"] else []) + (
+            ["wejście w życie / stosowanie wg CELLAR: " + ", ".join(z["eiv"])] if z["eiv"] else [])
+        opis = z["celex"] + (f" ({'; '.join(szczeg)})" if szczeg else "")
+        if z["w_przyszlej"]:
+            out.append(f"UWAGA: akt zmieniający {opis} jest ujęty dopiero w wersji PRZYSZŁEJ "
+                       f"{', '.join(z['w_przyszlej'])} — wersja {wersja} nie zawiera jego zmian; jeśli któraś "
+                       f"stosuje się już dziś, sprawdź ją w tekście {z['celex']}.")
+        else:
+            out.append(f"UWAGA: akt zmieniający {opis} nie figuruje w składzie żadnej wersji skonsolidowanej "
+                       f"(wg metadanych CELLAR) — wersja {wersja} (stan na {_data_iso(_data_wersji(wersja))}) "
+                       "najpewniej go nie uwzględnia. Jeśli zmienia "
+                       f"cytowany przepis i już się stosuje, brzmienie z tej wersji jest NIEAKTUALNE: przeczytaj zmianę "
+                       f"i OD KIEDY się stosuje (tekst {z['celex']} — art. 1 i przepisy końcowe; w dyrektywie także "
+                       "termin stosowania przepisów krajowych).")
+    return out
+
+
 def _ostrzezenia_konsolidacja(celex, strict=False, tresc=True, kons=None):
     """Ostrzeżenia o wersjach skonsolidowanych dla aktu/wersji (lista linii).
 
@@ -349,22 +498,41 @@ def _ostrzezenia_konsolidacja(celex, strict=False, tresc=True, kons=None):
                     f"({e}) — sprawdź komendą: skonsolidowany {celex}, zanim zacytujesz."]
     out = []
     blokuj = strict and tresc
+    akt = _aktualna(kons)
+    baza = _celex_bazowy(celex)
+    dw = _data_wersji(celex)
     if celex.startswith("0"):
         out.append("UWAGA: wersja skonsolidowana ma charakter DOKUMENTACYJNY (nie jest autentyczna) — "
                    f"do urzędowego cytatu wskaż {CYTAT_URZEDOWY}.")
-        if kons and kons[0] > celex:
+        dzis_obow = akt or baza
+        if dw and dw > _dzis():
             if blokuj:
-                sys.exit(f"BŁĄD: istnieje nowsza wersja skonsolidowana: {kons[0]}. "
+                sys.exit(f"BŁĄD: {celex} to wersja skonsolidowana PRZYSZŁA (stan na {_data_iso(dw)}) — jej "
+                         f"brzmienie jeszcze NIE obowiązuje. Tryb strict ją blokuje; dziś obowiązuje: tekst {dzis_obow}.")
+            out.append(f"UWAGA: to wersja PRZYSZŁA — stan na {_data_iso(dw)}, czyli później niż dziś: ujmuje "
+                       f"zmiany stosowane dopiero od tej daty, jej brzmienie jeszcze NIE obowiązuje. Brzmienie "
+                       f"obowiązujące dziś: tekst {dzis_obow}" + ("" if akt else " (akt bazowy)") + ".")
+        elif akt and akt > celex:
+            if blokuj:
+                sys.exit(f"BŁĄD: istnieje nowsza wersja skonsolidowana: {akt}. "
                          "Tryb strict blokuje starszą wersję (jej treść i stan na dzień).")
-            out.append(f"UWAGA: istnieje NOWSZA wersja skonsolidowana: {kons[0]} — używaj jej.")
-    elif kons:
+            out.append(f"UWAGA: istnieje NOWSZA wersja skonsolidowana: {akt} — używaj jej.")
+    elif akt:
         if blokuj:
-            sys.exit(f"BŁĄD: akt ma wersje skonsolidowane — aktualny stan prawny to {kons[0]}. "
-                     f"Tryb strict blokuje treść aktu bazowego; do analizy: tekst {kons[0]} "
+            sys.exit(f"BŁĄD: akt ma wersje skonsolidowane — aktualny stan prawny to {akt}. "
+                     f"Tryb strict blokuje treść aktu bazowego; do analizy: tekst {akt} "
                      f"(wersja skonsolidowana jest dokumentacyjna — do urzędowego cytatu wskaż {CYTAT_URZEDOWY}; "
                      "bez --strict tekst aktu bazowego jest dostępny).")
-        out.append(f"UWAGA: akt ma wersje skonsolidowane — do analizy aktualnego stanu użyj najnowszej: "
-                   f"{kons[0]} (pełna lista: skonsolidowany {celex}).")
+        out.append(f"UWAGA: akt ma wersje skonsolidowane — do analizy aktualnego stanu użyj najnowszej "
+                   f"obowiązującej: {akt} (pełna lista: skonsolidowany {celex}).")
+    elif kons:
+        out.append(f"UWAGA: akt ma tylko wersje skonsolidowane PRZYSZŁE (stan na dzień późniejszy niż dziś) — "
+                   "dziś obowiązuje brzmienie aktu bazowego (z ewentualnymi sprostowaniami).")
+    przyszle = [p for p in _przyszle(kons) if p != celex and (not dw or p > celex)]
+    if przyszle:
+        out.append("UWAGA: jest wersja skonsolidowana PRZYSZŁA: "
+                   + ", ".join(f"{p} (stan na {_data_iso(_data_wersji(p))})" for p in przyszle)
+                   + " — ujmuje zmiany stosowane dopiero od tej daty; nie cytuj jej jako brzmienia obowiązującego dziś.")
     return out
 
 
@@ -394,12 +562,20 @@ SELECT DISTINCT ?celex ?date ?title ?inf WHERE {{
 }} ORDER BY DESC(?date) LIMIT {a.limit}"""
     rows = _sparql(q)
     if not rows:
-        # zero trafień = komunikat + kod wyjścia ≠ 0 TAKŻE z --json: puste „[]" wyglądałoby jak
+        # zero trafień = komunikat + kod wyjścia 1 TAKŻE z --json: puste „[]" wyglądałoby jak
         # „sprawdzone, nic nie ma", a szukanie po tytule z odmienioną frazą niczego nie dowodzi
-        sys.exit(f"Brak wyników dla {a.fraza!r} (język {lang}). Szukanie idzie po TYTULE i dopasowuje "
-                 "DOSŁOWNIE, a tytuły są odmienione ('ochrony danych osobowych', nie 'dane osobowe') — "
-                 "podaj RDZEŃ albo formę z tytułu ('osobow', 'danych osobowych'). Dalej nic? Spróbuj "
-                 "--jezyk eng albo bez --typ/--rok. To NIE dowód, że aktu nie ma.")
+        # podpowiedź zależna od języka: dotąd zawsze polskie przykłady odmiany i „spróbuj --jezyk eng",
+        # także dla kogoś, kto szukał już po angielsku (sprawdzone 2026-11-13: szukaj "dane osobowe" --typ REG
+        # → 0, "danych osobowych" --typ REG --rok 2016 → 32016R0679)
+        if lang == "POL":
+            rada = ("a tytuły są odmienione ('ochrony danych osobowych', nie 'dane osobowe') — podaj RDZEŃ albo "
+                    "formę z tytułu ('osobow', 'danych osobowych'). Dalej nic? Spróbuj --jezyk eng albo bez "
+                    "--typ/--rok/--obowiazujace.")
+        else:
+            rada = ("podaj RDZEŃ albo formę z tytułu (np. 'personal data' zamiast 'personal datas'). Dalej nic? "
+                    "Spróbuj --jezyk pol albo bez --typ/--rok/--obowiazujace.")
+        raise BrakWynikow(f"Brak wyników dla {a.fraza!r} (język {lang}). Szukanie idzie po TYTULE i dopasowuje "
+                          f"DOSŁOWNIE, {rada} To NIE dowód, że aktu nie ma.")
     if a.json:
         print(json.dumps(rows, ensure_ascii=False, indent=2)); return
     print(f"Wyniki (pokazuję {len(rows)}, najnowsze pierwsze):\n")
@@ -412,7 +588,7 @@ SELECT DISTINCT ?celex ?date ?title ?inf WHERE {{
 
 
 _META_POLA = ("type", "date", "inf", "eli", "eiv", "eov", "trans", "deadline", "kons_data", "baza", "sklad",
-              "title")
+              "title", "pub", "pub_wyd", "oj")
 
 
 def _meta_wiersze(celex, lang):
@@ -427,9 +603,14 @@ def _meta_wiersze(celex, lang):
     obok dat CZĘŚCIOWEGO upływu ważności (32009R0470: 2022-01-27 = art. 30).
     Wersja skonsolidowana (sektor 0): cdm:act_consolidated_date = „stan na",
     cdm:act_consolidated_based_on_resource_legal = akt bazowy,
-    cdm:act_consolidated_consolidates_resource_legal = akty ujęte w konsolidacji."""
+    cdm:act_consolidated_consolidates_resource_legal = akty ujęte w konsolidacji.
+    Publikacja w Dz.U. UE (dotąd `meta` podawał tylko datę aktu — RODO 2016-04-27 — a nie datę
+    ogłoszenia 2016-05-04, od której liczy się vacatio legis): cdm:official-journal-act_date_publication
+    (Dz.U. „akt po akcie" od X 2023: 32024R1689 → 2024-07-12) albo data wydania Dz.U., w którym akt
+    ogłoszono (cdm:resource_legal_published_in_official-journal → publication_general_date_publication);
+    sygnatura z cdm:work_id_document „oj:JOL_2016_119_R_0001" / „oj:L_202401689"."""
     return _sparql(f"""PREFIX cdm: <{CDM}>
-SELECT ?type ?date ?inf ?eli ?eiv ?eov ?trans ?deadline ?kons_data ?baza ?sklad ?title WHERE {{
+SELECT ?type ?date ?inf ?eli ?eiv ?eov ?trans ?deadline ?kons_data ?baza ?sklad ?title ?pub ?pub_wyd ?oj WHERE {{
   ?w cdm:resource_legal_id_celex "{celex}"^^<{XSD_STR}> .
   OPTIONAL {{ ?w cdm:work_has_resource-type ?type }}
   OPTIONAL {{ ?w cdm:work_date_document ?date }}
@@ -442,6 +623,10 @@ SELECT ?type ?date ?inf ?eli ?eiv ?eov ?trans ?deadline ?kons_data ?baza ?sklad 
   OPTIONAL {{ ?w cdm:act_consolidated_date ?kons_data }}
   OPTIONAL {{ ?w cdm:act_consolidated_based_on_resource_legal ?b . ?b cdm:resource_legal_id_celex ?baza }}
   OPTIONAL {{ ?w cdm:act_consolidated_consolidates_resource_legal ?s . ?s cdm:resource_legal_id_celex ?sklad }}
+  OPTIONAL {{ ?w cdm:official-journal-act_date_publication ?pub }}
+  OPTIONAL {{ ?w cdm:resource_legal_published_in_official-journal ?ojw .
+              ?ojw cdm:publication_general_date_publication ?pub_wyd }}
+  OPTIONAL {{ ?w cdm:work_id_document ?oj . FILTER(STRSTARTS(STR(?oj), "oj:")) }}
   OPTIONAL {{ ?exp cdm:expression_belongs_to_work ?w .
               ?exp cdm:expression_uses_language <{LANG_AUTH}{lang}> .
               ?exp cdm:expression_title ?title }}
@@ -580,6 +765,18 @@ def _status(zb):
     return "OBOWIĄZUJE" if inf in ("1", "true") else ("NIE OBOWIĄZUJE" if inf in ("0", "false") else "—")
 
 
+# „1001-01-01" w datach CELLAR to ZASTĘPNIK daty nieokreślonej, nie rok 1001. Dlaczego (weryfikacja
+# 2026-11-13): 32024R2987 ma eiv 1001-01-01 z adnotacją „częściowe stosowanie, patrz art. 5" obok
+# 2024-12-24 — `meta` wypisywał 1001-01-01 jako datę i stawiał ją jako najwcześniejszą („z reguły
+# wejście w życie"). Art. 5 tego rozporządzenia: art. 1 pkt 4 i 9 nie mają zastosowania do dnia wejścia
+# w życie regulacyjnych standardów technicznych — data w akcie nieokreślona.
+DATA_NIEOKRESLONA = "1001-01-01"
+
+
+def _pokaz(d):
+    return "data nieokreślona (CELLAR: 1001-01-01 — termin wynika z przepisu)" if d == DATA_NIEOKRESLONA else d
+
+
 def _drukuj_daty(zb, wc="  ", adnot=None, celex=""):
     """Daty aktu (bazowego) z uczciwymi etykietami: jedna data = wejście w życie; kilka dat =
     wejście w życie + daty stosowania (rodzaj każdej — z adnotacji CELLAR, gdy są); dyrektywa =
@@ -592,17 +789,19 @@ def _drukuj_daty(zb, wc="  ", adnot=None, celex=""):
         for d in daty:
             o = _opis_z_adnotacji(adnot, pole, d)
             if o:
-                print(f"{wc2}{d}: {o}")
+                print(f"{wc2}{_pokaz(d)}: {o}")
 
     if zb["date"]:
-        print(f"{wc}Data aktu: {zb['date'][0]}")
-    eiv = zb["eiv"]
+        print(f"{wc}Data aktu: {zb['date'][0]}  (data dokumentu — przyjęcie/podpisanie, NIE publikacja)")
+    if zb.get("type") and not any(t.endswith("CONS_TEXT") for t in zb["type"]):
+        print(f"{wc}Publikacja w Dz.U. UE: {_publikacja(zb)}")
+    eiv = sorted(zb["eiv"], key=lambda d: (d == DATA_NIEOKRESLONA, d))  # zastępnik na koniec
     if len(eiv) == 1:
         o = _opis_z_adnotacji(adnot, "eiv", eiv[0])
         o = re.sub(r"^wejście w życie(?: \((.*)\))?$", lambda m: m.group(1) or "", o)
-        print(f"{wc}Wejście w życie: {eiv[0]}" + (f"  ({o})" if o else ""))
+        print(f"{wc}Wejście w życie: {_pokaz(eiv[0])}" + (f"  ({o})" if o else ""))
     elif eiv:
-        print(f"{wc}Wejście w życie / stosowanie: {', '.join(eiv)}")
+        print(f"{wc}Wejście w życie / stosowanie: {', '.join(map(_pokaz, eiv))}")
         opisy("eiv", eiv)
         if not all((adnot or {}).get(("eiv", d), {}).get("typ") for d in eiv):
             print(f"{wc}  (kilka dat — CELLAR nie opisuje, która to wejście w życie, a która rozpoczęcie "
@@ -611,7 +810,7 @@ def _drukuj_daty(zb, wc="  ", adnot=None, celex=""):
             print(f"{wc}  (rodzaj dat wg adnotacji CELLAR — zakres każdej sprawdź w przepisach końcowych aktu)")
     dl = zb.get("deadline") or []
     if zb["trans"]:
-        print(f"{wc}Termin transpozycji: {', '.join(zb['trans'])}"
+        print(f"{wc}Termin transpozycji: {', '.join(map(_pokaz, zb['trans']))}"
               + ("   (kilka terminów — różne zakresy; sprawdź przepis o transpozycji)"
                  if len(zb["trans"]) > 1 else ""))
         opisy("trans", zb["trans"])
@@ -620,7 +819,7 @@ def _drukuj_daty(zb, wc="  ", adnot=None, celex=""):
     elif "DIR" in typy and dl:
         # starsze dyrektywy (32002L0012): termin transpozycji tylko jako ogólny „deadline" — EUR-Lex
         # pokazuje go jako „Deadline: 20/09/2003; Najpóźniej Patrz Art. 3.1", nie jako transpozycję
-        print(f"{wc}Termin transpozycji: CELLAR nie ma osobnego pola; podaje TERMIN (deadline): {', '.join(dl)}"
+        print(f"{wc}Termin transpozycji: CELLAR nie ma osobnego pola; podaje TERMIN (deadline): {', '.join(map(_pokaz, dl))}"
               " — potwierdź w przepisie wskazanym niżej, czy to termin transpozycji")
         opisy("deadline", dl)
         print(f"{wc}  (dyrektywa działa przez transpozycję — polską ustawę wdrażającą sprawdź "
@@ -629,7 +828,7 @@ def _drukuj_daty(zb, wc="  ", adnot=None, celex=""):
     elif "DIR" in typy:
         print(f"{wc}Termin transpozycji: brak w CELLAR — sprawdź przepis o transpozycji w tekście dyrektywy")
     if dl:
-        print(f"{wc}Inne terminy z aktu (deadline — przeglądy, sprawozdania, okresy przejściowe): {', '.join(dl)}")
+        print(f"{wc}Inne terminy z aktu (deadline — przeglądy, sprawozdania, okresy przejściowe): {', '.join(map(_pokaz, dl))}")
         opisy("deadline", dl)
     koniec, czesc = _koniec_obowiazywania(zb["eov"], adnot)
     if koniec and koniec != "9999-12-31":
@@ -645,6 +844,33 @@ def _drukuj_daty(zb, wc="  ", adnot=None, celex=""):
                                           + (f" odniesienia {celex} i" if celex else "") + " stronę aktu w EUR-Lex")
         print(f"{wc}Częściowy upływ ważności: {d} — {o}")
     print(f"{wc}Status:  {_status(zb)}")
+
+
+def _publikacja(zb):
+    """Opis publikacji w Dz.U. UE z metadanych: „Dz.U. L 119 z 4.5.2016 (data publikacji 2016-05-04)",
+    „Dz.U. L, 2024/1689, 12.7.2024 (…)" albo odesłanie do PDF, gdy CELLAR jej nie podaje.
+
+    Z sygnatury „oj:JOL_RRRR_NNN_R_…" bierzemy TYLKO serię i numer wydania — dalsza liczba nie zawsze
+    jest stroną. Weryfikacja 2026-11-13 z nagłówkami urzędowych PDF: 95/46/WE „R_0031_006" = L 281/31,
+    2002/58/WE „R_0037_01" = L 201/37, ale MiCA 32023R1114 „R_0002" = L 150/40, NIS2 32022L2555
+    „R_0002" = L 333/80 (numer kolejny aktu w wydaniu). Numer wydania i data zgodne w 9 z 9 aktów."""
+    data = (zb.get("pub") or zb.get("pub_wyd") or [""])[0]
+    oj = next((o for o in zb.get("oj") or [] if o.startswith("oj:")), "")
+    m_stary = re.match(r"^oj:JO([LC])_(\d{4})_(\d+)_", oj)
+    m_nowy = re.match(r"^oj:([LC])_(\d{4})(\d{5})$", oj)
+    dzien = ""
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", data):
+        r, mi, d = data.split("-")
+        dzien = f"{int(d)}.{int(mi)}.{r}"
+    if m_stary:
+        sygn = f"Dz.U. {m_stary.group(1)} {int(m_stary.group(3))}" + (f" z {dzien}" if dzien else "")
+    elif m_nowy:
+        sygn = f"Dz.U. {m_nowy.group(1)}, {m_nowy.group(2)}/{int(m_nowy.group(3))}" + (f", {dzien}" if dzien else "")
+    else:
+        sygn = ""
+    if sygn and data:
+        return f"{sygn} (data publikacji {data}" + ("; stronę podaje nagłówek PDF)" if m_stary else ")")
+    return sygn or data or "CELLAR jej nie podaje — sprawdź nagłówek urzędowego PDF (tekst <CELEX> --pdf plik.pdf)"
 
 
 def _ostrzezenie_zmiany(akt, zmiany, najnowsza):
@@ -696,7 +922,7 @@ def cmd_meta(a):
     except VerificationUnknown as e:
         adnot, adnot_uwaga = None, (f"UWAGA: nie udało się pobrać opisów dat z CELLAR ({e}) — daty bez "
                                     "rodzaju i zakresu (np. którego przepisu dotyczy częściowy upływ ważności).")
-    najnowsza = kons[0] if kons else None
+    najnowsza = _aktualna(kons)  # obowiązująca dziś, nie przyszła (02013R0575-20270101)
     if strict and zmiany and not kons_wersja:
         # Daty aktu bazowego po nowelizacji mogą być nieaktualne (AI Act art. 113 po 32026R1744),
         # a CELLAR nie aktualizuje ich w metadanych aktu bazowego — strict nie może ich przepuścić.
@@ -738,6 +964,9 @@ def cmd_meta(a):
         koniec, czesc = _koniec_obowiazywania((zb_baza if kons_wersja else zb)["eov"], adnot)
         out = {"celex": celex, "wersja_skonsolidowana": kons_wersja, "meta": rows,
                "zmieniajace": zmiany, "sprostowania": sprost, "wersje_skonsolidowane": kons,
+               # pierwsza z „wersje_skonsolidowane" bywa PRZYSZŁA — obowiązującą podajemy osobno
+               "aktualna_wersja_skonsolidowana": najnowsza,
+               "przyszle_wersje_skonsolidowane": None if kons is None else _przyszle(kons),
                "koniec_obowiazywania": {"akt": koniec, "czesciowy_uplyw": czesc},
                "opisy_dat": None if adnot is None else [
                    {"pole": k[0], "data": k[1], "typ": v["typ"], "komentarz": v["komentarz"],
@@ -775,23 +1004,64 @@ def cmd_meta(a):
 
 def cmd_skonsolidowany(a):
     celex = celex_norm(a.celex)
+    baza = _celex_bazowy(celex)
     try:
         kons = _konsolidacje(celex)
     except VerificationUnknown as e:
         _nie_zweryfikowano(f"wersji skonsolidowanych dla {celex}", e)
-    if a.json:
-        print(json.dumps(kons, ensure_ascii=False, indent=2)); return
+    akt, przyszle = _aktualna(kons), _przyszle(kons)
+    zmiany, zmiany_uwaga = [], None
+    if akt:
+        try:
+            zmiany = _zmiany_po_wersji(baza, akt)
+        except VerificationUnknown as e:
+            if getattr(a, "strict", False):
+                raise
+            zmiany = None
+            zmiany_uwaga = (f"UWAGA: nie udało się sprawdzić, czy wersja {akt} ujmuje wszystkie akty zmieniające "
+                            f"({e}) — sprawdź: odniesienia {baza}.")
     if not kons:
-        print(f"Nie znaleziono wersji skonsolidowanych dla {celex}. "
-              "Brak konsolidacji nie potwierdza braku zmian aktu. "
-              f"Przed cytowaniem sprawdź zmiany i sprostowania: odniesienia {celex}.")
+        # zero wersji = zweryfikowany brak (kod 1) TYLKO, gdy akt istnieje; nieistniejący CELEX to błąd (kod 2)
+        _wymagaj_aktu(baza)
+        brak = (f"Nie znaleziono wersji skonsolidowanych dla {celex}. "
+                "Brak konsolidacji nie potwierdza braku zmian aktu. "
+                f"Przed cytowaniem sprawdź zmiany i sprostowania: odniesienia {baza}.")
+    if a.json:
+        # obiekt, nie lista: pierwsza pozycja listy malejącej bywa wersją PRZYSZŁĄ (02013R0575-20270101)
+        print(json.dumps({"celex": celex, "dzis": _data_iso(_dzis()), "aktualna": akt, "przyszle": przyszle,
+                          "wersje": kons, "zmiany_nieujete": zmiany}, ensure_ascii=False, indent=2))
+        if not kons:
+            raise BrakWynikow(brak)
         return
-    print(f"WERSJE SKONSOLIDOWANE dla {celex} (najnowsza pierwsza; data w CELEX = stan na):")
-    for i, c in enumerate(kons):
-        print(f"  - {c}{'  ← AKTUALNA' if i == 0 else ''}")
+    if not kons:
+        raise BrakWynikow(brak)
+    print(f"WERSJE SKONSOLIDOWANE dla {celex} (najnowsza data pierwsza; data w CELEX = stan na):")
+    for c in kons:
+        znak = ""
+        if c == akt:
+            znak = f"  ← AKTUALNA (obowiązuje dziś, {_data_iso(_dzis())})"
+        elif c in przyszle:
+            znak = f"  ← PRZYSZŁA (stan na {_data_iso(_data_wersji(c))} — jeszcze NIE obowiązuje)"
+        print(f"  - {c}{znak}")
+    if not akt:
+        print(f"\nŻadna wersja skonsolidowana jeszcze nie obowiązuje — dziś obowiązuje brzmienie aktu bazowego "
+              f"{baza} (z ewentualnymi sprostowaniami: odniesienia {baza}).")
+    elif przyszle:
+        print(f"\nUWAGA: wersje PRZYSZŁE ujmują zmiany stosowane dopiero od swojej daty — do brzmienia "
+              f"obowiązującego dziś użyj {akt}.")
+    for w in _ostrzezenia_zmian_po_wersji(akt, zmiany or []) + ([zmiany_uwaga] if zmiany_uwaga else []):
+        print(w)
     print("\nUWAGA: wersja skonsolidowana ma charakter dokumentacyjny — do urzędowego cytatu "
           f"wskaż {CYTAT_URZEDOWY}.")
-    print(f"Dalej: python3 {sys.argv[0]} tekst {kons[0]} --jezyk pol --fragment \"art. N\"")
+    print(f"Dalej: python3 {sys.argv[0]} tekst {akt or baza} --jezyk pol --fragment \"art. N\"")
+
+
+def _wymagaj_aktu(celex):
+    """Kończy błędem (kod 2), gdy CELLAR nie zna aktu o tym CELEX — „zero wersji/relacji" dla
+    nieistniejącego numeru to nie zweryfikowany brak, tylko zły argument. Awaria → VerificationUnknown."""
+    if not _sparql(f"""PREFIX cdm: <{CDM}>
+SELECT ?w WHERE {{ ?w cdm:resource_legal_id_celex "{celex}"^^<{XSD_STR}> . }} LIMIT 1""", soft=True):
+        sys.exit(f"BŁĄD: nie znaleziono aktu o CELEX {celex} w CELLAR. Sprawdź numer (szukaj \"<fraza>\").")
 
 
 # Tekst: XHTML (akty od ok. 2014 r., wersje skonsolidowane) ALBO HTML (starsze akty, np. 95/46/WE,
@@ -1241,13 +1511,17 @@ SELECT DISTINCT ?c2 ?date ?kc WHERE {{
   OPTIONAL {{ ?k cdm:act_consolidated_consolidates_resource_legal ?x . ?k cdm:resource_legal_id_celex ?kc }}
 }} ORDER BY ?c2 LIMIT 500""", soft=True)
     out = {}
+    # tylko wersje skonsolidowane TEGO aktu: sprostowanie aktu zmieniającego trafia też do konsolidacji
+    # aktu zmienianego — 32024R2987R(02) figuruje w 02017R1131-20241224, a `meta 32024R2987` wskazywał
+    # ją jako „brzmienie poprawione" rozporządzenia 2024/2987 (weryfikacja 2026-11-13)
+    prefiks = "0" + baza[1:] + "-"
     for b in rows:
         c2 = _v(b, "c2")
         if not c2:
             continue
         s = out.setdefault(c2, {"celex": c2, "data": _v(b, "date"), "konsolidacje": []})
         kc = _v(b, "kc")
-        if re.search(r"-\d{8}$", kc) and kc not in s["konsolidacje"]:
+        if kc.startswith(prefiks) and re.search(r"-\d{8}$", kc) and kc not in s["konsolidacje"]:
             s["konsolidacje"].append(kc)
     for s in out.values():
         s["konsolidacje"].sort(reverse=True)
@@ -1296,12 +1570,13 @@ def _gdzie_sprostowane(sprost, kons=None):
 
     Nowsze wersje skonsolidowane są kumulatywne, ale w metadanych NIE powtarzają sprostowań już
     ujętych: R(01)–R(04) AI Act wymienia tylko 02024R1689-20240712 (wersja zastąpiona, CELLAR jej nie
-    serwuje), a nie 02024R1689-20260727. Wskazujemy więc najnowszą wersję (kons[0]), jeśli jest nie
-    starsza od wersji wymieniającej sprostowanie."""
+    serwuje), a nie 02024R1689-20260727. Wskazujemy więc najnowszą OBOWIĄZUJĄCĄ wersję (_aktualna — nie
+    przyszłą), jeśli jest nie starsza od wersji wymieniającej sprostowanie."""
     wymienia = sorted({k for s in sprost for k in s["konsolidacje"]}, reverse=True)
     if not wymienia:
         return None
-    return kons[0] if kons and kons[0] > wymienia[0] else wymienia[0]
+    akt = _aktualna(kons)
+    return akt if akt and akt > wymienia[0] else wymienia[0]
 
 
 def _ostrzezenia_sprostowan(celex, lang, sprost, fragment=None, kons=None):
@@ -1380,6 +1655,20 @@ def _kontrole_tresci(celex, lang, strict=False, fragment=None):
     out = _ostrzezenia_konsolidacja(celex, strict, kons=kons)
     if uwaga:
         out.append(uwaga)
+    if kons and celex == _aktualna(kons):
+        # obowiązująca wersja skonsolidowana a akty zmieniające ogłoszone po jej dacie (883/2004 → 2026/2359)
+        try:
+            zmiany = _zmiany_po_wersji(baza, celex)
+        except VerificationUnknown as e:
+            if strict:
+                raise
+            zmiany = []
+            out.append(f"UWAGA: nie udało się sprawdzić, czy wersja {celex} ujmuje wszystkie akty zmieniające "
+                       f"({e}) — sprawdź: skonsolidowany {baza}.")
+        # Tylko ostrzeżenie, także w --strict: CELLAR nie mówi, OD KIEDY zmiana się stosuje (VAT 2025/1539
+        # i MDR 2025/1920 — od 2028 r.; 883/2004 ← 2026/2359 — częściowo od 1.11.2026), a strict blokuje
+        # już akt bazowy, więc blokada wersji nie zostawiłaby żadnej drogi do tekstu obowiązującego dziś.
+        out.extend(_ostrzezenia_zmian_po_wersji(celex, zmiany))
     return out + _ostrzezenia_sprostowan(celex, lang, sprost, fragment, kons)
 
 
@@ -1389,10 +1678,22 @@ def cmd_tekst(a):
     lang3 = lang.lower()
     strict = getattr(a, "strict", False)
     if a.pdf:
+        # Nie nadpisuj istniejącego pliku (jak orzeczenia_ms.py): dotąd open(…, "wb") kasował bez słowa
+        # np. wcześniej pobrany PDF innego aktu pod tą samą nazwą. Sprawdzamy PRZED pobraniem, a zapis
+        # i tak idzie trybem wyłącznego tworzenia ("xb") — plik powstały w międzyczasie też nie zginie.
+        if os.path.lexists(a.pdf):
+            sys.exit(f"BŁĄD: plik {a.pdf} już istnieje — narzędzie go nie nadpisze. Podaj inną ścieżkę "
+                     "albo usuń ten plik.")
         ostrz = _kontrole_tresci(celex, lang, strict) if strict else None
         data, zrodlo, inne = _pobierz_pdf(celex, lang, lang3)
-        with open(a.pdf, "wb") as f:
-            f.write(data)
+        try:
+            with open(a.pdf, "xb") as f:
+                f.write(data)
+        except FileExistsError:
+            sys.exit(f"BŁĄD: plik {a.pdf} powstał w trakcie pobierania — narzędzie go nie nadpisze. "
+                     "Podaj inną ścieżkę.")
+        except OSError as e:
+            sys.exit(f"BŁĄD: nie udało się zapisać PDF do {a.pdf} ({e}).")
         print(f"Zapisano PDF ({len(data)} B): {a.pdf}\n(źródło: {zrodlo}, język {lang3})")
         if inne:
             print(f"UWAGA: PDF tego aktu ma kilka plików — zapisano pierwszy; pozostałe: {', '.join(inne)}")
@@ -1428,8 +1729,14 @@ def cmd_tekst(a):
     if a.fragment:
         spans = _fragmenty(txt, a.fragment)
         if not spans:
-            sys.exit(f"Nie znaleziono frazy {a.fragment!r} w tekście aktu ({len(txt)} znaków). "
-                     "Spróbuj inną frazą, w innym języku, albo bez --fragment.")
+            if uwagi_pdf is not None:
+                # tekst z PDF składany heurystycznie (łamy, dzielenie wyrazów, strony-skany) — brak frazy
+                # nie jest zweryfikowany, więc kod 2, nie 1
+                sys.exit(f"Nie znaleziono frazy {a.fragment!r} w tekście WYEKSTRAHOWANYM z PDF ({len(txt)} znaków) — "
+                         "ekstrakcja z PDF bywa niepełna (łamy, dzielenie wyrazów, strony bez warstwy tekstowej), "
+                         f"więc to NIE dowód braku. Sprawdź PDF: tekst {celex} --jezyk {lang3} --pdf plik.pdf.")
+            raise BrakWynikow(f"Nie znaleziono frazy {a.fragment!r} w tekście aktu ({len(txt)} znaków). "
+                              "Spróbuj inną frazą, w innym języku, albo bez --fragment.")
         poza = 0
         for i, (s, e) in enumerate(spans):
             if i:
@@ -1438,7 +1745,7 @@ def cmd_tekst(a):
             if gdzie:
                 poza += 1
                 print(f"[{gdzie}]\n")
-            print(_bez_granic(txt[s:e]).strip())
+            print(_RE_ZNACZNIK_NA_KONCU.sub("", _bez_granic(txt[s:e]).strip()))
         print(f"\n(fragmenty: {len(spans)}"
               + (f", w tym {poza} z załącznika / dokumentu dołączonego (oznaczone „[w …]”)" if poza else "")
               + " — pominięto resztę aktu (w tym podpisy i przypisy końcowe); pełny tekst: bez --fragment)")
@@ -1459,17 +1766,21 @@ def _wyjasnij_404_konsolidacji(celex, lang3):
     except VerificationUnknown as e:
         sys.exit(f"BŁĄD: CELLAR nie udostępnia tekstu wersji skonsolidowanej {celex} (404), a listy wersji "
                  f"nie udało się zweryfikować ({e}) — sprawdź: skonsolidowany {baza}.")
-    if celex in kons and kons[0] != celex:
+    akt = _aktualna(kons)
+    if celex in kons and akt and celex < akt:
         sys.exit(f"BŁĄD: CELLAR nie udostępnia już tekstu wersji skonsolidowanej {celex} (404). Numer jest "
                  "poprawny i figuruje na liście wersji, ale Urząd Publikacji nie serwuje treści tej "
-                 f"ZASTĄPIONEJ wersji (ani w EUR-Lex). Najnowsza wersja: {kons[0]} → "
-                 f"tekst {kons[0]} --fragment \"art. N\"; pełna lista: skonsolidowany {baza}; "
+                 f"ZASTĄPIONEJ wersji (ani w EUR-Lex). Wersja obowiązująca dziś: {akt} → "
+                 f"tekst {akt} --fragment \"art. N\"; pełna lista: skonsolidowany {baza}; "
                  f"stan pierwotny: tekst {baza}.")
-    if kons and kons[0] == celex:
-        sys.exit(f"BŁĄD: CELLAR nie udostępnia tekstu najnowszej wersji skonsolidowanej {celex} w języku "
-                 f"{lang3} (404) — spróbuj --jezyk eng albo --pdf; akt bazowy: tekst {baza}.")
+    if celex in kons:
+        jaka = "PRZYSZŁEJ (jeszcze nieobowiązującej) " if celex != akt else "obowiązującej "
+        inny = "pol" if lang3 == "eng" else "eng"  # nie radź „--jezyk eng" komuś, kto już go podał
+        sys.exit(f"BŁĄD: CELLAR nie udostępnia tekstu {jaka}wersji skonsolidowanej {celex} w języku "
+                 f"{lang3} (404) — spróbuj --jezyk {inny} albo --pdf; akt bazowy: tekst {baza} --jezyk {lang3}.")
     sys.exit(f"BŁĄD: CELLAR nie zna wersji skonsolidowanej {celex} (404) — dostępne wersje: "
-             f"skonsolidowany {baza}" + (f" (najnowsza: {kons[0]})" if kons else " (brak)") + ".")
+             f"skonsolidowany {baza}" + (f" (obowiązująca dziś: {akt})" if akt else
+                                         (" (tylko przyszłe)" if kons else " (brak)")) + ".")
 
 
 # kolejność sekcji w odniesieniach: najpierw to, co decyduje o mocy obowiązującej aktu
@@ -1525,12 +1836,17 @@ SELECT DISTINCT ?kier ?c2 WHERE {{
         print("UWAGA: CELLAR zwrócił limit 1000 relacji — lista może być niepełna (EUR-Lex: strona aktu).",
               file=sys.stderr)
     rows = relacje
-    if a.json:
-        print(json.dumps(rows, ensure_ascii=False, indent=2)); return
-    print(f"Odniesienia dla: CELEX {celex}\n")
     if not rows:
-        print("Brak odnotowanych relacji w CELLAR (albo zły CELEX — sprawdź: meta).")
+        _wymagaj_aktu(celex)  # nieistniejący CELEX → kod 2, nie „zweryfikowany brak"
+    if a.json:
+        print(json.dumps(rows, ensure_ascii=False, indent=2))
+        if not rows:
+            raise BrakWynikow(f"Brak odnotowanych relacji w CELLAR dla CELEX {celex} (akt istnieje).")
         return
+    if not rows:
+        raise BrakWynikow(f"Odniesienia dla: CELEX {celex} — brak odnotowanych relacji w CELLAR (akt istnieje; "
+                          "nowelizacji, sprostowań, uchyleń i podstawy prawnej CELLAR nie podaje).")
+    print(f"Odniesienia dla: CELEX {celex}\n")
     grupy = {}
     for b in rows:
         grupy.setdefault(_v(b, "kier"), []).append(_v(b, "c2"))
@@ -1567,7 +1883,7 @@ SELECT DISTINCT ?inf ?eov WHERE {{
         print(f"Akt był zmieniany → aktualny stan czytaj z wersji skonsolidowanej: skonsolidowany {celex}")
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(
         description="CELLAR/EUR-Lex (read-only, bez klucza). Źródło pierwotne prawa UE.")
     ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -1601,11 +1917,35 @@ def main():
         p.add_argument("--strict", action="store_true", default=argparse.SUPPRESS,
                        help="zakończ błędem, gdy nie udało się zweryfikować aktualności lub kompletności")
 
-    a = ap.parse_args()
+    a = ap.parse_args(argv)  # błąd argumentu: argparse sam kończy kodem 2, --version kodem 0
+    kod = _uruchom(a)
+    if kod:
+        sys.exit(kod)
+
+
+def _uruchom(a):
+    """Wykonuje komendę i zwraca kod wyjścia: 0 = jest wynik, 1 = zweryfikowany brak wyników
+    (BrakWynikow), 2 = wszystko inne. Komunikat idzie na stderr. Nieprzewidziany wyjątek nie może
+    dać kodu 1 — to nie dowód, że czegoś nie ma."""
     try:
         a.func(a)
+        return 0
+    except BrakWynikow as e:
+        print(e.code, file=sys.stderr)
+        return 1
     except VerificationUnknown as e:
-        _nie_zweryfikowano("danych w EUR-Lex", e)
+        print(f"BŁĄD: nie udało się zweryfikować danych w EUR-Lex ({e}). Spróbuj ponownie za chwilę.",
+              file=sys.stderr)
+        return 2
+    except SystemExit as e:
+        if e.code is None or isinstance(e.code, int):
+            raise  # kod liczbowy (np. z argparse) zostaje bez zmian
+        print(e.code, file=sys.stderr)
+        return 2
+    except Exception as e:  # noqa: BLE001
+        print(f"BŁĄD: nieoczekiwany błąd helpera ({type(e).__name__}: {e}) — wynik NIEUSTALONY, "
+              "to nie jest brak wyników. Spróbuj ponownie; jeśli się powtarza, zgłoś błąd.", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

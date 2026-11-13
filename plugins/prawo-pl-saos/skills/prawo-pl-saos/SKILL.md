@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-saos
-version: 2.3.0
+version: 2.4.0
 description: >-
   Odpytuje PUBLICZNE API SAOS (saos.org.pl) — bazę polskiego ORZECZNICTWA: wyroki, postanowienia
   i uchwały Sądu Najwyższego (SN), Trybunału Konstytucyjnego (TK), sądów powszechnych (SA/SO/SR)
@@ -59,7 +59,7 @@ SAOS="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-saos/scripts/saos.py"
 #    sprawdzana w kodzie przed zapisem i przed każdym uruchomieniem; niezgodna = helper nie startuje.
 [ -f "$SAOS" ] || SAOS=$(python3 - <<'EOF'
 import hashlib, os, sys, urllib.request
-WERSJA, SHA256 = "2.3.0", "93f527e490f6ad289bd9ada9622b1de5e02e543d8f13910438b894d6daf1a532"
+WERSJA, SHA256 = "2.4.0", "6893e7a6ce62f5d750a7bb3f83369e95d556f6db130b72a949260b3c7da1469e"
 URL = f"https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/v{WERSJA}/plugins/prawo-pl-saos/skills/prawo-pl-saos/scripts/saos.py"
 p = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"prawo-pl-saos-{WERSJA}", "saos.py")
 try:
@@ -89,6 +89,13 @@ Nie szukaj helpera przez `find` po katalogach użytkownika ani systemu i nie pob
   `orzeczenie <id>`), `--sedzia "Górski"`, `--haslo "nienależne świadczenie"`,
   `--typ wyrok|postanowienie|uchwala|zarzadzenie|uzasadnienie`, `--od 2020-01-01`, `--do 2024-12-31`
   (także `RRRR` / `RRRR-MM`), `--limit N` (1–100), `--strona N` (od 0).
+  **`--haslo` to DOKŁADNE hasło ze słownika SAOS i działa TYLKO dla sądów powszechnych** — orzeczenia
+  SN, TK i KIO nie mają w SAOS żadnych haseł (sprawdzone 2026-11-13), więc `--haslo … --sad SN` kończy się
+  błędem (kod 2) z podpowiedzią zapytania frazą. Inna odmiana to inne hasło („przestępstwo przeciwko
+  zdrowiu” — 1882 trafienia, „przestępstwa przeciwko zdrowiu” — 256): silnik wymienia warianty ze słownika,
+  a przy haśle spoza słownika mówi to wprost (kod 2) zamiast „brak trafień”.
+  Zero trafień dla sądów powszechnych (i bez `--sad`) podaje gotową komendę `orzeczenia_ms.py szukaj …`
+  do Portalu Orzeczeń MS.
 - **orzeczenie** — pełne orzeczenie po ID (z listy `szukaj`):
   `python3 scripts/saos.py orzeczenie 76341`
   Pokazuje metadane, **powołane przepisy** i **powołane orzeczenia** (z ID do dalszego skoku) oraz treść
@@ -98,9 +105,13 @@ Nie szukaj helpera przez `find` po katalogach użytkownika ani systemu i nie pob
   (KIO 1564/18 nie ma w niej ŻADNEGO przepisu Pzp, o które chodzi w sentencji) i bywa uszkodzona
   (`art. 4793647945`, `Nr 0`, `art. 2oraz` — silnik oznacza takie wpisy „wpis SAOS prawdopodobnie
   uszkodzony"); przepisy rozstrzygnięcia czytaj z sentencji.
-  **Typ „uzasadnienie”:** pole „Data” to data sporządzenia UZASADNIENIA, nie data wyroku (VI Ka 1622/25:
-  2026-06-08, a wyrok zapadł 20.05.2026; portal MS podaje tak samo) — silnik ostrzega, podaje datę
-  z nagłówka treści jako prawdopodobną datę wyroku (do potwierdzenia) i datę publikacji w źródle.
+  **Typ „uzasadnienie”:** pole „Data” bywa datą sporządzenia UZASADNIENIA (VI Ka 1622/25: 2026-06-08,
+  a wyrok zapadł 20.05.2026), a bywa datą WYROKU (VI Ka 468/21: 2021-10-22 = data wyroku, uzasadnienie
+  z 9.11.2021) — w próbie 2026-11-13 z 22 uzasadnień 12 miało datę uzasadnienia, 6 datę wyroku, 4 nie do
+  ustalenia. Silnik rozstrzyga to datą dokumentu z identyfikatora Portalu Orzeczeń MS (`source.judgmentUrl`)
+  i nagłówkiem treści (gdy oba dają tę samą datę, jak w I C 401/20, może to być data wyroku), podaje datę z nagłówka treści
+  jako prawdopodobną datę wyroku (do potwierdzenia) i datę publikacji w źródle. Na liście wyników
+  (bez `source`) uzasadnienie ma dopisek „data uzasadnienia albo wyroku” — nie licz od niej terminów.
   **Brak treści orzeczenia sądu powszechnego** (0 znaków) to brak w SAOS, nie u źródła — tak było
   m.in. z orzeczeniami publikowanymi od 24.09.2026 do początku października 2026; Portal Orzeczeń MS
   wydaje ich treść (sprawdzone 2026-11-13). Silnik podaje gotową komendę
@@ -114,11 +125,20 @@ Nie szukaj helpera przez `find` po katalogach użytkownika ani systemu i nie pob
   Przy każdym trafieniu pokazuje **sąd i wydział**. Ta sama sygnatura bywa w wielu sądach
   (`I ACa 100/13` — 4 RÓŻNE sprawy w SA Warszawa, Łódź, Lublin, Poznań): silnik ostrzega, że to
   różne sprawy, i nie wskazuje jednego „pełnego tekstu” — wybierz trafienie właściwego sądu.
+  Gdy SAOS nie ma sygnatury o kształcie SA/SO/SR (np. `XXVIII C 22637/22`), silnik podaje gotową komendę
+  `orzeczenia_ms.py sygnatura …` (skill **prawo-pl-orzeczenia-ms**) — zob. zasadę 4.
 - każda komenda przyjmuje `--json` oraz `--strict`; obie flagi działają przed komendą i po niej.
   Zero trafień / nierozpoznana odpowiedź API kończą się komunikatem i kodem wyjścia ≠ 0 — także z `--json`
   (nie dostaniesz pustego JSON-a, który wyglądałby jak „sprawdzone, nic nie ma”); przy `--sad SN|TK|KIO`
-  komunikat zawiera granicę zbioru do dnia i to, czy Twój zakres leży poza nią. Z `--json` i wynikami
-  ostrzeżenie o granicy idzie na stderr (stdout to czysty JSON).
+  komunikat zawiera granicę zbioru do dnia i to, czy Twój zakres leży poza nią. Z `--json` stdout to
+  nietknięty JSON z API, a ostrzeżenia trybu tekstowego idą na **stderr**: granica zbioru, data
+  z przyszłości, typ „uzasadnienie”, spłaszczone indeksy SN/TK/KIO, uszkodzone wpisy powołanych przepisów,
+  brak treści z komendą do portalu MS, sądy administracyjne, luźne `--przepis`, `--haslo`, ta sama
+  sygnatura w różnych sądach. Czytaj stderr także przy `--json`.
+  **Kody wyjścia:** 0 = jest wynik; 1 = zweryfikowany brak (SAOS odpowiedział zerem trafień albo frazy
+  `--fragment` nie ma w treści); 2 = wszystko inne — błąd sieci/HTTP, przerwa techniczna, nieoczekiwana
+  odpowiedź, zły argument, nieistniejące id, blokada `--strict`, hasło spoza słownika, `--fragment` przy
+  orzeczeniu bez treści. Kod 2 nigdy nie znaczy „nie ma orzeczeń”.
   **Co sprawdza `--strict`:** (1) zakres dat dla SN/TK/KIO nie może wychodzić poza koniec zbioru
   (porównanie do dnia; brak `--do` = blokada; przed blokadą silnik potwierdza granicę na żywo jednym
   zapytaniem o najnowsze orzeczenie — gdyby SAOS wznowił zasilanie, granica się przesunie), (2) odpowiedź
@@ -161,8 +181,13 @@ Typowy przepływ: `szukaj` (zawęź `--sad`/`--przepis`/`--haslo`) → wybierz I
    numeru z rocznika granicy mówi „może być późniejsze niż koniec zbioru", nie „nie ma". Zero trafień
    z nowszą datą NIE znaczy, że orzecznictwa nie ma. Nowsze bierz z wyszukiwarki SN (`sn.pl/pl/wyszukiwarka-orzeczen`),
    OTK (`ipo.trybunal.gov.pl`) albo UZP (`orzeczenia.uzp.gov.pl`) i oznacz jako źródło spoza SAOS.
-4. **Świeżość bywa opóźniona.** Najnowsze orzeczenia sądów powszechnych mogą jeszcze nie być w bazie — przy
-   sprawie na konkretną datę zaznacz „wg SAOS na dzień X — do potwierdzenia" i sprawdź portal sądu.
+4. **Sądy powszechne: SAOS nie ma wszystkiego.** Próba 2026-11-13: 40 orzeczeń z Portalu Orzeczeń MS
+   (publikacje 2021–2026) — w SAOS było 39, także wszystkie 10 opublikowanych w portalu dzień wcześniej
+   (opóźnienia importu w tej próbie nie widać); daty publikacji zgodne 39/39. Brakujące (XXVIII C 22637/22) pochodzi z **XXVIII Wydziału Cywilnego SO
+   w Warszawie, którego SAOS w ogóle nie zna** — nie ma go w słowniku sądów SAOS, a wyszukiwanie po nazwie
+   wydziału daje 0 trafień.
+   Przy zerze trafień albo braku sygnatury SA/SO/SR sprawdź portal MS (silnik podaje komendę) i zaznacz
+   „wg SAOS na dzień X — do potwierdzenia”.
 5. **Nie myl orzeczenia z przepisem.** Po znalezieniu orzeczenia, brzmienie powołanego przepisu i jego
    aktualność potwierdź w ELI (`prawo-pl-eli`) — orzeczenie mogło zapaść na starszym stanie prawnym.
 6. **Indeksy górne w numerach przepisów.** W tekstach **SN/TK/KIO SAOS spłaszcza indeksy górne**:
@@ -173,7 +198,8 @@ Typowy przepływ: `szukaj` (zawęź `--sad`/`--przepis`/`--haslo`) → wybierz I
 7. **`--przepis` jest luźne, a lista „Powołane przepisy" niepełna.** Filtr `referencedRegulation` to
    dopasowanie pełnotekstowe w polu powołanych przepisów (bez rozróżnienia aktu), a samo pole to automatyczna
    ekstrakcja SAOS z lukami — trafienia przez `--przepis` traktuj jako kandydatów, nie jako „wszystkie
-   orzeczenia do art. X". Uzupełnij wyszukiwanie frazą (`szukaj "art. 415 k.c."`) i `--haslo`.
+   orzeczenia do art. X". Uzupełnij wyszukiwanie frazą (`szukaj "art. 415 k.c."`) i — tylko dla sądów
+   powszechnych — `--haslo`.
 8. Pełna lista endpointów i parametrów: `references/api.md`.
 
 ## Czego ten skill NIE obejmuje

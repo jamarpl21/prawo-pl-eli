@@ -28,6 +28,33 @@ zbiorów > 10 000 rób wycinkami po `dataPublikacjiOd/Do` lub `dataZawarciaOd/Do
 blokuje zbiór > 10 000 jako niekompletny). `offset` jest zaokrąglany w dół do wielokrotności
 `limit` (offset 455, limit 50 → strona od 450) — silnik wysyła zawsze `strona × limit`.
 
+**Kolejność i stronicowanie (sprawdzone 2026-11-13).** `dataPublikacji` ma dokładność dnia;
+przy równym kluczu sortowania (data publikacji, kwota) API układa wiersze rosnąco po `idUmowy`,
+także bez `sortKey` (domyślny widok UI = `publicationDateDesc`). Na zbiorze zamrożonym filtrem
+`dataPublikacjiDo` stronicowanie jest stałe: `priceDesc` i `priceAsc` przy 12 574 umowach o
+wartości 1000 — 3 strony po 50 = 150 różnych wierszy, identycznych z 6 stronami po 25 i z
+powtórzonym odczytem. Bez takiego filtra zbiór rośnie w trakcie dnia (13.11.2026: 16 804 →
+17 776 umów opublikowanych tego dnia między dwoma odczytami odległymi o kilkadziesiąt minut) i nowe
+UUID wchodzą między stare: między tymi odczytami 16
+nowych umów weszło w pierwsze 150 pozycji `publicationDateDesc`, a 18 wierszy zmieniło stronę.
+
+## Interfejs WWW a API (porównanie 2026-11-13)
+
+Interfejs `rejestrumow.gov.pl` (SPA) czyta te same endpointy: lista = `POST
+/agreements/search?offset=0&limit=10` (bez `sortKey`), szczegóły = `GET /agreement/{id}`, plus
+5 słowników przy każdym wejściu. Licznik „Liczba znalezionych umów” = `totalMatchingElements`
+(1 564 802 i 1 565 760 w dwóch odczytach — tyle samo co `najnowsze`). Na 13 umowach (11
+województw, oba statusy, aneks, rozwiązanie, wygaśnięcie, „inne”, wykonawca z Niemiec i Irlandii,
+osoby fizyczne, konsorcjum, druga JSFP, wyłączenie jawności wartości, czas nieoznaczony, środki
+UE, 73 071 220 i 0,01) widok zgadzał się z API pole w pole. Różnice widoku: dopisuje „zł” do
+każdej kwoty (API nie ma pola waluty), nie pokazuje `czyKonsorcjum`, a zmiany nazywa „Podstawa
+aktualizacji informacji” (przyczyna / data / zwięzły opis). Interfejs też podlega limitowi:
+seria wejść kończy się komunikatem „Przekroczono limit liczby żądań do usługi”.
+
+**Kolejność stron umowy:** `stronyUmowy[0]` = JSFP z wiersza wyszukiwania (zamawiający) w 39 z 39
+odczytów 13 umów; przy 3+ stronach kolejność stron 2..n zmienia się między odczytami (3 z 3 takich
+umów; widok WWW numeruje je więc raz tak, raz inaczej). Silnik sortuje strony 2..n.
+
 ## Body wyszukiwania (sekcje → pola)
 
 Sekcje odpowiadają formularzowi UI; wszystkie pola opcjonalne, łączone spójnikiem I (AND).
@@ -47,7 +74,11 @@ REGON 000001301 / NIP 8960005408; te same liczby dla `nazwa`, `regon` i `nip`):
 | `menuGlowne.nazwa/regon/nip` | **dowolna strona** (pole „szukaj" z UI) | 472 = 455 + 17 |
 
 `nip`/`regon` porównywane są dosłownie (`896-000-54-08` → 0 trafień) — podawaj same cyfry;
-`nazwa` działa pełnotekstowo, bez rozróżniania wielkości liter.
+NIP/REGON z błędną sumą kontrolną → 0 trafień bez błędu (silnik podpowiada to w „Brak wyników”).
+`nazwa` działa pełnotekstowo, bez rozróżniania wielkości liter, ale **bez zwijania polskich
+znaków** i z wymogiem obecności każdego słowa (2026-11-13, `inneStronyUmowy.nazwa`:
+„COMPENSA TOWARZYSTWO UBEZPIECZEŃ” 1342, „…UBEZPIECZEN” 0, „compensa” 1342, „Compensa S.A.” 0,
+„Compensa TU” 0).
 
 | Sekcja | Pola |
 |---|---|
@@ -75,7 +106,14 @@ REGON 000001301 / NIP 8960005408; te same liczby dla `nazwa`, `regon` i `nip`):
   zwracało tu 500); identyfikator, który nie jest UUID → nadal **HTTP 500** „Nieoczekiwany
   błąd” — silnik waliduje UUID przed wysłaniem;
 - nieznane ścieżki API (`/api`, `/api-dp/v1/cokolwiek`) → **200 z HTML-em SPA** — nie
-  traktuj 200 jako sukcesu bez sprawdzenia Content-Type/JSON.
+  traktuj 200 jako sukcesu bez sprawdzenia Content-Type/JSON;
+- **nie-JSON także na poprawnej ścieżce:** 2026-11-13 po kilkudziesięciu zapytaniach w kilka
+  minut pięć kolejnych odczytów `/agreement/{uuid}` dało nie-JSON, a ten sam adres po przerwie —
+  JSON (serwis stoi za Imperva); treści blokady nie zachowano. Silnik mówi wtedy „odczekaj”,
+  pokazuje początek odpowiedzi i kończy kodem 2;
+- status bywa sprzeczny ze zmianami: 13.11.2026 status `Aktywna` miało 392 z 7 805 umów z
+  `TSU05` (rozwiązanie), 74 z 2 013 z `TSU06`, 170 z 2 299 z `TSU07`, 12 557 z 671 166 z `TSU10`
+  — silnik pisze wtedy „UWAGA: status Aktywna, choć…”.
 
 ## `sortKey` (pełna lista wartości)
 
@@ -83,7 +121,11 @@ REGON 000001301 / NIP 8960005408; te same liczby dla `nazwa`, `regon` i `nip`):
 (powiat), `unitCommuneAsc/Desc` (gmina), `unitCityAsc/Desc` (miejscowość),
 `modificationDateAsc/Desc`, `lastChangeDateAsc/Desc` (data przyczyny aktualizacji),
 `publicationDateAsc/Desc`, `executionDateAsc/Desc` (zawarcie), `periodAsc/Desc` (okres),
-`priceAsc/Desc` (wartość). Bez `sortKey` sortowanie jest niezdefiniowane (stabilne po id).
+`priceAsc/Desc` (wartość). Bez `sortKey` kolejność była 2026-11-13 taka sama jak przy
+`publicationDateDesc` (pierwsze wiersze identyczne, remis → `idUmowy` rosnąco) — dokumentacji tego
+zachowania nie ma, więc silnik w `najnowsze` podaje `sortKey` jawnie. `modificationDateDesc` w obrębie
+dnia NIE idzie wg `idUmowy` (być może ukryty znacznik czasu), ale obejmuje też umowy zmienione, a nie
+tylko nowe — nie badano, czy daje prawdziwie „ostatnio wpisane”.
 
 ## Słowniki (`/dictionary?name=…`)
 
@@ -105,6 +147,11 @@ REGON 000001301 / NIP 8960005408; te same liczby dla `nazwa`, `regon` i `nip`):
 waluty ani tego, czy kwota jest netto czy brutto (żadnego pola z tymi atrybutami w odpowiedzi).
 Silnik drukuje ją bez „zł”; nie zakładaj PLN ani brutto, a filtry `wartoscOd/Do` porównują tę
 samą liczbę.
+
+**Wartość po aneksie:** pole wartości jest jedno, bez wartości pierwotnej. 2026-11-13, aneksy
+`TSU02` z „wartość” w komentarzu (616 umów): Pałac w Ostoi — komentarz „Dotychczasowa wartość:
+5377,60 / Aktualna wartość: 4443,09”, rejestr 4443.09; PSSE w Radomiu — komentarz „zmianie uległa
+wartość umowy na kwotę 608 667,40 zł”, rejestr 534070. Silnik przy takim aneksie ostrzega.
 
 **Szczegóły (`/agreement/{id}`):** `idUmowy`, `podstawoweDane{statusUmowy numerUmowy
 brakNumeruUmowy dataZawarciaUmowy dataZakonczeniaUmowy}`, `okresObowiazywania{
@@ -150,7 +197,10 @@ pyta o tę stronę, pobiera realny total i kończy komunikatem „poza oknem API
 - Dane wpisują jednostki (kierownicy JSFP są ich administratorami) — jakość nierówna:
   skróty nazw, literówki, daty obchodzone aneksami („system uniemożliwił wprowadzenie
   daty wstecznej” w komentarzach zmian). Do identyfikacji podmiotów używaj NIP/REGON.
-- **Limit zapytań (sprawdzone na żywo 2026-10-05):** po ~10 szybkich zapytaniach (zwłaszcza
+- **Kody wyjścia silnika:** 0 = wynik, 1 = zweryfikowany brak wyników, 2 = wszystko inne
+  (sieć, HTTP, 429 po 60 s, nie-JSON, zły argument, nieistniejące idUmowy, nieprzewidziany błąd).
+- **Limit zapytań (sprawdzone na żywo 2026-10-05; 2026-11-13 429 pojawiało się już przy odstępie
+  4 s między zapytaniami po kilkudziesięciu wcześniejszych):** po ~10 szybkich zapytaniach (zwłaszcza
   równoległych) API odpowiada `HTTP 429` — bez nagłówka `Retry-After`; po kilku sekundach
   znów przyjmuje zapytania. Silnik ponawia 429 sam: czeka tyle, ile każe `Retry-After`, a bez
   nagłówka 2, 4, 8… s, łącznie najwyżej 60 s — potem kończy czytelnym błędem „HTTP 429: API

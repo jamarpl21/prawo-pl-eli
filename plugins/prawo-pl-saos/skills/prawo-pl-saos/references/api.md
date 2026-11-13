@@ -36,6 +36,7 @@ niezależne od SAOS (portal MS, CBOSA, wyszukiwarka SN). Limit na żądanie w he
 | `/dump/judgments` | zrzut masowy (zakres dat, paginacja) — do bulk, nie do pojedynczych zapytań |
 | `/dump/courts`, `/dump/commonCourts`, `/dump/scChambers` | słowniki sądów / izb SN |
 | `/dump/enrichments` | dane wzbogacające |
+| `https://www.saos.org.pl/keywords/COMMON/<początek hasła>` (poza `/api`) | słownik haseł tematycznych sądów powszechnych — podpowiadacz wyszukiwarki SAOS: `[{"id", "phrase"}]`, dopasowanie od POCZĄTKU hasła, bez rozróżniania wielkości liter (`…/zdrowiu` → `[]`, `…/przestępstwo przeciwko zdrowiu` → 1 hasło). Dla `SUPREME`, `CONSTITUTIONAL_TRIBUNAL`, `NATIONAL_APPEAL_CHAMBER`, `ADMINISTRATIVE` zawsze `[]`. Sprawdzone 2026-11-13 |
 
 ## Parametry `/search/judgments` (z `queryTemplate` żywego API, 2026-06)
 
@@ -47,6 +48,14 @@ Sąd: `courtType` ∈ `COMMON | SUPREME | CONSTITUTIONAL_TRIBUNAL | NATIONAL_APP
 powszechne: `ccCourtType` (`APPEAL|REGIONAL|DISTRICT`), `ccCourtId/Code/Name`, `ccDivisionId/Code/Name`,
 `ccIncludeDependentCourtJudgments`; SN: `scPersonnelType`, `scJudgmentForm`, `scChamberId/Name`, `scDivisionId/Name`.
 Rodzaj: `judgmentTypes` ∈ `DECISION | RESOLUTION | SENTENCE | REGULATION | REASONS`.
+
+**`keywords` (`--haslo`)** to DOKŁADNE hasło (bez rozróżniania wielkości liter), nie fraza: „przestępstwo przeciwko
+zdrowiu” → 1882, „przestępstwa przeciwko zdrowiu” → 256, „przestępstwo” → 583 (osobne hasła). Hasła mają TYLKO
+sądy powszechne: 0 ze 100 najnowszych orzeczeń SN/TK/KIO i 0 ze 100 najstarszych SN ma `keywords`, a
+`keywords=odszkodowanie|umowa o pracę|zamówienia publiczne` z `courtType` SN/TK/KIO daje 0 (dla COMMON:
+20 032 / 354 / 303). Słownik jest zgodny z danymi: każde ze 100 haseł z 300 orzeczeń sądów powszechnych jest
+w słowniku `/keywords/COMMON/…` (2026-11-13). `saos.py` przy zerze z `--haslo` sprawdza słownik: hasło spoza
+słownika albo `--haslo` dla SN/TK/KIO → kod 2 (zero wynika z hasła, nie z braku orzeczeń).
 Daty: `judgmentDateFrom`, `judgmentDateTo` (`yyyy-MM-dd`).
 Paginacja/sort: `pageSize` (1–100), `pageNumber` (od 0), `sortingField`
 (`DATABASE_ID | JUDGMENT_DATE | REFERENCING_JUDGMENTS_COUNT | …`), `sortingDirection` (`ASC|DESC`).
@@ -71,9 +80,24 @@ aktu + powołane artykuły, oraz `journalTitle/journalYear/journalNo/journalEntr
 `judgmentUrl`, `publicationDate`), `judgmentForm` (tylko SN, np. „wyrok SN"), `division`, `chambers[]`,
 `receiptDate`, `meansOfAppeal`, `judgmentResult`, `lowerCourtJudgments[]`.
 
-- **`judgmentDate` przy `judgmentType=REASONS`** to data uzasadnienia, nie wyroku (547117, VI Ka 1622/25:
-  `2026-06-08`, a treść zaczyna się „Warszawa, dnia 20 maja 2026 r." — data wyroku). `source.publicationDate`
-  (`2026-06-09`) to data publikacji w źródle. Sprawdzone 2026-10-05.
+- **`judgmentDate` przy `judgmentType=REASONS`** bywa datą uzasadnienia, a bywa datą wyroku. Data uzasadnienia:
+  547117, VI Ka 1622/25: `2026-06-08`, a treść zaczyna się „Warszawa, dnia 20 maja 2026 r." (data wyroku;
+  sprawdzone 2026-10-05). Data wyroku: 449645, VI Ka 468/21: `2021-10-22` = „Warszawa, dnia 22 października
+  2021 r.” w nagłówku, a portal MS datuje to uzasadnienie na 2021-11-09; 546528, II C 1470/25: `2026-04-15` —
+  tak samo jak wyrok tej sprawy (546527), portal MS: 2026-05-11. Pomiar 2026-11-13 (22 uzasadnienia porównane
+  z Portalem Orzeczeń MS, rozstrzygane nagłówkiem treści i wyrokiem tej sprawy w SAOS): 12 — data uzasadnienia
+  (wyrok sprawy ma wcześniejszą datę), 6 — data wyroku, 4 — nie do ustalenia (brak treści, nagłówka i wyroku
+  w SAOS). Z 6 dat wyroku 5 jest WCZEŚNIEJSZYCH niż data dokumentu w portalu MS, a 1 (I C 401/20, wyrok
+  i uzasadnienie w jednym dokumencie) jest jej równa i równa dacie z nagłówka. Rozstrzyga data w
+  identyfikatorze portalu MS z `source.judgmentUrl` (`…_Uz_2021-11-09_001` = data dokumentu w portalu)
+  i nagłówek treści.
+  Pozostałe typy w tej próbie zgodne z portalem: wyrok 6/6, postanowienie 2/2, „zarządzenie, uzasadnienie”
+  (`REGULATION`) 6/6; „wyrok z uzasadnieniem” (`SENTENCE`) 2/3 — w trzecim (I C 293/24) SAOS ma datę wyroku
+  z sentencji (2024-10-28), a lista portalu MS datę uzasadnienia (2024-11-12).
+- **`source.publicationDate`** sądów powszechnych = „Data publikacji” w Portalu Orzeczeń MS w 39/39 orzeczeń
+  próby 2026-11-13. KIO i TK mają `publicationDate` puste, SN — dzień po orzeczeniu (III KK 195/16: 2016-06-23).
+  Daty orzeczeń KIO zgodne z wyszukiwarką UZP w 8/8 porównanych (KIO 1564/18 i 7 wyroków z 26–27.02.2018;
+  KIO 1711/18, 730/18, 1432/18 i 258/18 wyszukiwarka UZP nie zwraca).
 - **`division.court.name`** (sądy powszechne) jest w `items[]` wyszukiwania — `caseNumber` nie jest unikalny
   między sądami (`I ACa 100/13` → 4 trafienia w 4 sądach apelacyjnych), więc listę trzeba opisywać sądem.
 
@@ -104,6 +128,13 @@ aktu + powołane artykuły, oraz `journalTitle/journalYear/journalNo/journalEntr
   `https://ipo.trybunal.gov.pl/ipo/`, KIO `https://orzeczenia.uzp.gov.pl/Home/Search`; sądy powszechne
   `apiorzeczenia.*.sa.gov.pl/ncourt-api/judgement/details?id=…` (działa).
 - Anonimizacja i treść sądów powszechnych są zgodne z feedem sądu (I C 374/25: różnice tylko w numeracji list).
+- **Pokrycie sądów powszechnych.** Próba 2026-11-13: 40 orzeczeń z Portalu Orzeczeń MS (po 10 z publikacji
+  12.11.2026, 12–27.05.2026, 15–22.11.2024 i 15–18.11.2021), każde szukane w SAOS po `caseNumber` i dopasowane
+  po identyfikatorze portalu w `source.judgmentUrl`: obecnych 39/40, w tym 10/10 opublikowanych w portalu dzień
+  wcześniej. Brak: XXVIII C 22637/22 (SO w Warszawie) — SAOS nie zna XXVIII Wydziału Cywilnego tego sądu
+  (`/dump/commonCourts` kończy listę wydziałów SO w Warszawie na XXVII; `ccDivisionName=XXVIII Wydział Cywilny`
+  → 0, `XXVII Wydział Cywilny Odwoławczy` → 1054). Luka jest więc wydziałowa; ile wydziałów brakuje w całym
+  słowniku — niezmierzone. `saos.py` przy zerze odsyła do `orzeczenia_ms.py` gotową komendą.
 - **Sądy powszechne bez treści.** Część orzeczeń ma w SAOS `textContent` puste (sama metryka). Próba
   2026-11-13 (200 z 578 orzeczeń z 1.09–10.10.2026): wszystkie 36 z `source.publicationDate` 24.09–9.10.2026
   bez treści (okres awarii Portalu Orzeczeń MS), od publikacji 12.10 wszystkie z treścią; w 36/36

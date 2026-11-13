@@ -37,6 +37,8 @@ Wszystko publiczne, bez klucza. Read-only.
   podpisaniu, 32006D0370) zaczyna się po `hr.oj-doc-sep` — w tym miejscu znak U+001E (granica +
   podstawa oznaczenia `[w dokumencie dołączonym do aktu: …]`).
 - **ELI URI**: `http://data.europa.eu/eli/reg/2016/679/oj` → przekierowanie na EUR-Lex.
+- **Strony eur-lex.europa.eu** odpowiadają automatom wyzwaniem AWS WAF (HTTP 202, pusta treść,
+  `x-amzn-waf-action: challenge`; sprawdzone 2026-11-13) — nie obchodź go; te same dane są w CELLAR.
 
 ## Ontologia CDM (prefiks `cdm: <http://publications.europa.eu/ontology/cdm#>`)
 
@@ -44,7 +46,8 @@ Najużyteczniejsze właściwości (zweryfikowane):
 
 - `cdm:resource_legal_id_celex` — numer CELEX (literal `xsd:string`); klucz wyszukiwania.
 - `cdm:work_has_resource-type` — typ aktu: URI `…/resource-type/REG|DIR|DEC|…`
-- `cdm:work_date_document` (data aktu), `cdm:resource_legal_date_signature`,
+- `cdm:work_date_document` (data aktu = data dokumentu: przyjęcie/podpisanie, NIE publikacja),
+  `cdm:resource_legal_date_signature`,
   `cdm:resource_legal_date_entry-into-force` — bywa KILKA wartości: wejście w życie ORAZ daty
   rozpoczęcia stosowania (RODO: 2016-05-24, 2018-05-25; AI Act: 5 dat). **CDM nie ma osobnej
   właściwości „data stosowania"** (sprawdzone na 32016R0679/32024R1689 przez
@@ -59,6 +62,17 @@ Najużyteczniejsze właściwości (zweryfikowane):
   schematach `…/authority/fd_330` (koniec ważności), `fd_335` (daty), `fd_361` (transpozycja). Typy
   dat eiv: `EV` wejście w życie, `MA` stosowanie. Po nowelizacji CELLAR NIE aktualizuje tych dat w
   akcie bazowym (32024R1689 dalej ma 2027-08-02, choć 32026R1744 zmienił art. 113).
+- **Data `1001-01-01`** w datach aktu to zastępnik daty NIEOKREŚLONEJ (32024R2987: eiv
+  1001-01-01 z adnotacją „częściowe stosowanie, patrz art. 5" — art. 5 wiąże stosowanie części
+  przepisów z wejściem w życie standardów technicznych). Nie traktuj jej jak daty.
+- **Publikacja w Dz.U. UE** (sprawdzone 2026-11-13 z nagłówkami PDF 9 aktów z lat 1995–2024):
+  `cdm:official-journal-act_date_publication` (Dz.U. „akt po akcie" od X 2023; 32024R1689 →
+  2024-07-12) albo `?w cdm:resource_legal_published_in_official-journal ?oj . ?oj
+  cdm:publication_general_date_publication ?d` (wydanie Dz.U.; 32016R0679 → 2016-05-04).
+  Sygnatura: `cdm:work_id_document` z prefiksem `oj:` — `oj:JOL_2016_119_R_0001` (seria L, wydanie
+  119), `oj:L_202401689` (Dz.U. L, 2024/1689). Liczba po `_R_` NIE zawsze jest stroną: 95/46/WE
+  `R_0031_006` = L 281/31, ale MiCA `oj:JOL_2023_150_R_0002` = L 150/40, NIS2
+  `oj:JOL_2022_333_R_0002` = L 333/80 — stronę bierz z nagłówka PDF.
 - `cdm:resource_legal_date_end-of-validity` — bywa KILKA wartości: 9999-12-31 = akt bez daty końca,
   a obok daty CZĘŚCIOWEGO upływu ważności (32009R0470: 2022-01-27 = art. 30, adnotacja
   `FIN/VAL/PART`; 32011L0060: 2011-06-13 bez wskazania przepisu). Pierwsza wartość z SPARQL to NIE
@@ -97,6 +111,15 @@ Najużyteczniejsze właściwości (zweryfikowane):
   (COM…), 6 = orzecznictwo TSUE (CJ = wyroki), 0 = **wersje skonsolidowane**.
 - wersja skonsolidowana: `0` + rok/litera/numer aktu bazowego + `-YYYYMMDD` (stan na dzień),
   np. `02016R0679-20160504`. Lista: SPARQL `FILTER(STRSTARTS(STR(?celex), "02016R0679-"))`.
+  **Wersje z PRZYSZŁĄ datą „stan na"** (zmiany stosowane od tej daty) są na liście razem
+  z obowiązującymi: CRR `02013R0575-20270101` (utworzona 2026-09-22; rozporządzenie 2026/1221
+  stosuje się od 1.1.2027) obok `02013R0575-20260626`, Wypłacalność II `02009L0138-20270130`.
+  Obowiązująca = najnowsza z datą ≤ dziś (`eurlex.py` liczy to sam). Skład wersji
+  (`act_consolidated_consolidates_resource_legal`) wymienia akt bazowy, POPRZEDNIĄ wersję i nowe
+  akty zmieniające; w starszych wersjach bywa niepełny (VAT `02006L0112-20150101` — akt
+  bazowy bez żadnego aktu zmieniającego), więc „brak w składzie" nie dowodzi braku konsolidacji. Akt zmieniający przyjęty lub
+  wchodzący w życie po dacie obowiązującej wersji i nieujęty w żadnej wersji = sygnał, że
+  konsolidacja nie nadąża (883/2004: `02004R0883-20190731` bez 2026/2359).
   CELLAR/EUR-Lex listują wszystkie wersje, ale treści wersji ZASTĄPIONYCH bywają wycofane
   (REST 404, np. `02024R1689-20240712`, `02019L1937-20191126` — zwykle pierwsza, tożsama z aktem
   bazowym); nowsze wersje pośrednie zwykle są serwowane.
@@ -106,7 +129,9 @@ Najużyteczniejsze właściwości (zweryfikowane):
   ?w . FILTER EXISTS { ?e cdm:expression_belongs_to_work ?x . ?e cdm:expression_uses_language
   <…/POL> }`; która konsolidacja je zawiera: `?k cdm:act_consolidated_consolidates_resource_legal ?x`
   (nowsze wersje nie powtarzają w metadanych sprostowań już ujętych — 02024R1689-20260727 nie
-  wymienia R(01)–R(04), które ma 02024R1689-20240712). Treść sprostowania ma nagłówki miejsc
+  wymienia R(01)–R(04), które ma 02024R1689-20240712). Sprostowanie AKTU ZMIENIAJĄCEGO figuruje też
+  w konsolidacji aktu zmienianego (32024R2987R(02) → 02017R1131-20241224) — filtruj po prefiksie
+  `0` + numer aktu, którego sprostowanie dotyczy. Treść sprostowania ma nagłówki miejsc
   „Strona 33, art. 4 ust. 1:" — `eurlex.py` wyciąga z nich poprawione artykuły.
 
 ## Języki (authority codes)

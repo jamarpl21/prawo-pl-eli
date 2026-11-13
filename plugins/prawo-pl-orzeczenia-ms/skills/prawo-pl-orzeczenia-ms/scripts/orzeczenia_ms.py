@@ -14,7 +14,7 @@ import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 from pathlib import Path
 
-__version__ = "2.3.0"
+__version__ = "2.4.0"
 SKILL_VERSION = __version__
 BASE = "https://orzeczenia.ms.gov.pl"
 USER_AGENT = "curl/8.7.1"  # sprawdzone 2026-09-20; inne UA uruchamiają F5/TSPD
@@ -40,6 +40,14 @@ class PortalError(Unknown):
     def __init__(self, code, reason, url):
         self.code, self.reason, self.url = code, reason, url
         super().__init__(f"Portal zwrócił stronę błędu HTTP {code} „{reason}” dla {url}.")
+
+
+class TransportError(Unknown):
+    """Błąd sieci bez odpowiedzi portalu: przekroczony czas, zerwane połączenie, urwana odpowiedź.
+
+    Tylko ten błąd jest przejściowy — `--wszystkie` ponawia po nim stronę raz. Odpowiedź F5/TSPD,
+    strona błędu portalu (PortalError) i nierozpoznana strona to zwykłe Unknown, bez ponawiania.
+    """
 
 
 def safe_url(url):
@@ -80,7 +88,7 @@ class Client:
         except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as e:
             # HTTPException (np. IncompleteRead przy urwanym połączeniu) nie jest OSError — bez tego
             # wyjątek uciekał i proces kończył się kodem 1, czyli „brak wyników”.
-            raise Unknown(f"Błąd dostępu do portalu (niekompletna lub przerwana odpowiedź): {e!r}") from e
+            raise TransportError(f"Błąd dostępu do portalu (niekompletna lub przerwana odpowiedź): {e!r}") from e
         if len(data) > 20_000_000:
             raise Unknown("Odpowiedź przekracza limit 20 MB.")
         if pdf:
@@ -519,8 +527,10 @@ def parser():
         sub.add_argument("--kierunek", choices=["ascending", "descending"], default="descending",
                          help="Kierunek sortowania; z --wszystkie: kolejność daty orzeczenia w wyniku")
         sub.add_argument("--wszystkie", action="store_true",
-                         help=f"Pełna lista: pobiera wszystkie strony, łączy po ID i sprawdza komplet "
-                              f"(najwyżej {MAX_ROUNDS} rundy, limit {MAX_TOTAL} trafień — więcej = błąd, zawęź zapytanie)")
+                         help=f"Pełna lista: pobiera wszystkie strony, łączy po ID i sprawdza komplet. Limit "
+                              f"{MAX_TOTAL} trafień (więcej = błąd, zawęź zapytanie) i {MAX_REQUESTS} zapytań; kolejne "
+                              f"rundy, dopóki starcza zapytań, stop po {MAX_STALL} rundach z rzędu bez nowej pozycji; "
+                              f"strona po błędzie sieci ponawiana raz (po {RETRY_DELAY} s). Brak kompletu = błąd")
     for command in ("metryka", "orzeczenie", "przepisy", "pdf"):
         sub = subs.add_parser(command, parents=[flags])
         sub.add_argument("id", type=doc_id)
@@ -534,10 +544,20 @@ def parser():
 
 PAGE_SIZE = 10
 # --wszystkie (decyzja właściciela repo, 2026-11-13): stałe w kodzie, bez flagi do ich podniesienia —
-# ochrona portalu przed masowym pobieraniem. Najwyżej 20 stron × 3 rundy = 60 zapytań w odstępach 0,6 s.
+# ochrona portalu przed masowym pobieraniem. Najwyżej 200 trafień i 60 zapytań (także ponowień)
+# na wywołanie, w odstępach 0,6 s, bez równoległości.
 MAX_TOTAL = 200
-MAX_ROUNDS = 3
-MAX_REQUESTS = MAX_ROUNDS * -(-MAX_TOTAL // PAGE_SIZE)
+MAX_REQUESTS = 60
+# Liczbę rund ogranicza budżet zapytań, nie stała: 20 stron = 3 rundy, 3 strony = do 20 rund. Ostatnia
+# runda może być niepełna (komplet sprawdzany po każdej stronie). Pomiar 2026-11-13: runda bez nowej
+# pozycji, po której następna dała komplet, się zdarza (Giżycko: 71, 71, 72), więc stop dopiero po
+# MAX_STALL rundach z rzędu bez nowej pozycji — gdy portal podaje liczbę trafień większą, niż oddaje,
+# helper traci MAX_STALL rund ponad te, które zebrały wszystko, co portal oddaje, a nie cały budżet.
+MAX_STALL = 3
+# Jedno ponowienie strony po błędzie sieci (TransportError), po RETRY_DELAY s, wliczane do budżetu.
+# Pomiar 2026-11-13: pięć przebiegów przerwał pojedynczy błąd zapytania (zapisane: 3 × przekroczone 40 s,
+# 1 × zerwane połączenie), choć większość stron była już pobrana.
+RETRY_DELAY = 5
 # Każda runda pyta portal tak samo (--sort data, kierunek z --kierunek). Przemienny kierunek w kolejnych
 # rundach (malejąco, rosnąco, malejąco) sprawdzono 2026-11-13 na apelacji warszawskiej z 10.06.2025
 # (28 trafień, jedna data): komplet 1 z 3 przebiegów, przy tym samym kierunku 2 z 3 — przewagi nie
@@ -545,11 +565,21 @@ MAX_REQUESTS = MAX_ROUNDS * -(-MAX_TOTAL // PAGE_SIZE)
 # kierunkiem nie mierzono.
 
 
+def plural(n, one, few, many):
+    """Odmiana liczebnika: plural(22, "zapytanie", "zapytania", "zapytań") → „22 zapytania”."""
+    if n == 1:
+        return f"1 {one}"
+    return f"{n} {few}" if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14) else f"{n} {many}"
+
+
 def hits(n):
     """„1 trafienie”, „72 trafienia”, „205 trafień” (odmiana liczebnika)."""
-    if n == 1:
-        return "1 trafienie"
-    return f"{n} trafienia" if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14) else f"{n} trafień"
+    return plural(n, "trafienie", "trafienia", "trafień")
+
+
+def retry_pause(seconds):
+    """Przerwa przed ponowieniem strony (osobna funkcja, by testy jej nie czekały)."""
+    time.sleep(seconds)
 
 
 def paging_note(total, sort):
@@ -579,11 +609,13 @@ def paging_note(total, sort):
 
 
 def fetch_all(args, client):
-    """--wszystkie: wszystkie strony zapytania, łączone po ID, w najwyżej MAX_ROUNDS rundach.
+    """--wszystkie: wszystkie strony zapytania, łączone po ID, w rundach ograniczonych budżetem zapytań.
 
     Wynik zwracamy tylko wtedy, gdy unikalnych ID jest dokładnie tyle, ile podaje portal; niepełna
     lista to UNKNOWN (kod 2), nigdy wynik. Zmiana liczby trafień w trakcie unieważnia zebrane pozycje
-    (usunięte orzeczenie mogłoby „dopełnić” licznik za brakujące) i zaczyna rundę od nowa.
+    (usunięte orzeczenie mogłoby „dopełnić” licznik za brakujące) i zaczyna rundę od nowa. Rundy trwają,
+    dopóki starcza MAX_REQUESTS zapytań, i kończą się po MAX_STALL rundach z rzędu bez nowej pozycji
+    (runda z restartem też się do nich liczy). Błąd sieci (TransportError) ponawia stronę raz.
     """
     if args.strona != 1:
         raise ValueError("--strona nie łączy się z --wszystkie: tryb pełnej listy sam pobiera wszystkie strony.")
@@ -593,21 +625,48 @@ def fetch_all(args, client):
                          f"--sort {args.sort} nie ma w tym trybie znaczenia. Pomiń --sort albo podaj --sort data.")
     seen, restarts = {}, []
     total = first_url = changed = None
-    requests = rounds = 0
-    while rounds < MAX_ROUNDS:
-        rounds += 1
-        number, changed = 1, None
-        while total is None or number <= -(-total // PAGE_SIZE):
-            if requests >= MAX_REQUESTS:  # bezpiecznik; przy poprawnej pętli nieosiągalny
-                raise Unknown(f"--wszystkie: osiągnięto limit {MAX_REQUESTS} zapytań bez kompletu listy.")
-            url = search_url(args, "data", args.kierunek, number)
-            text = client.get(url)
+    requests = retries = rounds = stall = 0
+
+    def progress(current=False):  # current: błąd w trakcie rundy, która się nie skończyła
+        done = (f"runda {rounds} " if current else f"po {'1 rundzie' if rounds == 1 else f'{rounds} rundach'} ")
+        done += (f"({plural(requests, 'zapytanie', 'zapytania', 'zapytań')}"
+                 + (f", w tym {plural(retries, 'ponowienie', 'ponowienia', 'ponowień')} po błędzie sieci" if retries else "")
+                + ")")
+        return done + (f" zebrano {len(seen)} z {total} unikalnych pozycji" if total is not None else "")
+
+    def get(url):
+        nonlocal requests, retries
+        requests += 1
+        try:
+            return client.get(url)
+        except TransportError as e:
+            if requests >= MAX_REQUESTS:
+                raise Unknown(f"--wszystkie: strona {number} nie pobrana ({e}); nie ponowiono — wyczerpany limit "
+                              f"{MAX_REQUESTS} zapytań. Stan: {progress(True)}. Niepełnej listy nie wypisano. "
+                              "Ponów później.") from e
+            retry_pause(RETRY_DELAY)  # przejściowy błąd sieci: jedna przerwa i jedno ponowienie
             requests += 1
+            retries += 1
+            try:
+                return client.get(url)
+            except TransportError as again:
+                raise Unknown(f"--wszystkie: strona {number} nie pobrana także po ponowieniu (przerwa "
+                              f"{RETRY_DELAY} s): {again}. Stan: {progress(True)}. Niepełnej listy nie wypisano. "
+                              "Ponów później.") from again
+
+    while requests < MAX_REQUESTS and stall < MAX_STALL:
+        rounds += 1
+        number, changed, before = 1, None, len(seen)
+        while total is None or number <= -(-total // PAGE_SIZE):
+            if requests >= MAX_REQUESTS:
+                break  # budżet wyczerpany w środku rundy; ostatnia runda bywa niepełna
+            url = search_url(args, "data", args.kierunek, number)
+            text = get(url)
             try:
                 result = parse_search(text, url, number)
             except (Empty, OutOfRange):
-                if requests == 1:
-                    raise  # pierwsze zapytanie: zwykłe „brak wyników” (kod 1) albo błąd zakresu
+                if first_url is None:
+                    raise  # pierwsza odczytana strona: zwykłe „brak wyników” (kod 1) albo błąd zakresu
                 # Zero trafień albo strona za końcem w trakcie = lista się skurczyła; nigdy kod 1.
                 changed = f"strona {number} pusta lub poza zakresem" + (f" (liczba_wynikow była {total})" if total else "")
                 break
@@ -628,34 +687,42 @@ def fetch_all(args, client):
                 changed = f"liczba_wynikow {total}, a zebrano {len(seen)} różnych ID"
                 break
             if len(seen) == total:
-                return complete_list(args, seen, first_url, total, rounds, requests, restarts)
+                return complete_list(args, seen, first_url, total, rounds, requests, retries, restarts)
             number += 1
         if changed:
             restarts.append(changed)
             seen, total = {}, None
+            stall += 1  # restart odrzuca zebrane pozycje — to nie postęp
+        elif len(seen) > before:
+            stall = 0
+        else:
+            stall += 1
     if changed:
         raise Unknown(f"--wszystkie: lista portalu zmieniała się w trakcie pobierania ({'; '.join(restarts)}) — "
-                      f"po {MAX_ROUNDS} rundach ({requests} zapytań) brak spójnego kompletu. Niepełnej listy nie "
-                      "wypisano. Ponów za kilka minut.")
-    raise Unknown(f"--wszystkie: po {MAX_ROUNDS} rundach ({requests} zapytań) zebrano {len(seen)} z {total} unikalnych "
-                  "pozycji — portal przestawia pozycje o tej samej dacie między stronami i nie oddał kompletu"
-                  + (f" (wcześniej zmieniła się liczba trafień: {'; '.join(restarts)})" if restarts else "")
+                      f"{progress()} brak spójnego kompletu. Niepełnej listy nie wypisano. Ponów za kilka minut.")
+    reason = (f"wyczerpany limit {MAX_REQUESTS} zapytań" if requests >= MAX_REQUESTS
+              else f"{MAX_STALL} rundy z rzędu bez nowej pozycji")
+    raise Unknown(f"--wszystkie: {progress()} — portal przestawia pozycje o tej samej dacie między stronami "
+                  f"i nie oddał kompletu ({reason})"
+                  + (f"; wcześniej zmieniła się liczba trafień: {'; '.join(restarts)}" if restarts else "")
                   + ". Niepełnej listy nie wypisano. Zawęź zapytanie (--sad, --wydzial, krótszy zakres --od/--do) "
                   "albo ponów później.")
 
 
-def complete_list(args, seen, url, total, rounds, requests, restarts):
+def complete_list(args, seen, url, total, rounds, requests, retries, restarts):
     descending = args.kierunek == "descending"
     items = sorted(seen.values(), key=lambda i: (i["data_orzeczenia"], i["id"]), reverse=descending)
     notes = list_notes(items, "na liście")
     notes.append(f"Pełna lista (--wszystkie): {total} z {total} pozycji, bez powtórzeń (łączone po `id`); "
-                 f"rundy: {rounds}, zapytania: {requests}. Kolejność ustalona lokalnie — data orzeczenia "
+                 f"rundy: {rounds}, zapytania: {requests}"
+                 + (f" (w tym ponowienia po błędzie sieci: {retries})" if retries else "")
+                 + f". Kolejność ustalona lokalnie — data orzeczenia "
                  f"{'malejąco' if descending else 'rosnąco'}, potem ID — bo kolejność portalu nie jest powtarzalna.")
     if restarts:
         notes.append("Liczba trafień zmieniła się w trakcie pobierania (" + "; ".join(restarts)
                      + "); zebrane wcześniej pozycje odrzucono i pobrano listę od nowa.")
     return dict(zrodlo=url, liczba_wynikow=total, kompletna=True, rundy=rounds, zapytania=requests,
-                wyniki=items, uwagi=notes)
+                ponowienia=retries, wyniki=items, uwagi=notes)
 
 
 def run(args, client):
