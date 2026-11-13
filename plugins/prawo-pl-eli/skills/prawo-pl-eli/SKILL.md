@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-eli
-version: 2.4.0
+version: 2.5.0
 description: >-
   Odpytuje OFICJALNE API ELI Sejmu (api.sejm.gov.pl/eli) — źródło pierwotne prawa polskiego
   (Dziennik Ustaw, Monitor Polski): wyszukiwanie aktów, TEKST JEDNOLITY, pojedyncze artykuły,
@@ -62,7 +62,7 @@ ELI="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-eli/scripts/eli.py"
 #    sprawdzana w kodzie przed zapisem i przed każdym uruchomieniem; niezgodna = helper nie startuje.
 [ -f "$ELI" ] || ELI=$(python3 - <<'EOF'
 import hashlib, os, sys, urllib.request
-WERSJA, SHA256 = "2.4.0", "b25581d395f5db53993a0f933db1c24d9d28c34228bce68745ebde47454054df"
+WERSJA, SHA256 = "2.5.0", "4fecbc6e13db6d4056669954d3dc32dcef2d56c731a7c3975a14a2bbbe591710"
 URL = f"https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/v{WERSJA}/plugins/prawo-pl-eli/skills/prawo-pl-eli/scripts/eli.py"
 p = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"prawo-pl-eli-{WERSJA}", "eli.py")
 try:

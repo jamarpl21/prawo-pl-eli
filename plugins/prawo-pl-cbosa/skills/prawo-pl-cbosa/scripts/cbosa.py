@@ -23,6 +23,12 @@ Globalnie: --json  (zrzut sparsowanych danych jako JSON zamiast podsumowania; dz
                       TLS niezweryfikowany, nierozpoznana strona, orzeczenie NIEPRAWOMOCNE albo
                       bez oznaczenia prawomocności na stronie CBOSA)
 
+Kody wyjścia: 0 = jest wynik; 1 = ZWERYFIKOWANY brak (zero trafień `szukaj` / `sygnatura` na rozpoznanej
+stronie wyników CBOSA albo frazy --fragment nie ma w pobranym uzasadnieniu); 2 = wszystko inne (sieć,
+awaria serwera, strona „Błąd przy szukaniu orzeczeń”, odrzucone zapytanie, zły argument, nieistniejący
+doc_id, zero dla numeru decyzji organu, --fragment bez uzasadnienia, blokada --strict, nieprzewidziany
+błąd). Przy kodzie innym niż 0 stdout jest pusty (także z --json), komunikat idzie na stderr.
+
 Anonimizacja: CBOSA zastępuje w treści numery i dni decyzji organów („decyzja z [...] marca 2025 r.
 nr [...]") — znak sprawy organu (np. DKN.5131.1.2025) NIE jest wyszukiwalny; wyrok w sprawie skargi
 na decyzję znajdziesz po rodzaju skarżonego organu (--organ), symbolu sprawy, sądzie i oknie dat.
@@ -34,7 +40,7 @@ wyników wyszukiwarki tego oznaczenia NIE ma, więc flaga jest dostępna tylko p
 import sys, os, json, re, time, argparse, ssl, socket, calendar, html as html_mod
 import urllib.request, urllib.parse, urllib.error, http.client, http.cookiejar
 
-__version__ = "2.4.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "2.5.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://orzeczenia.nsa.gov.pl"
 CONTENT_HOSTS = ("orzeczenia.nsa.gov.pl",)
 
@@ -48,6 +54,17 @@ class VerificationUnknown(RuntimeError):
     def __init__(self, *args, porada=None):
         super().__init__(*args)
         self.porada = porada
+
+
+class BrakWynikow(SystemExit):
+    """ZWERYFIKOWANY brak wyników → kod wyjścia 1: CBOSA zwróciła rozpoznaną stronę wyników z zerem
+    trafień („Nie znaleziono orzeczeń…”) albo frazy --fragment nie ma w pobranym uzasadnieniu.
+    Każde inne zakończenie z komunikatem (zwykłe sys.exit("tekst")) main() zamienia na kod 2.
+
+    Dlaczego osobna klasa: do wersji 2.4.0 włącznie każde sys.exit("tekst") dawało kod 1, więc awaria serwera
+    CBOSA, zły argument, nieistniejący doc_id, zero dla zanonimizowanego numeru decyzji organu i
+    blokada --strict wyglądały dla skryptu tak samo jak „nie ma takiego orzeczenia”. Mechanizm jak
+    w saos.py i uodo.py: 0 = wynik, 1 = zweryfikowany brak, 2 = wszystko inne."""
 
 
 def _wymus_https(url):
@@ -386,12 +403,13 @@ def _fetch(path, data=None):
                     time.sleep(odstep)
                     break
                 if e.code in (404, 410) and path.startswith("/doc/"):
-                    # CBOSA odpowiada 410 (Gone) dla nieistniejącego doc_id — zweryfikowany brak,
-                    # a nie awaria; "spróbuj ponownie" odsyłałoby użytkownika w nieskończoną pętlę
+                    # CBOSA odpowiada 410 (Gone) dla nieistniejącego doc_id — błąd identyfikatora,
+                    # a nie awaria; "spróbuj ponownie" odsyłałoby użytkownika w nieskończoną pętlę.
+                    # Kod 2 (jak nieistniejące id w saos.py): kod 1 jest tylko dla zera wyszukiwania
                     sys.exit(_z_uwaga_o_transporcie(
-                        f"Nie znaleziono orzeczenia o id {path[len('/doc/'):]!r} w CBOSA "
-                        f"(HTTP {e.code} — zweryfikowany brak). doc_id bierz z komendy "
-                        "szukaj albo sygnatura."))
+                        f"BŁĄD: nie ma orzeczenia o id {path[len('/doc/'):]!r} w CBOSA "
+                        f"(HTTP {e.code}) — zły albo nieaktualny identyfikator, nie awaria serwera. "
+                        "doc_id bierz z komendy szukaj albo sygnatura."))
                 if e.code >= 500:
                     raise _blad_transportu(url, f"HTTP {e.code}", SERWER) from e
                 raise VerificationUnknown(f"HTTP {e.code}: {url}") from e
@@ -607,9 +625,18 @@ def _orzeczenie(strona_html, doc_id):
     return d
 
 
+def _wyroki_nsa_w_sprawie_wsa(d):
+    """Powiązane wyroki NSA przy orzeczeniu WSA (tytuł strony „… - Wyrok WSA w …” / „Postanowienie WSA
+    …”; nie orzeczenia NSA ani NSA oz. sprzed 2004 r. z sygnaturą „SA/Sz …”) — lista pozycji."""
+    if not re.search(r"\bWSA\b", d.get("tytul") or ""):
+        return []
+    return [p for p in d.get("powiazane") or [] if re.search(r"\bWyrok NSA\b", p.get("opis", ""))]
+
+
 def _etykieta_prawomocnosci(d):
     if d.get("prawomocne") is True:
-        return "prawomocne (oznaczenie CBOSA „orzeczenie prawomocne”)"
+        return "prawomocne (oznaczenie CBOSA „orzeczenie prawomocne”)" + (
+            " — zob. UWAGA wyżej" if _wyroki_nsa_w_sprawie_wsa(d) else "")
     if d.get("prawomocne") is False:
         return "NIEPRAWOMOCNE (oznaczenie CBOSA „orzeczenie nieprawomocne”) — zob. UWAGA wyżej"
     if d.get("prawomocnosc") == "":
@@ -619,10 +646,24 @@ def _etykieta_prawomocnosci(d):
 
 def _uwaga_o_prawomocnosci(d):
     """Głośne ostrzeżenie do wyniku tekstowego i JSON, gdy CBOSA oznacza orzeczenie jako
-    NIEPRAWOMOCNE (mogło zostać uchylone/zmienione w NSA) albo oznaczenia brak."""
-    if d.get("prawomocne") is True:
-        return ""
+    NIEPRAWOMOCNE (mogło zostać uchylone/zmienione w NSA) albo oznaczenia brak.
+
+    Wyrok WSA oznaczony jako PRAWOMOCNY, z którym CBOSA wiąże wyrok NSA, też dostaje uwagę
+    (powiązanie bywa błędne — II SA/Wa 546/21 ma podpięty wyrok NSA z innej sprawy — dlatego uwaga
+    nie twierdzi, że NSA orzekał w tej sprawie):
+    audyt 13.11.2026 — II SA/Wa 1341/22 ma „orzeczenie prawomocne”, choć NSA (III OSK 3311/23)
+    uchylił ten wyrok i decyzję, a inne wyroki WSA uchylone przez NSA (II SA/Wa 2559/19,
+    II SA/Wa 863/23) CBOSA oznacza jako nieprawomocne. Oznaczenie nie mówi więc, czy NSA uchylił wyrok."""
     kto = d.get("sygnatura") or d["doc_id"]
+    if d.get("prawomocne") is True:
+        nsa = _wyroki_nsa_w_sprawie_wsa(d)
+        if not nsa:
+            return ""
+        return (f"UWAGA: CBOSA wiąże z orzeczeniem {kto} wyrok NSA (" + "; ".join(
+                    f"{p['opis']} → orzeczenie {p['doc_id']}" for p in nsa) + "). Oznaczenie CBOSA "
+                "„orzeczenie prawomocne” przy orzeczeniu WSA NIE wyklucza, że NSA je uchylił (CBOSA bywa tu "
+                "niekonsekwentna) — przed cytowaniem sprawdź „Treść wyniku” wyroku NSA. Tryb --strict "
+                "tego nie sprawdza.")
     if d.get("prawomocne") is False:
         pow_ = d.get("powiazane") or []
         if pow_:
@@ -668,11 +709,22 @@ def _formularz(a):
 
 
 def _szukaj(form, strona=1):
-    """POST wyszukiwania (strona 1, zakłada sesję) + ew. GET kolejnej strony (/cbo/find?p=N)."""
+    """POST wyszukiwania (strona 1, zakłada sesję) + ew. GET kolejnej strony (/cbo/find?p=N).
+
+    Przy --strona > 1 pierwsza strona też jest parsowana: rozpoznane zero (albo odrzucone zapytanie)
+    rozstrzyga od razu, a pusta dalsza strona przy liczniku > 0 nie udaje „zweryfikowanego zera”."""
     h = _fetch("/cbo/search", data=form)
-    if strona > 1:
-        h = _fetch(f"/cbo/find?p={strona}")
-    return _wyniki(h)
+    if strona == 1:
+        return _wyniki(h)
+    total1, pozycje1, komunikat1 = _wyniki(h)
+    if total1 == 0 or (total1 is None and not pozycje1):
+        return total1, pozycje1, komunikat1
+    total, pozycje, komunikat = _wyniki(_fetch(f"/cbo/find?p={strona}"))
+    if not [p for p in pozycje if not p["powiazane"]]:
+        # strona za końcem wyników: licznik z pierwszej strony (> 0), żeby `cmd_szukaj` nie wziął
+        # ewentualnego „Nie znaleziono orzeczeń” z dalszej strony za zweryfikowane zero
+        return total1, pozycje, komunikat
+    return total, pozycje, komunikat
 
 
 def _drukuj_liste(total, pozycje, strona):
@@ -705,13 +757,23 @@ def cmd_szukaj(a):
         if komunikat:  # formularz odrzucił zapytanie (np. zła data) — to błąd wejścia, nie serwera
             sys.exit(f"CBOSA odrzuciło zapytanie: {komunikat}\nPopraw parametry i ponów "
                      "(daty w formacie RRRR-MM-DD).")
-    if total == 0 or not pozycje:
+    if total == 0 and not pozycje:
         znak = _znak_organu(a.fraza, a.sygnatura)
-        if znak:  # zero dla numeru decyzji organu to skutek anonimizacji, nie dowód braku wyroku
+        if znak:  # zero dla numeru decyzji organu to skutek anonimizacji, nie dowód braku wyroku → kod 2
             sys.exit(_z_uwaga_o_transporcie(_uwaga_anonimizacja(znak, _data(a.od) or None)))
-        sys.exit(_z_uwaga_o_transporcie(
+        # rozpoznana strona wyników z zerem — jedyna droga `szukaj` do kodu 1 (przy CBOSA_INSECURE_TLS=1
+        # z adnotacją o transporcie, tak jak wynik; --strict zablokował to już wyżej kodem 2)
+        raise BrakWynikow(_z_uwaga_o_transporcie(
             "Brak wyników (zweryfikowane zero). Uwaga: wyszukiwarka CBOSA wymaga dokładnych "
             "wartości — spróbuj prostszej frazy, bez --sad, albo sprawdź sygnaturę/symbol."))
+    if not [p for p in pozycje if not p["powiazane"]]:
+        # licznik > 0 (albo nieczytelny), a na stronie żadnego trafienia: np. --strona za końcem
+        # wyników albo zmiana układu listy — to NIE jest zweryfikowany brak → kod 2
+        sys.exit(_z_uwaga_o_transporcie(
+            f"BŁĄD: strona {strona} wyników CBOSA nie zawiera żadnego orzeczenia, choć licznik podaje "
+            f"{total if total is not None else '?'} trafień — to NIE jest zweryfikowany brak. "
+            + (f"Wyników jest {total} (liczba stron po 10: {-(-total // 10)}); " if total else "")
+            + "sprawdź numer --strona albo ponów zapytanie bez niego."))
     if a.json:
         print(json.dumps(_dane_z_transportem(
                          {"total": total, "strona": strona, "komunikat": komunikat,
@@ -740,6 +802,21 @@ def cmd_orzeczenie(a):
     _sprawdz_prawomocnosc_strict(a, d)  # cała weryfikacja PRZED emisją wyniku (także --json)
     if a.json:
         print(json.dumps(_dane_z_transportem(d), ensure_ascii=False, indent=2)); return
+    txt = d.get("uzasadnienie") or ""
+    spans = None
+    if a.fragment:  # rozstrzygnięcie --fragment PRZED wydrukiem: przy kodzie ≠ 0 stdout zostaje pusty
+        if not txt:
+            # bez uzasadnienia nie da się sprawdzić frazy — to nie „frazy nie ma” (kod 2, jak w saos.py)
+            sys.exit(_z_uwaga_o_transporcie(
+                f"BŁĄD: nie można sprawdzić frazy {a.fragment!r} — strona CBOSA {d.get('sygnatura') or doc_id} "
+                "nie ma sekcji „Uzasadnienie” (orzeczenie bez uzasadnienia albo uzasadnienie jeszcze "
+                "nieopublikowane). To NIE jest brak frazy w orzeczeniu. Metadane i sentencja: "
+                f"orzeczenie {doc_id} bez --fragment; źródło: {d['url']}"))
+        spans = _fragmenty(txt, a.fragment)
+        if not spans:
+            raise BrakWynikow(_z_uwaga_o_transporcie(
+                f"Nie znaleziono frazy {a.fragment!r} w uzasadnieniu ({len(txt)} znaków). "
+                "Spróbuj inną frazą."))
     _drukuj_uwage_o_transporcie()
     if uwaga:
         print(uwaga + "\n")
@@ -759,15 +836,11 @@ def cmd_orzeczenie(a):
         print(f"\n## Tezy\n{d['tezy']}")
     if d.get("sentencja"):
         print(f"\n## Sentencja\n{d['sentencja']}")
-    txt = d.get("uzasadnienie") or ""
     print(f"\n## Uzasadnienie ({len(txt)} znaków)")
     if not txt:
         print("(brak opublikowanego uzasadnienia — zob. stronę źródłową wyżej)")
         return
-    if a.fragment:
-        spans = _fragmenty(txt, a.fragment)
-        if not spans:
-            sys.exit(f"Nie znaleziono frazy {a.fragment!r} w uzasadnieniu ({len(txt)} znaków). Spróbuj inną frazą.")
+    if spans:
         for i, (s, e) in enumerate(spans):
             if i:
                 print("\n[...]\n")
@@ -792,23 +865,72 @@ def cmd_sygnatura(a):
         if komunikat:
             sys.exit(f"CBOSA odrzuciło zapytanie: {komunikat}")
     glowne = [p for p in pozycje if not p["powiazane"]]
-    if not glowne and _znak_organu(sig):
+    if not glowne and _znak_organu(sig):  # numer decyzji organu: skutek anonimizacji, nie brak → kod 2
         sys.exit(_z_uwaga_o_transporcie(_uwaga_anonimizacja(_znak_organu(sig))))
-    if not glowne:
-        sys.exit(_z_uwaga_o_transporcie(
+    if not glowne and total == 0:  # rozpoznana strona „Nie znaleziono orzeczeń…” → kod 1
+        raise BrakWynikow(_z_uwaga_o_transporcie(
             f"Nie znaleziono orzeczenia o sygnaturze {sig!r} w CBOSA.\n"
             "Sygnatury sądów administracyjnych mają formę np. \"II FSK 2870/18\" (NSA) "
             "albo \"I SA/Bk 226/18\" (WSA). SN/TK/sądy powszechne/KIO → skill prawo-pl-saos."))
+    if not glowne:  # licznik > 0 albo nieczytelny, a pozycji brak — nie da się potwierdzić braku → kod 2
+        sys.exit(_z_uwaga_o_transporcie(
+            f"BŁĄD: strona wyników CBOSA dla sygnatury {sig!r} nie zawiera żadnego orzeczenia, choć "
+            f"licznik podaje {total if total is not None else '?'} trafień — to NIE jest zweryfikowany "
+            "brak (zmiana układu strony?). Sprawdź w przeglądarce: " + BASE + "/cbo/query"))
+    uwagi = _uwagi_sygnatury(sig, total, glowne)
     if a.json:
+        for u in uwagi:  # stdout zostaje czystym JSON-em (jak w saos.py)
+            print(u, file=sys.stderr)
         print(json.dumps(_dane_z_transportem(
                          {"total": total, "komunikat": komunikat, "wyniki": pozycje}),
                          ensure_ascii=False, indent=2)); return
     _drukuj_uwage_o_transporcie()
     print(f"Sygnatura {sig!r}: dopasowań {total}\n")
+    for u in uwagi:
+        print(u + "\n")
     for p in pozycje:
         prefiks = "  ↳ powiązane: " if p["powiazane"] else "  "
         print(f"{prefiks}[{p['doc_id']}]  {p['opis']}")
-    print(f"\nPełna treść: orzeczenie {glowne[0]['doc_id']}")
+    if len(glowne) == 1:
+        print(f"\nPełna treść: orzeczenie {glowne[0]['doc_id']}")
+    else:
+        print(f"\nPełna treść: orzeczenie <doc_id> — wybierz z listy po sygnaturze, rodzaju i dacie "
+              f"(np. orzeczenie {glowne[0]['doc_id']})")
+
+
+def _norm_sygn(s):
+    return re.sub(r"\s+", " ", s or "").strip().upper()
+
+
+def _uwagi_sygnatury(sig, total, glowne):
+    """Ostrzeżenia przy wielu dopasowaniach `sygnatura` (audyt 13.11.2026, punkt „kolizje sygnatur”).
+
+    CBOSA dopasowuje pole sygnatury po CAŁYCH członach, nie po całości: „SA/Wa 1/20” (bez numeru
+    wydziału) zwraca 8 różnych spraw z wydziałów I–VIII WSA w Warszawie, a „II SA/Wa 2559/19” —
+    wyrok i postanowienie tej samej sprawy. Dotąd silnik wskazywał wtedy pierwsze trafienie jako
+    „Pełna treść”, a przy ponad 10 trafieniach po cichu pokazywał tylko pierwszą stronę."""
+    uwagi = []
+    sygnatury = {}  # znormalizowana → pierwsza postać z CBOSA (kolejność trafień)
+    for p in glowne:
+        s = p["opis"].split(" - ")[0].strip()
+        sygnatury.setdefault(_norm_sygn(s), s)
+    if len(sygnatury) > 1:
+        uwagi.append(f"UWAGA: CBOSA dopasowuje sygnaturę po fragmencie — trafienia mają różne sygnatury "
+                     f"({len(sygnatury)}), czyli dotyczą różnych spraw: {', '.join(sygnatury.values())}. Podaj "
+                     "pełną sygnaturę (z numerem wydziału, np. „II SA/Wa 1/20”, i skrótem miasta WSA) albo "
+                     "wybierz sprawę z listy — nie cytuj pierwszego trafienia w ciemno.")
+    else:
+        jedyna = next(iter(sygnatury.values()))
+        if _norm_sygn(jedyna) != _norm_sygn(sig):  # np. „FSK 2870/18” → tylko „II FSK 2870/18”
+            uwagi.append(f"UWAGA: CBOSA dopasowała zapytanie {sig!r} do sygnatury {jedyna!r} — sprawdź, czy "
+                         "to ta sprawa (CBOSA dopasowuje sygnaturę po fragmencie).")
+        if len(glowne) > 1:
+            uwagi.append(f"UWAGA: sygnatura {jedyna!r} ma w CBOSA kilka orzeczeń ({len(glowne)}), np. wyrok i "
+                         "postanowienie w tej samej sprawie — wybierz właściwe po rodzaju i dacie.")
+    if total and total > len(glowne):
+        uwagi.append(f"UWAGA: pokazano {len(glowne)} z {total} trafień (pierwsza strona wyników CBOSA). "
+                     f"Kolejne: szukaj --sygnatura \"{sig}\" --strona 2")
+    return uwagi
 
 
 def main():
@@ -856,12 +978,30 @@ def main():
                        help="zakończ błędem, gdy nie udało się zweryfikować aktualności lub kompletności "
                          "(TLS, rozpoznana strona, prawomocność orzeczenia)")
 
-    a = ap.parse_args()
+    a = ap.parse_args()  # zły argument wiersza poleceń: argparse sam kończy kodem 2
+    # Kody wyjścia jak w saos.py i uodo.py: 0 = wynik, 1 = ZWERYFIKOWANY brak (BrakWynikow),
+    # 2 = wszystko inne (sieć/HTTP, strona błędu wyszukiwarki, odrzucone zapytanie, zły argument,
+    # nieistniejący doc_id, zero dla numeru decyzji organu, --fragment bez uzasadnienia, blokada
+    # --strict, VerificationUnknown, nieprzewidziany wyjątek). Komunikat zawsze na stderr.
     try:
         a.func(a)
+    except BrakWynikow as e:
+        print(e.code, file=sys.stderr)
+        sys.exit(1)
+    except SystemExit as e:
+        if e.code is None or isinstance(e.code, int):
+            raise
+        print(e.code, file=sys.stderr)
+        sys.exit(2)
     except VerificationUnknown as e:
-        sys.exit(f"BŁĄD: nie udało się zweryfikować danych w CBOSA ({e}). "
-                 + (e.porada or "Spróbuj ponownie za chwilę."))
+        print(f"BŁĄD: nie udało się zweryfikować danych w CBOSA ({e}). "
+              + (e.porada or "Spróbuj ponownie za chwilę.") + " To NIE jest brak wyników.",
+              file=sys.stderr)
+        sys.exit(2)
+    except Exception as e:  # noqa: BLE001 — nieprzewidziany błąd nigdy nie może dać kodu 1 („brak wyników”)
+        print(f"BŁĄD: nieoczekiwany błąd helpera cbosa.py ({e!r}). To NIE jest brak wyników — ponów "
+              "albo zgłoś błąd.", file=sys.stderr)
+        sys.exit(2)
 
 
 if __name__ == "__main__":

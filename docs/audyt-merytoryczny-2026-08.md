@@ -23,8 +23,10 @@
 > - SAOS/MS: kolizje sygnatur w różnych sądach, data uzasadnienia a data wyroku, „Data uprawomocnienia”.
 > - Rejestr umów: kwoty bez „zł” — rejestr nie podaje waluty ani netto/brutto.
 >
-> **Nota o stanie (wydanie 2.4.0, listopad 2026).** Punkty, które po wydaniu 2.2.0 pozostawały otwarte,
-> sprawdzono 13.11.2026; wyniki z liczbą próbek są w `CHANGELOG.md`, sekcja 2.4.0.
+> **Nota o stanie (wydania 2.4.0 i 2.5.0, listopad 2026).** Punkty, które po wydaniu 2.2.0 pozostawały otwarte,
+> sprawdzono 13.11.2026; wyniki z liczbą próbek są w `CHANGELOG.md`, sekcja 2.4.0. Punkty CBOSA (łańcuch
+> UODO → CBOSA, daty, kolizje sygnatur i flaga prawomocności) sprawdzono tego samego dnia po wydaniu, gdy
+> serwer CBOSA znów odpowiadał — wyniki w sekcji 2.5.0.
 >
 > **Wykonane, z naprawą:**
 > - ELI, przepis znowelizowany w ostatnich 90 dniach (k.p.c. po DU 2026/830 i 2026/1003): `--fragment`
@@ -41,15 +43,27 @@
 > - SAOS: zerowe wyniki i `--haslo`; data dokumentu „uzasadnienie”; luki pokrycia wobec portalu MS.
 > - Rejestr umów: NIP/REGON, daty i kwoty wobec interfejsu rejestru; kompletność `najnowsze`.
 > - UODO: wpisy kontroli sądowej i status decyzji wobec strony portalu.
+> - CBOSA (po powrocie serwera, 13.11.2026; `CHANGELOG.md`, sekcja 2.5.0): kolizje sygnatur —
+>   `sygnatura` ostrzega, gdy CBOSA dopasuje różne sprawy (`SA/Wa 1/20` → 8 spraw) albo kilka orzeczeń
+>   jednej sprawy, i podaje kolejną stronę przy ponad 10 trafieniach; flaga prawomocności — wyrok WSA
+>   z powiązanym wyrokiem NSA dostaje ostrzeżenie także przy „prawomocne” (II SA/Wa 1341/22 jest tak
+>   oznaczony, choć NSA go uchylił). Kody wyjścia `cbosa.py` jak w pozostałych silnikach.
 >
 > **Wykonane, bez zmiany działania:** ELI — treść załączników i tabel, `struktura` a spis treści PDF
 > (znalezione błędy leżą w danych API: k.p.c. DU 2024/1568 art. 15 jako „Art. 1522.”, brak „DZIAŁ IIda”),
 > data „Ogłoszono” w M.P. przy różnych datach; e-dzienniki — ponowny pomiar `limit=100000` (silnik
-> go nie używa), host ZP (działa), AIA dla LS i LD; rejestr umów — waluta (API jej nie podaje).
+> go nie używa), host ZP (działa), AIA dla LS i LD; rejestr umów — waluta (API jej nie podaje);
+> UODO → CBOSA (13.11.2026, 15 decyzji, 19 wpisów kontroli sądowej): sygnatury 19/19, sąd 16/16, daty
+> 17/19 (2 to postanowienia WSA nieopublikowane w CBOSA), wynik 12/12, sprzecznych statusów 0/15 —
+> różnice wynikają z luk portalu UODO, nie z silnika; CBOSA — data orzeczenia a data publikacji (strona
+> nie ma daty publikacji; daty silnika zgodne 39/39).
 >
 > **Nadal otwarte:**
-> - UODO → CBOSA: porównanie z wyrokami w CBOSA oraz data orzeczenia a data publikacji w CBOSA —
->   serwer CBOSA w dniu kontroli nie odpowiadał.
+> - UODO → CBOSA, część: stanu DKN.5131.3.2021 nie da się potwierdzić w CBOSA (NSA 1.10.2025 przekazał
+>   sprawę WSA do ponownego rozpoznania, portal UODO podaje uprawomocnienie 11.12.2025, a w CBOSA nie ma
+>   późniejszego orzeczenia); dla DKN.5130.4179.2020 i DKN.5131.5.2024 podpowiadane zapytania nie dały
+>   trafienia, które da się przypisać tej decyzji (sprawdzono 2 z 4 zapytań; jedno trafienie bez
+>   uzasadnienia), więc brak wyroku nie jest potwierdzony.
 > - SAOS: daty orzeczeń SN (sn.pl stoi za filtrem antybotowym — świadomie bez zapytań) i TK oraz
 >   oznaczenie prawomocności.
 > - e-dzienniki: host MZ (w dniu kontroli HTTP 503) — jedyny z 16 dzienników bez porównania z PDF.

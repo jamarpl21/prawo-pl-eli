@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-cbosa
-version: 2.4.0
+version: 2.5.0
 description: >-
   Przeszukuje CBOSA — Centralną Bazę Orzeczeń Sądów Administracyjnych (orzeczenia.nsa.gov.pl):
   wyroki, postanowienia i uchwały NSA oraz 16 WSA (~2,4 mln orzeczeń od 2004 r.). Używaj przy
@@ -61,7 +61,7 @@ CBOSA="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-cbosa/scripts/cbosa.py"
 #    sprawdzana w kodzie przed zapisem i przed każdym uruchomieniem; niezgodna = helper nie startuje.
 [ -f "$CBOSA" ] || CBOSA=$(python3 - <<'EOF'
 import hashlib, os, sys, urllib.request
-WERSJA, SHA256 = "2.4.0", "22822eb609a9d35b64cb313d0cad34756a40839566cb7078628dfeb3ce710013"
+WERSJA, SHA256 = "2.5.0", "b12a94b6f8f8f765a7efaacb6d466d380e8e546138123b90c5559ee9ec262e8e"
 URL = f"https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/v{WERSJA}/plugins/prawo-pl-cbosa/skills/prawo-pl-cbosa/scripts/cbosa.py"
 p = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"prawo-pl-cbosa-{WERSJA}", "cbosa.py")
 try:
@@ -100,11 +100,32 @@ Nie szukaj helpera przez `find` po katalogach użytkownika ani systemu i nie pob
   w JSON `prawomocne: true/false/null` + `prawomocnosc` = tekst oznaczenia CBOSA), sentencję
   i uzasadnienie. Do długich uzasadnień: `--fragment "interpretacja"` (wycina okna wokół frazy;
   brzegi okien dopasowane do granic zdań/wyrazów, `…` na brzegu oznacza ucięcie, `[...]` między oknami).
+  Część orzeczeń nie ma sekcji „Uzasadnienie” (np. postanowienie o wyłączeniu sędziego
+  `II SA/Wa 2559/19`, doc 6E19266905, albo wyrok `II SA/Wa 622/26` z 5.10.2026 — tylko sentencja) —
+  `--fragment` kończy się wtedy kodem 2 („nie można sprawdzić frazy”), nie „brakiem frazy”.
 - **sygnatura** — szybkie odszukanie po sygnaturze:
   `python3 scripts/cbosa.py sygnatura II FSK 2870/18`
+  CBOSA dopasowuje sygnaturę **po członach, nie w całości**: `SA/Wa 1/20` (bez numeru wydziału)
+  zwraca 8 RÓŻNYCH spraw z wydziałów I–VIII WSA w Warszawie. Silnik pokazuje wtedy wszystkie trafienia,
+  ostrzega, że to różne sprawy, i nie wskazuje żadnego jako „pełnej treści” — podaj pełną sygnaturę
+  albo wybierz trafienie z listy. Ta sama pełna sygnatura bywa też przy kilku orzeczeniach tej samej
+  sprawy (`II SA/Wa 2559/19` — wyrok i postanowienie; `OSK 150/04` — dwa postanowienia): wybierz po
+  rodzaju i dacie. Przy ponad 10 trafieniach silnik podaje komendę kolejnej strony
+  (`szukaj --sygnatura "…" --strona 2`).
 - każda komenda przyjmuje `--json` oraz `--strict`; obie flagi działają przed komendą i po niej.
-  Zero trafień / nierozpoznana odpowiedź API kończą się komunikatem i kodem wyjścia ≠ 0 — także z `--json`
-  (nie dostaniesz pustego JSON-a, który wyglądałby jak „sprawdzone, nic nie ma”).
+  Zero trafień / nierozpoznana odpowiedź kończą się komunikatem na **stderr** i kodem wyjścia ≠ 0 — także
+  z `--json` (nie dostaniesz pustego JSON-a, który wyglądałby jak „sprawdzone, nic nie ma”); przy kodzie
+  ≠ 0 stdout jest pusty. Z `--json` ostrzeżenia `sygnatura` (różne sprawy, kolejna strona) idą na stderr,
+  a stdout zostaje czystym JSON-em.
+  **Kody wyjścia:** 0 = jest wynik; 1 = zweryfikowany brak (CBOSA zwróciła rozpoznaną stronę „Nie
+  znaleziono orzeczeń…” dla `szukaj` albo `sygnatura`, albo frazy `--fragment` nie ma w pobranym
+  uzasadnieniu); 2 = wszystko inne — błąd sieci/HTTP i awaria serwera (także strona „Błąd przy szukaniu
+  orzeczeń”), strona bez licznika i listy, „CBOSA odrzuciło zapytanie”, pusta dalsza strona (`--strona`
+  za końcem wyników), zły argument (sąd, rodzaj, data, doc_id, brak kryterium), nieistniejący doc_id
+  (HTTP 410), zero dla numeru decyzji organu (anonimizacja), `--fragment` przy orzeczeniu bez
+  uzasadnienia, blokada `--strict`, nieprzewidziany błąd. Kod 2 nigdy nie znaczy „nie ma orzeczeń”.
+  Zero przy `CBOSA_INSECURE_TLS=1` to nadal kod 1, z adnotacją o niezweryfikowanym transporcie;
+  z `--strict` — kod 2. `--json` pomija `--fragment` (pełny zrzut, jak w prawo-pl-saos).
 
 ### Prawomocność i tryb `--strict`
 
@@ -113,7 +134,10 @@ CBOSA oznacza każde orzeczenie na stronie `/doc/<id>` kursywą **„orzeczenie 
 wpadkowe, świeże orzeczenia) pole jest **puste** — CBOSA nic nie twierdzi. Silnik czyta to oznaczenie
 i w `orzeczenie` zawsze je pokazuje:
 
-- `Prawomocność: prawomocne` — bez uwag.
+- `Prawomocność: prawomocne` — bez uwag, z jednym wyjątkiem: **orzeczenie WSA, z którym CBOSA wiąże
+  wyrok NSA** (`↳ powiązane: … Wyrok NSA`), dostaje UWAGA. CBOSA bywa tu niekonsekwentna: `II SA/Wa 1341/22`
+  ma „orzeczenie prawomocne”, choć NSA (`III OSK 3311/23`) uchylił ten wyrok i decyzję, a inne wyroki
+  WSA uchylone przez NSA są „nieprawomocne”. Przed cytowaniem sprawdź „Treść wyniku” wyroku NSA.
 - `Prawomocność: NIEPRAWOMOCNE` + głośne **UWAGA** na początku wyniku: orzeczenie mogło zostać
   **uchylone lub zmienione w wyższej instancji** (typowo: wyrok WSA uchylony przez NSA). Zanim je
   zacytujesz, skocz do orzeczenia powiązanego (`Sygn. powiązane` / `↳ powiązane`, WSA ↔ NSA) i sprawdź
@@ -125,13 +149,14 @@ i w `orzeczenie` zawsze je pokazuje:
 **Lista wyników `szukaj`/`sygnatura` NIE ma tego oznaczenia** (strona wyników CBOSA go nie niesie) —
 flaga jest dostępna wyłącznie przez `orzeczenie <doc_id>`.
 
-`--strict` blokuje wynik (komunikat + kod ≠ 0, nic na stdout także z `--json`), gdy: (1) transport TLS
+`--strict` blokuje wynik (komunikat na stderr + kod 2, nic na stdout także z `--json`), gdy: (1) transport TLS
 nie został zweryfikowany, (2) strona orzeczenia nie została rozpoznana / wyszukiwarka nie odpowiedziała
 poprawną stroną, (3) orzeczenie jest oznaczone jako **nieprawomocne**, (4) prawomocności na stronie
 brak (puste pole / oznaczenie nieznalezione). Bez `--strict` dostaniesz w tych dwóch ostatnich
 przypadkach pełny tekst z ostrzeżeniem. `--strict` **nie sprawdza**: czy wyrok NSA jest ostateczny
 w sensie wznowienia/skargi nadzwyczajnej, czy przepisy powołane w orzeczeniu nadal obowiązują (→ ELI),
-ani prawomocności wyników `szukaj` (brak danych na liście).
+ani prawomocności wyników `szukaj` (brak danych na liście), ani tego, czy NSA uchylił wyrok WSA
+oznaczony jako prawomocny (zob. wyjątek wyżej — to tylko UWAGA, nie blokada).
 
 Typowy przepływ: `szukaj` (zawęź `--sad`/`--od`/`--symbol`) → wybierz doc_id → `orzeczenie <doc_id>`
 (spójrz na `Prawomocność:`) → w razie potrzeby skacz po sygnaturach powiązanych (WSA ↔ NSA w tej samej
@@ -145,16 +170,19 @@ sprawie).
    (np. z kilku agentów naraz) — serwer zrywa połączenia przy serii zapytań; wbudowany throttling
    (≥0,5 s) działa tylko w obrębie jednego wywołania. Zapytania wykonuj po kolei.
 2. **Rozróżniaj trzy komunikaty — tylko jeden znaczy „awaria".**
-   „Brak wyników (zweryfikowane zero)" = CBOSA wyszukało i nic nie ma → **zmień zapytanie**
+   „Brak wyników (zweryfikowane zero)" (kod 1) = CBOSA wyszukało i nic nie ma → **zmień zapytanie**
    (krótsza fraza, bez `--sad`, szerszy zakres dat), nie ponawiaj tego samego.
    **Wyjątek — znak sprawy organu** (numer decyzji, np. `DKN.5131.1.2025`, `ZSPR.421.2.2019`): CBOSA
    anonimizuje numery i dni decyzji („decyzja z dnia [...] marca 2025 r. nr [...]”), więc takie
-   zapytanie nic nie znajdzie. Silnik NIE pisze wtedy „zweryfikowane zero”, tylko podaje zapytanie
+   zapytanie nic nie znajdzie — nawet gdy numer stoi w treści wyroku (NSA `III OSK 1251/22` cytuje
+   „DKN.5130.3114.2020.121220”, a `szukaj "DKN.5130.3114.2020"` daje zero). Silnik NIE pisze wtedy
+   „zweryfikowane zero” (kod 2, nie 1), tylko podaje zapytanie
    po organie: `szukaj '"marca 2025" kary' --organ UODO --symbol 647 --sad "WSA Warszawa" --od 2025-03-17`
    (skargi na Prezesa UODO rozpoznaje WSA w Warszawie; gotowe zapytania dla decyzji UODO podaje
    `prawo-pl-uodo decyzja <sygnatura>`).
-   „CBOSA odrzuciło zapytanie: …" = błąd parametrów (np. formatu daty) → popraw i ponów.
-   „BŁĄD: … strona bez listy wyników" = serwer → ponów za chwilę.
+   „CBOSA odrzuciło zapytanie: …" (kod 2) = błąd parametrów (np. formatu daty) → popraw i ponów.
+   „BŁĄD: … strona bez listy wyników" albo „Błąd przy szukaniu orzeczeń" (kod 2) = serwer → ponów
+   za chwilę.
    Błąd sieci silnik diagnozuje — **raportuj zgodnie z komunikatem, nie zgaduj**:
    - „blokada środowiska, nie awaria CBOSA" (proxy/zapora piaskownicy, np. „Tunnel connection
      failed: 403 Forbidden") → ponawianie nic nie da; zgłoś blokadę środowiska;

@@ -161,7 +161,9 @@ oficjalnego API**, więc silnik `cbosa.py` czyta publiczne strony HTML (read-onl
   (`--organ UODO`), sędzim i dacie: `szukaj "odpowiedzialność członków zarządu" --sad NSA --od 2024-01-01`,
 - pobrać **pełne orzeczenie** (sentencja + uzasadnienie + powołane przepisy): `orzeczenie 8889489BE0`,
 - skakać między instancjami po **sygnaturach powiązanych** (WSA ↔ NSA tej samej sprawy),
-- wyciąć fragment długiego uzasadnienia: `orzeczenie <doc_id> --fragment "art. 116"`.
+- wyciąć fragment długiego uzasadnienia: `orzeczenie <doc_id> --fragment "art. 116"`,
+- odszukać orzeczenie po **sygnaturze** — z ostrzeżeniem, gdy CBOSA dopasuje kilka różnych spraw
+  (`sygnatura SA/Wa 1/20` bez numeru wydziału to 8 spraw z wydziałów I–VIII WSA w Warszawie).
 
 ## prawo-pl-uodo
 
@@ -300,9 +302,9 @@ Każdy tag `v*` publikuje po jednym zipie na plugin w GitHub Releases
 dla każdego z ośmiu pluginów):
 
 ```bash
-claude --plugin-dir ./prawo-pl-saos-v2.4.0.zip
+claude --plugin-dir ./prawo-pl-saos-v2.5.0.zip
 # albo zdalnie, bez pobierania:
-claude --plugin-url https://github.com/jamarpl21/prawo-pl-eli/releases/download/v2.4.0/prawo-pl-saos-v2.4.0.zip
+claude --plugin-url https://github.com/jamarpl21/prawo-pl-eli/releases/download/v2.5.0/prawo-pl-saos-v2.5.0.zip
 ```
 
 ## Użycie jako samodzielne CLI (bez żadnego LLM-a)
@@ -323,13 +325,14 @@ Dwie flagi globalne, w każdym silniku, działają przed komendą i po niej:
 - `--json` — surowa odpowiedź API / sparsowane dane do dalszego przetwarzania. Zero trafień i nierozpoznana
   odpowiedź kończą się komunikatem z kodem wyjścia ≠ 0 **także z `--json`** — pusty JSON wyglądałby jak
   „sprawdzone, nic nie ma", a to najgroźniejszy fałszywy negatyw w pracy prawnika.
-  **Kody wyjścia** (od 2.4.0 wspólne dla siedmiu silników; `cbosa.py` jeszcze bez tej zmiany — każdy błąd
-  i brak wyników daje tam kod ≠ 0): `0` — jest wynik; `1` — tylko ZWERYFIKOWANY brak (źródło odpowiedziało,
+  **Kody wyjścia** (wspólne dla wszystkich ośmiu silników; siedem od 2.4.0, `cbosa.py` od 2.5.0):
+  `0` — jest wynik; `1` — tylko ZWERYFIKOWANY brak (źródło odpowiedziało,
   zero trafień albo frazy nie ma w pełnej treści); `2` — wszystko inne: błąd sieci lub serwera, zły argument,
   nieistniejący dokument, blokada `--strict`, nieustalona aktualność. Skrypt może więc odróżnić „nie ma”
   od „nie udało się sprawdzić”. Zero trafień nadal nie dowodzi, że przepisu, orzeczenia albo umowy nie ma.
 - `--strict` — tryb „do pisma procesowego": wynik, którego **aktualności lub kompletności** nie dało się
-  zweryfikować, nie jest drukowany z ostrzeżeniem, tylko odrzucany (kod wyjścia ≠ 0, pusty stdout).
+  zweryfikować, nie jest drukowany z ostrzeżeniem, tylko odrzucany (kod wyjścia 2, pusty stdout,
+  komunikat na stderr).
   Domyślny tryb (research) jest bez zmian — te same sytuacje dają głośne `UWAGA:`. Co blokuje strict
   (pełna lista per silnik w każdym SKILL.md, sekcja „Co sprawdza --strict"):
   - **ELI:** awaria kontroli aktualności (`/references`), starszy t.j., gdy istnieje nowszy (także gdy
@@ -431,7 +434,11 @@ SAOS spłaszcza indeksy górne (art. 417¹ → „4171") — silnik ostrzega; w 
 `--sad`: `NSA` albo `"WSA <miasto>"` (16 miast). CBOSA nie ma API — silnik czyta publiczne strony
 HTML z throttlingiem ≥0,5 s (zmiana układu stron może wymagać aktualizacji). Wielkość strony
 wyników: stałe 10 (`--strona N`). `orzeczenie` podaje **prawomocność** (flaga ze strony CBOSA) i ostrzega,
-gdy orzeczenie jest nieprawomocne (mogło zostać uchylone — zob. orzeczenia powiązane WSA ↔ NSA).
+gdy orzeczenie jest nieprawomocne (mogło zostać uchylone — zob. orzeczenia powiązane WSA ↔ NSA), a także
+przy orzeczeniu WSA oznaczonym jako prawomocne, z którym CBOSA wiąże wyrok NSA (CBOSA oznacza takie
+orzeczenia niekonsekwentnie). `sygnatura` ostrzega, gdy trafienia to różne sprawy albo kilka orzeczeń jednej sprawy.
+Kod wyjścia 1 tylko przy zweryfikowanym braku; zero dla numeru decyzji organu (CBOSA go anonimizuje)
+i `--fragment` przy orzeczeniu bez uzasadnienia to kod 2.
 
 ### uodo.py (decyzje Prezesa UODO — RODO)
 
@@ -541,7 +548,7 @@ docs/                                    # raport audytu merytorycznego, instruk
 
 ## Wersjonowanie
 
-Wszystkie pluginy są wersjonowane **razem (lockstep)** — jedna wersja (obecnie **2.4.0**) zadeklarowana
+Wszystkie pluginy są wersjonowane **razem (lockstep)** — jedna wersja (obecnie **2.5.0**) zadeklarowana
 we wszystkich miejscach, identyczna; `tools/validate.py` wymusza to w CI:
 
 - `plugins/<plugin>/.claude-plugin/plugin.json` i `.codex-plugin/plugin.json` (pole `version`) — wszystkie pluginy,
@@ -600,8 +607,10 @@ w ostatnich 90 dniach, t.j. z brzmieniem z datą przyszłą, indeksy literowe w 
 i vacatio legis w ELI, sprostowania w EUR-Lex, nieważność aktów w e-dziennikach, łańcuch UODO → CBOSA,
 kolizje sygnatur), pozostałe — w wydaniu 2.4.0 (m.in. przepisy zmienione po stanie tekstu jednolitego
 i po wyrokach TK, kwoty obok cyfr przypisów, wybór wersji skonsolidowanej w EUR-Lex, hasła i daty
-w SAOS, porównanie rejestru umów z jego interfejsem). Stan każdej luki, także nadal otwartych
-(CBOSA, daty SN i TK, host mazowiecki), opisuje nota na początku raportu.
+w SAOS, porównanie rejestru umów z jego interfejsem), a porównanie łańcucha UODO → CBOSA, dat i flagi
+prawomocności w CBOSA — w wydaniu 2.5.0, po powrocie serwera CBOSA (13.11.2026). Stan każdej luki, także nadal otwartych
+(daty SN i TK, host mazowiecki, stan 3 decyzji UODO nierozstrzygnięty w CBOSA), opisuje nota na początku
+raportu.
 
 ## Ważne zastrzeżenia
 

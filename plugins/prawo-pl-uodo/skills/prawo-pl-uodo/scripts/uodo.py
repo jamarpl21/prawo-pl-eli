@@ -31,7 +31,7 @@ nieznana sygnatura, blokada --strict, pusty wynik będący artefaktem zapytania,
 import sys, json, re, time, warnings, argparse, urllib.request, urllib.parse, urllib.error
 from html.parser import HTMLParser
 
-__version__ = "2.4.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "2.5.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://orzeczenia.uodo.gov.pl/api"
 CONTENT_HOSTS = ("orzeczenia.uodo.gov.pl",)
 POLA = "id,refid,refname,title,dates,kind,parts,publication"  # domyślne pola listy wyników

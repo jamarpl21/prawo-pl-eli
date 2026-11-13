@@ -11,6 +11,7 @@ import pathlib
 import socket
 import ssl
 import unittest
+import contextlib
 import urllib.error
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
@@ -399,14 +400,18 @@ class TestPrawomocnosc(unittest.TestCase):
                                 powiazane=False)
 
     def _uruchom(self, html, argv):
-        out = io.StringIO()
+        """→ (stdout, kod wyjścia); stderr (tam idą komunikaty, odkąd kody wyjścia są wspólne z saos.py) w self.err."""
+        out, err = io.StringIO(), io.StringIO()
+        kod = 0
         with mock.patch.object(cbosa, "_fetch", return_value=html), \
-                mock.patch.object(sys, "argv", ["cbosa.py"] + argv), redirect_stdout(out):
+                mock.patch.object(sys, "argv", ["cbosa.py"] + argv), redirect_stdout(out), \
+                redirect_stderr(err):
             try:
                 cbosa.main()
             except SystemExit as e:
-                return out.getvalue(), e.code
-        return out.getvalue(), 0
+                kod = e.code
+        self.err = err.getvalue()
+        return out.getvalue(), kod
 
     def test_parser_nieprawomocne_i_czysta_data(self):
         d = cbosa._orzeczenie(self.NIEPRAWOMOCNE, "109C7D1883")
@@ -476,11 +481,11 @@ class TestPrawomocnosc(unittest.TestCase):
                      ["orzeczenie", "109C7D1883", "--json", "--strict"]):
             out, kod = self._uruchom(self.NIEPRAWOMOCNE, argv)
             self.assertEqual(out, "", argv)  # nic na stdout — także z --json
-            self.assertNotEqual(kod, 0)
+            self.assertEqual(kod, 2)
             self.assertIn("orzeczenie nieprawomocne — tryb strict nie zwraca treści, której aktualność "
-                          "nie jest potwierdzona; bez --strict dostaniesz tekst z ostrzeżeniem", str(kod))
-            self.assertIn("[8889489BE0]", str(kod))  # odsyła do wyroku NSA w tej sprawie
-            self.assertNotIn("ponownie", str(kod))   # to nie awaria przejściowa
+                          "nie jest potwierdzona; bez --strict dostaniesz tekst z ostrzeżeniem", self.err)
+            self.assertIn("[8889489BE0]", self.err)  # odsyła do wyroku NSA w tej sprawie
+            self.assertNotIn("ponownie", self.err)   # to nie awaria przejściowa
 
     def test_strict_przepuszcza_prawomocne(self):
         out, kod = self._uruchom(self.PRAWOMOCNE, ["orzeczenie", "8889489BE0", "--strict"])
@@ -493,26 +498,29 @@ class TestPrawomocnosc(unittest.TestCase):
     def test_strict_blokuje_brak_oznaczenia(self):
         out, kod = self._uruchom(self.PUSTE_POLE, ["orzeczenie", "1A8B8B8130", "--strict"])
         self.assertEqual(out, "")
-        self.assertIn("CBOSA nie podaje prawomocności", str(kod))
-        self.assertIn("bez --strict", str(kod))
+        self.assertEqual(kod, 2)
+        self.assertIn("CBOSA nie podaje prawomocności", self.err)
+        self.assertIn("bez --strict", self.err)
         out, kod = self._uruchom(TestOrzeczenie.HTML, ["orzeczenie", "8889489BE0", "--strict"])
         self.assertEqual(out, "")
-        self.assertIn("nie znaleziono oznaczenia", str(kod))
+        self.assertEqual(kod, 2)
+        self.assertIn("nie znaleziono oznaczenia", self.err)
 
     def test_strict_nadal_sprawdza_tls(self):
         def fake_fetch(path, data=None):
             cbosa._transport_tls_verified = False
             return self.PRAWOMOCNE
 
-        out = io.StringIO()
+        out, err = io.StringIO(), io.StringIO()
         with mock.patch.object(cbosa, "_fetch", side_effect=fake_fetch), \
                 mock.patch.object(sys, "argv", ["cbosa.py", "orzeczenie", "8889489BE0", "--strict"]), \
-                redirect_stdout(out):
+                redirect_stdout(out), redirect_stderr(err):
             with self.assertRaises(SystemExit) as caught:
                 cbosa.main()
         cbosa._transport_tls_verified = True
         self.assertEqual(out.getvalue(), "")
-        self.assertIn("TLS", str(caught.exception.code))
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn("TLS", err.getvalue())
 
 
 class TestFlagaJson(unittest.TestCase):
@@ -574,9 +582,9 @@ class CbosaVerificationContractTests(unittest.TestCase):
         with self.assertRaises(cbosa.VerificationUnknown):
             cbosa._wyniki("<html><title>Service unavailable</title></html>")
 
-    def test_http_410_na_doc_to_zweryfikowany_brak(self):
-        # CBOSA odpowiada 410 (Gone) dla nieistniejącego doc_id — to potwierdzone
-        # "nie ma", nie awaria; komunikat nie może odsyłać w pętlę "spróbuj ponownie"
+    def test_http_410_na_doc_to_blad_identyfikatora(self):
+        # CBOSA odpowiada 410 (Gone) dla nieistniejącego doc_id — to zły identyfikator, nie awaria;
+        # komunikat nie może odsyłać w pętlę "spróbuj ponownie" (kod wyjścia 2: TestKodyWyjscia)
         err = urllib.error.HTTPError("https://orzeczenia.nsa.gov.pl/doc/DEADBEEF",
                                      410, "Gone", {}, None)
         opener = mock.Mock()
@@ -584,8 +592,9 @@ class CbosaVerificationContractTests(unittest.TestCase):
         cbosa._ostatnie[0] = 0.0
         with mock.patch.object(cbosa.urllib.request, "build_opener", return_value=opener), \
                 mock.patch.object(cbosa.time, "sleep"):
-            with self.assertRaisesRegex(SystemExit, "Nie znaleziono orzeczenia") as caught:
+            with self.assertRaisesRegex(SystemExit, "nie ma orzeczenia o id 'DEADBEEF'") as caught:
                 cbosa._fetch("/doc/DEADBEEF")
+        self.assertNotIsInstance(caught.exception, cbosa.BrakWynikow)
         self.assertNotIn("ponownie", str(caught.exception))
 
     def test_http_410_na_wyszukiwarce_to_nadal_unknown(self):
@@ -611,7 +620,7 @@ class CbosaVerificationContractTests(unittest.TestCase):
                 redirect_stdout(out):
             with self.assertRaises(SystemExit) as caught:
                 cbosa.main()
-        self.assertNotEqual(caught.exception.code, 0)
+        self.assertEqual(caught.exception.code, 2)
         self.assertEqual(out.getvalue(), "")
 
     def test_t12_json_strict_nie_emituje_wyniku_gdy_kontrola_nie_przeszla(self):
@@ -619,26 +628,29 @@ class CbosaVerificationContractTests(unittest.TestCase):
         with mock.patch.object(cbosa, "_szukaj", side_effect=cbosa.VerificationUnknown("timeout")), \
                 mock.patch.object(sys, "argv", ["cbosa.py", "szukaj", "RODO", "--json", "--strict"]), \
                 redirect_stdout(out):
-            with self.assertRaises(SystemExit):
+            with self.assertRaises(SystemExit) as caught:
                 cbosa.main()
         self.assertEqual(out.getvalue(), "")
+        self.assertEqual(caught.exception.code, 2)
 
         out = io.StringIO()
         with mock.patch.object(cbosa, "_fetch", return_value="<html><body>Błąd</body></html>"), \
                 mock.patch.object(sys, "argv", ["cbosa.py", "orzeczenie", "DEADBEEF", "--json", "--strict"]), \
                 redirect_stdout(out):
-            with self.assertRaises(SystemExit):
+            with self.assertRaises(SystemExit) as caught:
                 cbosa.main()
         self.assertEqual(out.getvalue(), "")
+        self.assertEqual(caught.exception.code, 2)
 
         out = io.StringIO()
         with mock.patch.object(cbosa, "_szukaj", return_value=(0, [], "Nie znaleziono")), \
                 mock.patch.object(sys, "argv", ["cbosa.py", "sygnatura", "II", "FSK", "1/24",
                                                        "--json", "--strict"]), \
                 redirect_stdout(out):
-            with self.assertRaises(SystemExit):
+            with self.assertRaises(SystemExit) as caught:
                 cbosa.main()
         self.assertEqual(out.getvalue(), "")
+        self.assertEqual(caught.exception.code, 1)  # rozpoznane zero przy zweryfikowanym TLS
 
 
 class TestT13PrzekierowaniaHttps(unittest.TestCase):
@@ -793,12 +805,15 @@ class TestOrganIAnonimizacja(unittest.TestCase):
     HTML_ZERO = TestWyniki.HTML_ZERO
 
     def _uruchom(self, argv, html):
-        out = io.StringIO()
+        """→ (stdout, stderr, atrapa _fetch); kod wyjścia w self.kod (komunikat idzie na stderr)."""
+        out, err = io.StringIO(), io.StringIO()
         with mock.patch.object(cbosa, "_fetch", return_value=html) as f, \
-                mock.patch.object(sys, "argv", ["cbosa.py"] + argv), redirect_stdout(out):
+                mock.patch.object(sys, "argv", ["cbosa.py"] + argv), redirect_stdout(out), \
+                redirect_stderr(err):
             with self.assertRaises(SystemExit) as caught:
                 cbosa.main()
-        return out.getvalue(), str(caught.exception.code), f
+        self.kod = caught.exception.code
+        return out.getvalue(), err.getvalue(), f
 
     def test_znak_organu(self):
         for znak in ("DKN.5131.1.2025", "ZSPR.421.2.2019", "DS.523.1.2024", "ZSOŚS.421.25.2019"):
@@ -810,6 +825,7 @@ class TestOrganIAnonimizacja(unittest.TestCase):
     def test_zero_dla_znaku_organu_to_nie_zweryfikowane_zero(self):
         out, msg, _ = self._uruchom(["szukaj", "DKN.5131.1.2025"], self.HTML_ZERO)
         self.assertEqual(out, "")
+        self.assertEqual(self.kod, 2)  # CHANGELOG 2.2.0: to celowo NIE jest zweryfikowane zero
         self.assertNotIn("zweryfikowane zero", msg)
         self.assertIn("NIE dowodzi braku wyroku", msg)
         self.assertIn("nr [...]", msg)
@@ -818,11 +834,13 @@ class TestOrganIAnonimizacja(unittest.TestCase):
 
     def test_zero_dla_sygnatury_ze_znakiem_organu(self):
         _, msg, _ = self._uruchom(["sygnatura", "ZSPR.421.2.2019"], self.HTML_ZERO)
+        self.assertEqual(self.kod, 2)
         self.assertIn("anonimizuje", msg)
         self.assertNotIn("Sygnatury sądów administracyjnych mają formę", msg)
 
     def test_zwykla_fraza_nadal_zweryfikowane_zero(self):
         _, msg, _ = self._uruchom(["szukaj", "jakaś fraza"], self.HTML_ZERO)
+        self.assertEqual(self.kod, 1)
         self.assertIn("zweryfikowane zero", msg)
 
     def test_organ_trafia_do_formularza(self):
@@ -919,19 +937,23 @@ class TestDiagnozaBleduSieci(unittest.TestCase):
 
     def test_main_podaje_porade_zamiast_ogolnika(self):
         blad = cbosa.VerificationUnknown("blokada środowiska", porada="PORADA-X")
+        err = io.StringIO()
         with mock.patch.object(cbosa, "_fetch", side_effect=blad), \
-                mock.patch.object(sys, "argv", ["cbosa.py", "szukaj", "RODO"]):
+                mock.patch.object(sys, "argv", ["cbosa.py", "szukaj", "RODO"]), redirect_stderr(err):
             with self.assertRaises(SystemExit) as caught:
                 cbosa.main()
-        self.assertIn("PORADA-X", str(caught.exception.code))
-        self.assertNotIn("za chwilę", str(caught.exception.code))
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn("PORADA-X", err.getvalue())
+        self.assertNotIn("za chwilę", err.getvalue())
 
     def test_main_bez_porady_zostaje_ogolnik(self):
+        err = io.StringIO()
         with mock.patch.object(cbosa, "_fetch", side_effect=cbosa.VerificationUnknown("x")), \
-                mock.patch.object(sys, "argv", ["cbosa.py", "szukaj", "RODO"]):
+                mock.patch.object(sys, "argv", ["cbosa.py", "szukaj", "RODO"]), redirect_stderr(err):
             with self.assertRaises(SystemExit) as caught:
                 cbosa.main()
-        self.assertIn("Spróbuj ponownie za chwilę", str(caught.exception.code))
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn("Spróbuj ponownie za chwilę", err.getvalue())
 
 
 class TestBladWyszukiwarki(unittest.TestCase):
@@ -948,6 +970,330 @@ class TestBladWyszukiwarki(unittest.TestCase):
     def test_niepoprawna_data_nadal_odrzucona(self):
         strona = '<html><body><div class="warning">Niepoprawny format daty</div></body></html>'
         self.assertEqual(cbosa._wyniki(strona), (None, [], "Niepoprawny format daty"))
+
+
+def _uruchom_main(argv, fetch=None, opener_blad=None, env=None):
+    """cbosa.main() offline → (kod wyjścia, stdout, stderr); kod 0, gdy main() wrócił normalnie.
+
+    fetch: atrapa _fetch — str (stała strona), lista stron / funkcja (side_effect) albo wyjątek.
+    opener_blad: zamiast atrapy _fetch prawdziwy _fetch z openerem rzucającym ten wyjątek (ścieżka
+    przez _ponow / _blad_transportu); sleep i proxy podmienione, więc bez czekania i bez sieci."""
+    out, err = io.StringIO(), io.StringIO()
+    latki = [mock.patch.object(sys, "argv", ["cbosa.py", *argv]), mock.patch.object(cbosa.time, "sleep"),
+             redirect_stdout(out), redirect_stderr(err)]
+    if fetch is not None:
+        kw = {"return_value": fetch} if isinstance(fetch, str) else {"side_effect": fetch}
+        latki.append(mock.patch.object(cbosa, "_fetch", **kw))
+    if opener_blad is not None:
+        opener = mock.Mock()
+        opener.open.side_effect = opener_blad
+        latki += [mock.patch.object(cbosa.urllib.request, "build_opener", return_value=opener),
+                  mock.patch.object(cbosa.urllib.request, "getproxies", return_value={})]
+    if env is not None:
+        latki.append(mock.patch.dict(os.environ, env, clear=True))
+    cbosa._ostatnie[0] = 0.0
+    kod = 0
+    with contextlib.ExitStack() as stos:
+        for latka in latki:
+            stos.enter_context(latka)
+        try:
+            cbosa.main()
+        except SystemExit as e:
+            kod = e.code
+    cbosa._transport_tls_verified = True
+    return kod, out.getvalue(), err.getvalue()
+
+
+class TestKodyWyjscia(unittest.TestCase):
+    """0 = wynik, 1 = ZWERYFIKOWANY brak, 2 = wszystko inne (jak saos.py i uodo.py). Do 2.4.0 włącznie każde
+    sys.exit("tekst") w cbosa.py dawało 1 — awaria serwera („Błąd przy szukaniu orzeczeń”), zły
+    argument, nieistniejący doc_id i blokada --strict wyglądały jak „nie ma takiego orzeczenia”."""
+
+    WYNIKI = TestWyniki.HTML
+    ZERO = TestWyniki.HTML_ZERO
+    ZLA_DATA = TestWyniki.HTML_ZLA_DATA
+    PRAWOMOCNE = TestPrawomocnosc.PRAWOMOCNE
+    NIEPRAWOMOCNE = TestPrawomocnosc.NIEPRAWOMOCNE
+    PUSTE_POLE = TestPrawomocnosc.PUSTE_POLE
+    # strona wyników z licznikiem, ale bez żadnej pozycji (np. --strona za końcem, zmiana układu listy)
+    LICZNIK_BEZ_POZYCJI = '<table class="top-linki"><tr><td>Znaleziono 2 orzeczeń, Str. 3 z 1</td></tr></table>'
+    # strona /doc/{id} bez sekcji „Uzasadnienie" (prawomocne, sama sentencja)
+    BEZ_UZASADNIENIA = PRAWOMOCNE[:PRAWOMOCNE.index('<td class="info-list-label-uzasadnienie">')] + \
+        '<td class="info-list-label-uzasadnienie"><div class="lista-label">Sentencja</div>' \
+        '<span class="info-list-value-uzasadnienie"><P>NSA oddala skargę kasacyjną.</P></span></td>'
+
+    def _kod(self, oczekiwany, argv, **kw):
+        kod, out, err = _uruchom_main(argv, **kw)
+        self.assertEqual(kod, oczekiwany, f"{argv}: stderr={err!r}")
+        if oczekiwany != 0:
+            self.assertEqual(out, "", f"{argv}: przy kodzie {kod} stdout musi być pusty")
+            self.assertTrue(err.strip(), f"{argv}: komunikat musi trafić na stderr")
+        return out, err
+
+    # ── 0: jest wynik ──
+    def test_wynik_to_0(self):
+        for argv, strona in ((["szukaj", "RODO"], self.WYNIKI), (["szukaj", "RODO", "--json"], self.WYNIKI),
+                             (["sygnatura", "II", "FSK", "2870/18"], self.WYNIKI),
+                             (["--json", "sygnatura", "II FSK 2870/18"], self.WYNIKI),
+                             (["orzeczenie", "8889489BE0"], self.PRAWOMOCNE),
+                             (["orzeczenie", "8889489BE0", "--json"], self.PRAWOMOCNE),
+                             (["orzeczenie", "8889489BE0", "--fragment", "tekst uzasadnienia"], self.PRAWOMOCNE),
+                             (["orzeczenie", "8889489BE0"], self.BEZ_UZASADNIENIA)):
+            with self.subTest(argv=argv):
+                out, _ = self._kod(0, argv, fetch=strona)
+                self.assertTrue(out.strip())
+        out, _ = self._kod(0, ["sygnatura", "II FSK 2870/18", "--json"], fetch=self.WYNIKI)
+        self.assertEqual(json.loads(out)["wyniki"][0]["doc_id"], "8889489BE0")
+
+    # ── 1: zweryfikowany brak ──
+    def test_zero_szukaj_i_sygnatura_to_1_takze_z_json(self):
+        for argv in (["szukaj", "zzz-nie-ma"], ["szukaj", "zzz-nie-ma", "--json"],
+                     ["--json", "szukaj", "--sad", "NSA", "--od", "2025-01-01"],
+                     ["szukaj", "zzz-nie-ma", "--strona", "2"],
+                     ["sygnatura", "II", "FSK", "99999/18"], ["sygnatura", "II FSK 99999/18", "--json"],
+                     ["sygnatura", "II FSK 99999/18", "--strict"]):
+            with self.subTest(argv=argv):
+                _, err = self._kod(1, argv, fetch=self.ZERO)
+                self.assertRegex(err, r"Brak wyników \(zweryfikowane zero\)|Nie znaleziono orzeczenia o sygnaturze")
+
+    def test_brak_frazy_w_uzasadnieniu_to_1(self):
+        _, err = self._kod(1, ["orzeczenie", "109C7D1883", "--fragment", "zzz-nie-ma"], fetch=self.NIEPRAWOMOCNE)
+        self.assertIn("Nie znaleziono frazy 'zzz-nie-ma' w uzasadnieniu", err)
+
+    def test_json_z_fragmentem_zwraca_pelny_json_jak_saos(self):
+        # --json ignoruje --fragment (tak samo w saos.py): pełny zrzut, kod 0
+        out, _ = self._kod(0, ["orzeczenie", "8889489BE0", "--json", "--fragment", "zzz-nie-ma"],
+                           fetch=self.PRAWOMOCNE)
+        self.assertIn("uzasadnienie", json.loads(out))
+
+    def test_zero_przy_niezweryfikowanym_tls_to_1_z_adnotacja_a_strict_2(self):
+        def strona_bez_tls(path, data=None):
+            cbosa._transport_tls_verified = False
+            return self.ZERO
+        _, err = self._kod(1, ["szukaj", "zzz-nie-ma"], fetch=strona_bez_tls)
+        self.assertIn("transport TLS nie został zweryfikowany", err)
+        _, err = self._kod(2, ["szukaj", "zzz-nie-ma", "--strict"], fetch=strona_bez_tls)
+        self.assertIn("tryb strict odrzuca wynik pobrany bez weryfikacji certyfikatu TLS", err)
+
+    # ── 2: błędy wejścia ──
+    def test_zle_argumenty_to_2(self):
+        for argv, fraza in ((["szukaj", "--sad", "kosmos"], "Nieznany sąd"),
+                            (["szukaj", "--rodzaj", "apelacja"], "Nieznany rodzaj"),
+                            (["szukaj", "--od", "2024-13-01"], "Nieprawidłowa data"),
+                            (["szukaj", "--od", "1.1.24"], "Nieprawidłowa data"),
+                            (["szukaj"], "Podaj kryterium"),
+                            (["orzeczenie", "nie-hex!"], "Nieprawidłowy doc_id")):
+            with self.subTest(argv=argv):
+                _, err = self._kod(2, argv, fetch=self.WYNIKI)
+                self.assertIn(fraza, err)
+
+    def test_argparse_to_2_a_version_0(self):
+        self._kod(2, ["szukaj", "x", "--strona", "dwa"])
+        self._kod(2, ["nieznana-komenda"])
+        out, _ = self._kod(0, ["--version"])
+        self.assertIn(cbosa.__version__, out)
+
+    # ── 2: strona CBOSA, która nie potwierdza braku ──
+    def test_odrzucone_zapytanie_to_2(self):
+        for argv in (["szukaj", "x"], ["sygnatura", "II FSK 1/18"]):
+            with self.subTest(argv=argv):
+                _, err = self._kod(2, argv, fetch=self.ZLA_DATA)
+                self.assertIn("CBOSA odrzuciło zapytanie", err)
+
+    def test_blad_przy_szukaniu_i_strona_bez_licznika_to_2(self):
+        blad = '<html><body><div class="warning">Błąd przy szukaniu orzeczeń</div></body></html>'
+        for argv in (["szukaj", "x"], ["sygnatura", "II FSK 1/18"], ["szukaj", "x", "--strona", "2"]):
+            with self.subTest(argv=argv):
+                _, err = self._kod(2, argv, fetch=blad)
+                self.assertIn("ponów to samo zapytanie", err)
+                self.assertIn("To NIE jest brak wyników", err)
+                _, err = self._kod(2, argv, fetch="<html><body>Service unavailable</body></html>")
+                self.assertIn("bez licznika i listy wyników", err)
+
+    def test_licznik_bez_pozycji_to_2(self):
+        # --strona za końcem wyników: dalsza strona pusta albo z „Nie znaleziono” — licznik z pierwszej
+        for dalsza in (self.LICZNIK_BEZ_POZYCJI, self.ZERO):
+            with self.subTest(dalsza=dalsza[:40]):
+                _, err = self._kod(2, ["szukaj", "RODO", "--strona", "500"], fetch=[self.WYNIKI, dalsza])
+                self.assertIn("NIE jest zweryfikowany brak", err)
+                self.assertIn("1878", err)
+        _, err = self._kod(2, ["szukaj", "RODO"], fetch=self.LICZNIK_BEZ_POZYCJI)
+        self.assertIn("NIE jest zweryfikowany brak", err)
+        _, err = self._kod(2, ["sygnatura", "II FSK 1/18"], fetch=self.LICZNIK_BEZ_POZYCJI)
+        self.assertIn("NIE jest zweryfikowany brak", err)
+
+    def test_numer_decyzji_organu_to_2_nie_zweryfikowane_zero(self):
+        for argv in (["szukaj", "DKN.5131.1.2025"], ["szukaj", "kara DKN.5131.1.2025", "--json"],
+                     ["sygnatura", "ZSPR.421.2.2019"]):
+            with self.subTest(argv=argv):
+                _, err = self._kod(2, argv, fetch=self.ZERO)
+                self.assertIn("NIE dowodzi braku wyroku", err)
+
+    def test_orzeczenie_bledy_to_2(self):
+        _, err = self._kod(2, ["orzeczenie", "DEADBEEF"], fetch="<html><body>Błąd</body></html>")
+        self.assertIn("nie udało się rozpoznać strony orzeczenia", err)
+        _, err = self._kod(2, ["orzeczenie", "8889489BE0", "--fragment", "skarga"], fetch=self.BEZ_UZASADNIENIA)
+        self.assertIn("To NIE jest brak frazy", err)
+
+    def test_strict_to_2(self):
+        for argv, strona, fraza in ((["orzeczenie", "109C7D1883", "--strict"], self.NIEPRAWOMOCNE, "nieprawomocne"),
+                                    (["orzeczenie", "109C7D1883", "--strict", "--json"], self.NIEPRAWOMOCNE, "nieprawomocne"),
+                                    (["orzeczenie", "1A8B8B8130", "--strict"], self.PUSTE_POLE, "nie podaje prawomocności")):
+            with self.subTest(argv=argv):
+                _, err = self._kod(2, argv, fetch=strona)
+                self.assertIn(fraza, err)
+
+        def bez_tls(path, data=None):
+            cbosa._transport_tls_verified = False
+            return self.WYNIKI
+        for argv in (["szukaj", "RODO", "--strict"], ["sygnatura", "II FSK 2870/18", "--strict", "--json"]):
+            with self.subTest(argv=argv):
+                _, err = self._kod(2, argv, fetch=bez_tls)
+                self.assertIn("bez weryfikacji certyfikatu TLS", err)
+
+    def test_nieprzewidziany_wyjatek_to_2(self):
+        _, err = self._kod(2, ["szukaj", "RODO"], fetch=KeyError("opis"))
+        self.assertIn("nieoczekiwany błąd helpera cbosa.py (KeyError('opis'))", err)
+        self.assertIn("To NIE jest brak wyników", err)
+
+    # ── 2: transport — prawdziwy _fetch, każda diagnoza _blad_transportu ──
+    def test_bledy_transportu_to_2(self):
+        przypadki = [
+            (urllib.error.URLError(OSError("Tunnel connection failed: 403 Forbidden")), "blokada środowiska"),
+            (urllib.error.URLError(socket.gaierror(8, "nodename nor servname provided")), "brak sieci"),
+            (http.client.RemoteDisconnected("Remote end closed connection without response"), "awaria po stronie serwera"),
+            (urllib.error.URLError(socket.timeout("timed out")), "przekroczony czas oczekiwania"),
+            (urllib.error.URLError(ValueError("coś innego")), "błąd sieci"),
+            (urllib.error.HTTPError(cbosa.BASE + "/cbo/search", 503, "Service Unavailable", {}, None), "HTTP 503"),
+            (urllib.error.HTTPError(cbosa.BASE + "/cbo/search", 403, "Forbidden", {}, None), "HTTP 403"),
+        ]
+        for blad, fraza in przypadki:
+            for argv in (["szukaj", "RODO"], ["sygnatura", "II FSK 2870/18", "--json"], ["orzeczenie", "8889489BE0"]):
+                with self.subTest(blad=repr(blad), argv=argv):
+                    _, err = self._kod(2, argv, opener_blad=blad)
+                    self.assertIn(fraza, err)
+                    self.assertIn("To NIE jest brak wyników", err)
+
+    def test_nieistniejacy_doc_id_to_2(self):
+        gone = urllib.error.HTTPError(cbosa.BASE + "/doc/DEADBEEF", 410, "Gone", {}, None)
+        _, err = self._kod(2, ["orzeczenie", "DEADBEEF"], opener_blad=gone)
+        self.assertIn("nie ma orzeczenia o id 'DEADBEEF'", err)
+        self.assertNotIn("ponownie", err)
+
+    def test_blad_certyfikatu_bez_zgody_to_2(self):
+        blad = urllib.error.URLError(ssl.SSLCertVerificationError("certificate verify failed"))
+        bez_zgody = {k: v for k, v in os.environ.items() if k != "CBOSA_INSECURE_TLS"}
+        _, err = self._kod(2, ["szukaj", "RODO"], opener_blad=blad, env=bez_zgody)
+        self.assertIn("CBOSA_INSECURE_TLS=1", err)
+
+
+def _lista(total, opisy):
+    """Strona wyników CBOSA w kształcie TestWyniki.HTML: licznik + pozycje (doc_id, opis)."""
+    wiersze = "".join(
+        f'<tr class="niezaznaczona"><td class="info-list-value " style="font-size: 12pt; border: none;">'
+        f'<a href="/doc/{doc}"  >{opis}</a></td></tr>'
+        f'<tr class="niezaznaczona"><td class="info-list-value " style="font-size: 10pt; border: none;">'
+        f'Oddalono skargę...</td></tr>' for doc, opis in opisy)
+    return (f'<table class="top-linki"><tr><td>Znaleziono {total} orzeczeń, Str. 1 z {-(-total // 10)}</td></tr>'
+            f'</table><table class="info-list">{wiersze}</table>')
+
+
+class TestKolizjeSygnatur(unittest.TestCase):
+    """Audyt 13.11.2026 (raport, „signature collisions”): CBOSA dopasowuje pole sygnatury po członach —
+    `sygnatura "SA/Wa 1/20"` dało na żywo 8 różnych spraw z wydziałów I–VIII WSA w Warszawie, a
+    „II SA/Wa 2559/19” i „OSK 150/04” — po dwa orzeczenia tej samej sprawy. Silnik pokazywał
+    wszystkie, ale wskazywał pierwsze jako „Pełna treść” bez słowa, że to różne sprawy."""
+
+    OSIEM = _lista(8, [("216497BE0A", "VII SA/Wa 1/20 - Wyrok WSA w Warszawie z 2020-10-06"),
+                       ("35CDBFABDE", "II SA/Wa 1/20 - Postanowienie WSA w Warszawie z 2020-10-01"),
+                       ("809FA03771", "V SA/Wa 1/20 - Wyrok WSA w Warszawie z 2020-02-05")])
+    DWA = _lista(2, [("2F881CED73", "II SA/Wa 2559/19 - Wyrok WSA w Warszawie z 2020-09-03"),
+                     ("6E19266905", "II SA/Wa 2559/19 - Postanowienie WSA w Warszawie z 2020-02-13")])
+    JEDEN = _lista(1, [("30EDD316DA", "II SA/Wa 1030/19 - Wyrok WSA w Warszawie z 2019-12-11")])
+    DUZO = _lista(37, [(f"ABCDEF{i:04d}", f"I OSK {i}/20 - Wyrok NSA z 2021-01-01") for i in range(1, 11)])
+
+    def test_rozne_sprawy_ostrzezenie_i_bez_wskazania_pierwszej(self):
+        kod, out, _ = _uruchom_main(["sygnatura", "SA/Wa", "1/20"], fetch=self.OSIEM)
+        self.assertEqual(kod, 0)
+        self.assertIn("trafienia mają różne sygnatury (3), czyli dotyczą różnych spraw: VII SA/Wa 1/20, "
+                      "II SA/Wa 1/20, V SA/Wa 1/20", out)
+        self.assertIn("pokazano 3 z 8 trafień", out)
+        self.assertNotIn("Pełna treść: orzeczenie 216497BE0A", out)
+        self.assertIn("Pełna treść: orzeczenie <doc_id> — wybierz z listy", out)
+
+    def test_ta_sama_sygnatura_kilka_orzeczen(self):
+        kod, out, _ = _uruchom_main(["sygnatura", "II SA/Wa 2559/19"], fetch=self.DWA)
+        self.assertEqual(kod, 0)
+        self.assertIn("ma w CBOSA kilka orzeczeń (2), np. wyrok i postanowienie", out)
+        self.assertNotIn("różne sygnatury", out)
+        self.assertIn("[6E19266905]  II SA/Wa 2559/19 - Postanowienie", out)  # oba widoczne
+
+    def test_jedno_trafienie_bez_uwag(self):
+        kod, out, _ = _uruchom_main(["sygnatura", "ii  sa/wa 1030/19"], fetch=self.JEDEN)  # wielkość liter, spacje
+        self.assertEqual(kod, 0)
+        self.assertNotIn("UWAGA", out)
+        self.assertIn("Pełna treść: orzeczenie 30EDD316DA", out)
+
+    def test_ponad_dziesiec_trafien_podaje_kolejna_strone(self):
+        kod, out, _ = _uruchom_main(["sygnatura", "OSK"], fetch=self.DUZO)
+        self.assertEqual(kod, 0)
+        self.assertIn('pokazano 10 z 37 trafień (pierwsza strona wyników CBOSA). Kolejne: szukaj --sygnatura "OSK" --strona 2', out)
+
+    def test_fragment_sygnatury_z_jednym_trafieniem_nie_udaje_roznych_spraw(self):
+        jedno = _lista(1, [("8889489BE0", "II FSK 2870/18 - Wyrok NSA z 2021-02-10")])
+        kod, out, _ = _uruchom_main(["sygnatura", "FSK 2870/18"], fetch=jedno)
+        self.assertEqual(kod, 0)
+        self.assertNotIn("różne sygnatury", out)
+        self.assertIn("CBOSA dopasowała zapytanie 'FSK 2870/18' do sygnatury 'II FSK 2870/18'", out)
+        self.assertIn("Pełna treść: orzeczenie 8889489BE0", out)
+
+    def test_json_uwagi_na_stderr_stdout_czysty(self):
+        kod, out, err = _uruchom_main(["sygnatura", "SA/Wa 1/20", "--json"], fetch=self.OSIEM)
+        self.assertEqual(kod, 0)
+        self.assertEqual(len(json.loads(out)["wyniki"]), 3)
+        self.assertIn("różne sygnatury", err)
+
+
+class TestPrawomocnyWyrokWsaZWyrokiemNsa(unittest.TestCase):
+    """Audyt 13.11.2026: II SA/Wa 1341/22 ma w CBOSA „orzeczenie prawomocne”, choć NSA (III OSK 3311/23)
+    uchylił ten wyrok i decyzję; II SA/Wa 2559/19 i II SA/Wa 863/23 w tej samej sytuacji są
+    „nieprawomocne”. Wyrok WSA z powiązanym wyrokiem NSA dostaje więc uwagę także przy „prawomocne”."""
+
+    WSA = TestPrawomocnosc._html("2022-10-28", "orzeczenie prawomocne",
+                                 sygnatura="II SA/Wa 1341/22 - Wyrok WSA w Warszawie z 2022-10-28")
+
+    def test_tekst_i_json_maja_uwage(self):
+        kod, out, _ = _uruchom_main(["orzeczenie", "AE3EE2C6FD"], fetch=self.WSA)
+        self.assertEqual(kod, 0)
+        self.assertTrue(out.startswith("UWAGA: CBOSA wiąże z orzeczeniem II SA/Wa 1341/22 wyrok NSA "
+                                       "(II FSK 2870/18 - Wyrok NSA z 2021-02-10 → orzeczenie 8889489BE0)"))
+        self.assertIn("NIE wyklucza, że NSA je uchylił", out)
+        self.assertIn("Prawomocność: prawomocne (oznaczenie CBOSA „orzeczenie prawomocne”) — zob. UWAGA wyżej", out)
+        kod, out, _ = _uruchom_main(["orzeczenie", "AE3EE2C6FD", "--json"], fetch=self.WSA)
+        d = json.loads(out)
+        self.assertIs(d["prawomocne"], True)
+        self.assertIn("NIE wyklucza", d["uwaga"])
+
+    def test_strict_nadal_przepuszcza(self):
+        # --strict blokuje tylko „nieprawomocne” i brak oznaczenia; tę uwagę opisuje SKILL.md
+        kod, out, _ = _uruchom_main(["orzeczenie", "AE3EE2C6FD", "--strict"], fetch=self.WSA)
+        self.assertEqual(kod, 0)
+        self.assertIn("Tryb --strict tego nie sprawdza", out)
+
+    def test_bez_uwagi_dla_nsa_oz_sprzed_2004(self):
+        # „SA/Sz 833/03” to sygnatura NSA oz. w Szczecinie (sprzed reformy), nie WSA
+        nsa_oz = TestPrawomocnosc._html("2003-12-17", "orzeczenie prawomocne",
+                                        sygnatura="SA/Sz 833/03 - Wyrok NSA oz. w Szczecinie z 2003-12-17")
+        _, out, _ = _uruchom_main(["orzeczenie", "2D8D134608"], fetch=nsa_oz)
+        self.assertNotIn("UWAGA", out)
+
+    def test_bez_uwagi_dla_nsa_i_wsa_bez_wyroku_nsa(self):
+        _, out, _ = _uruchom_main(["orzeczenie", "8889489BE0"], fetch=TestPrawomocnosc.PRAWOMOCNE)
+        self.assertNotIn("UWAGA", out)  # sam wyrok NSA
+        bez = TestPrawomocnosc._html("2022-10-28", "orzeczenie prawomocne", powiazane=False,
+                                     sygnatura="II SA/Wa 1341/22 - Wyrok WSA w Warszawie z 2022-10-28")
+        _, out, _ = _uruchom_main(["orzeczenie", "AE3EE2C6FD"], fetch=bez)
+        self.assertNotIn("UWAGA", out)
 
 
 if __name__ == "__main__":
