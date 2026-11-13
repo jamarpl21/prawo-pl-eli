@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-eli
-version: 2.2.0
+version: 2.3.0
 description: >-
   Odpytuje OFICJALNE API ELI Sejmu (api.sejm.gov.pl/eli) — źródło pierwotne prawa polskiego
   (Dziennik Ustaw, Monitor Polski): wyszukiwanie aktów, TEKST JEDNOLITY, pojedyncze artykuły,
@@ -62,7 +62,7 @@ ELI="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-eli/scripts/eli.py"
 #    sprawdzana w kodzie przed zapisem i przed każdym uruchomieniem; niezgodna = helper nie startuje.
 [ -f "$ELI" ] || ELI=$(python3 - <<'EOF'
 import hashlib, os, sys, urllib.request
-WERSJA, SHA256 = "2.2.0", "3baed6339913332ede66588c9624876cd4471d7d8cabb31097a9c9de5db3a949"
+WERSJA, SHA256 = "2.3.0", "dd36e0be449b07268b32d6e4d948d9e632d74d9062627546368c943797365ff7"
 URL = f"https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/v{WERSJA}/plugins/prawo-pl-eli/skills/prawo-pl-eli/scripts/eli.py"
 p = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"prawo-pl-eli-{WERSJA}", "eli.py")
 try:
@@ -179,6 +179,9 @@ Gdy w systemie jest `tesseract` (z językiem `pol`) i `pdftoppm`, skany do 10 st
 samodzielnie, dłuższe — z `tekst … --ocr` (ok. 7 s/stronę; wynik zapamiętywany w `~/.cache/prawo-pl-eli/ocr`);
 `--bez-ocr` wyłącza OCR. Tekst z OCR ma nagłówek „UWAGA — OCR … NIEPEWNY" — liczby, daty i kwoty sprawdź w PDF
 przed cytatem; **`--strict` blokuje tekst z OCR i tekst ze stronami bez warstwy tekstowej (niekompletny).**
+tesseract czyta „§" jako „$" albo „8" („8 11. Zebranie…") — narzędzie poprawia to tylko tam, gdzie potwierdza to
+ciąg numeracji paragrafów albo kontekst odesłania („w 8 1 ust. 2"); gdy `--fragment "§ N"` nie trafia w tekst
+z OCR, szukaj też słowem z treści.
 Ogłoszenia wydawcy z końca zeszytu (strona „CENTRUM OBSŁUGI KANCELARII… proponuje… Pełna oferta") i stopka
 zeszytu nie są treścią aktu — narzędzie je usuwa, także gdy strona-reklama jest skanem odczytanym przez OCR
 (taka strona nie liczy się wtedy jako tekst z OCR).

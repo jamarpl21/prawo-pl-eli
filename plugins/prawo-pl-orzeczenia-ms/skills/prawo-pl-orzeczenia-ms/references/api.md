@@ -1,4 +1,4 @@
-# Kontrakt publicznych stron MS (sprawdzony 2026-09-20)
+# Kontrakt publicznych stron MS (sprawdzony 2026-09-20, uzupełniany do 2026-11-13)
 
 Portal: https://orzeczenia.ms.gov.pl; publiczny HTML aplikacji Tapestry 5.3.8 / 3.1.3,
 nie udokumentowane API JSON. Helper używa `urllib`, HTTPS i `User-Agent: curl/8.7.1`.
@@ -53,6 +53,83 @@ frazę w ścieżce (`/details/<fraza>/<ID>`); ID to ostatni segment. W `.title` 
 `<p>Orzeczenie nieprawomocne</p>` (→ `oznaczenie_nieprawomocne`). Strona za ostatnią
 (np. 500 przy 3192 trafieniach) ma `.big_number`, ale pustą listę — helper zgłasza błąd zakresu.
 
+### Stronicowanie: kolejność remisów jest niestabilna (pomiar 2026-11-13)
+
+Każda strona to osobne zapytanie, a portal nie ustala kolejności pozycji o równym kluczu
+sortowania — między zapytaniami zmieniają miejsca, więc kolejne strony powtarzają pozycje,
+a innych nie ma na żadnej stronie. Pomiar: wszystkie strony, liczba unikalnych ID / trafienia.
+
+| Zapytanie | `--sort`, kierunek | Unikalne ID |
+|---|---|---:|
+| SR w Giżycku (`--sad 15051510 --wydzial 06`), orzeczenia z 2024 r., 72 trafienia, najwyżej 3 orzeczenia z tą samą datą | score (2 przebiegi) | 60, 50 / 72 |
+| | istotnosc | 55 / 72 |
+| | datapublikacji | 60 / 72 |
+| | data, descending (2 przebiegi) | 71, 71 / 72 |
+| | data, ascending (2 przebiegi) | 72, 72 / 72 |
+| Apelacja warszawska (`--apelacja 1545`), jeden dzień (`--od` = `--do` = 2025-06-10), 28 trafień, wszystkie z tą samą datą | data, descending (2) | 24, 20 / 28 |
+| | data, ascending (2) | 20, 18 / 28 |
+| | score | 20 / 28 |
+
+W Giżycku `data descending` dwa razy powtórzyło tę samą pozycję (data 2024-07-31) na stronach 2 i 3 —
+remis daty na granicy stron. Żadne sortowanie nie jest więc stabilne; `data` gubi najmniej, gdy mało
+orzeczeń ma tę samą datę, a przy wielu remisach daty jest tak samo zawodne jak `score`. Wcześniejszy
+pomiar (zapytanie z frazą, 12 trafień): 12/12 — `score` różnicował pozycje. W zapytaniu jednodniowym
+suma ID z dwóch pierwszych przebiegów (24 i 20 unikalnych) dała komplet 28/28 — jedna obserwacja,
+nie gwarancja.
+Helper przy `liczba_wynikow` > 10 (bez `--wszystkie`) dodaje uwagę, która odsyła do `--wszystkie`.
+
+### Pełna lista: `--wszystkie` (od 2026-11-13)
+
+Opcja `szukaj`/`sygnatura`, domyślnie wyłączona. Mechanizm:
+
+1. Pierwsze zapytanie (strona 1, `--sort data`, kierunek z `--kierunek`) ustala `liczba_wynikow`.
+   Powyżej **200 trafień** helper kończy się błędem (kod 2) po tym jednym zapytaniu — z liczbą
+   trafień, limitem i wskazówką zawężenia (`--sad`, `--wydzial`, krótszy zakres `--od/--do`).
+   Limit i liczba rund to stałe w kodzie (ochrona portalu), bez flagi do ich podniesienia.
+2. Runda = strony 1…⌈N/10⌉; pozycje łączone po `id`. Gdy unikalnych jest dokładnie N, helper kończy
+   od razu (także w środku rundy). Inaczej kolejna runda, **najwyżej 3** — maksymalnie 20 × 3 = 60
+   zapytań w odstępach ≥0,6 s, bez równoległości. Pobierane są tylko pozycje listy (bez metryk i treści).
+3. Brak kompletu po 3 rundach → kod 2 (UNKNOWN) z liczbą zebranych/oczekiwanych; niepełnej listy
+   helper nie wypisuje.
+4. Każda strona porównuje swoją liczbę trafień z ustaloną N. Inna liczba, pusta strona lub strona
+   poza zakresem w trakcie albo więcej różnych ID niż N = lista się zmieniła: zebrane pozycje są
+   odrzucane (usunięte orzeczenie mogłoby „dopełnić” licznik za brakujące), a następna runda zaczyna
+   od nowa i ustala N ponownie (w limicie 3 rund; zmiana także w ostatniej → kod 2). Wynik po takim
+   restarcie ma uwagę o zmianie. Zamiany jednej pozycji na inną przy niezmienionej liczbie trafień
+   między rundami nie da się wykryć licznikiem.
+5. `--strona` ≠ 1 i jawne `--sort` inne niż `data` są odrzucane przed pierwszym zapytaniem. Kolejność
+   portalu nie jest powtarzalna, więc wynik jest sortowany lokalnie: `data_orzeczenia` zgodnie
+   z `--kierunek`, przy równej dacie po `id` (w tym samym kierunku).
+6. JSON: `zrodlo` (URL strony 1), `liczba_wynikow`, `kompletna: true`, `rundy`, `zapytania`, `wyniki`,
+   `uwagi` — bez pola `strona`. Uwagi z pozycji (oznaczenie „nieprawomocne”, typ „uzasadnienie”,
+   ta sama sygnatura w wielu sądach) liczone są z całej listy; uwagi o stronicowaniu brak.
+   Zero trafień w pierwszym zapytaniu = kod 1, strona błędu portalu = kod 2, jak bez `--wszystkie`.
+
+Pomiar 2026-11-13 (helper z `--wszystkie`; „rundy/zapytania” do kompletu lub do błędu):
+
+| Zapytanie | Przebieg | Unikalne ID po rundach | Rundy | Zapytania | Komplet |
+|---|---|---|---:|---:|---|
+| SR w Giżycku, `--sad 15051510 --wydzial 06 --od 2024-01-01 --do 2024-12-31` (72) | 1 | 71, 71, 72 | 3 | 18 | tak |
+| | 2 | 72 | 1 | 8 | tak |
+| | 3 | 72 | 1 | 8 | tak |
+| Apelacja warszawska, `--apelacja 1545 --od 2025-06-10 --do 2025-06-10` (28, jedna data) | 1 | 22, 26, 26 | 3 | 9 | nie (kod 2) |
+| | 2 | 18, 28 | 2 | 4 | tak |
+| | 3 | 20, 28 | 2 | 5 | tak |
+| `--apelacja 1545 --od 2025-06-01 --do 2025-06-30` (331) | 1 | — | — | 1 | błąd limitu (kod 2) |
+| `sygnatura I ACa 1410/23` (1); `--sad 15050500 --od 2024-01-01 --do 2024-12-31` (9) | po 1 | 1; 9 | 1 | 1 | tak |
+
+Przy wielu remisach daty (wszystkie 28 pozycji z jednego dnia) pierwsza runda dawała 18–26 z 28
+unikalnych (6 przebiegów, z wariantem przemiennym) i 3 rundy nie zawsze wystarczają — helper zgłasza wtedy błąd zamiast niepełnej listy; zawężenie
+(`--sad`, `--wydzial`) zmniejsza liczbę remisów. W Giżycku (przebieg 1) dwie pierwsze rundy dały
+po 71 z 72, komplet dała dopiero trzecia (której pozycji brakowało, nie zapisano).
+Przemienny kierunek rund (malejąco, rosnąco, malejąco) sprawdzono na zapytaniu jednodniowym:
+komplet 1 z 3 przebiegów (26→28 w 2 rundach; 24, 25, 27; 20, 21, 24) wobec 2 z 3 przy tym samym
+kierunku — przewagi nie potwierdzono, więc każda runda pyta tak samo. Przypadku remisu na granicy
+stron (Giżycko) z przemiennym kierunkiem nie mierzono. Portal odpowiadał tego dnia
+nierówno (do 17 s na zapytanie); pięć przebiegów (3 × Giżycko, 2 × SO w Białymstoku) przerwał
+błąd zapytania (kod 2, bez listy; zapisane komunikaty: 3 × przekroczenie 40 s, 1 × zerwane połączenie,
+jednego nie zapisano); nie wliczono ich do tabeli. Strony F5/TSPD nie było. Helper nie ponawia zapytań po błędzie transportu.
+
 ## Orzeczenie
 
 `ID` pochodzi z linku wyniku lub RSS (nie wolno konstruować go z samej sygnatury).
@@ -70,14 +147,22 @@ frazę w ścieżce (`/details/<fraza>/<ID>`); ID to ostatni segment. W `.title` 
 - `/similardocs/$N/<ID>`: link do podobnych orzeczeń; na testowanych dokumentach HTTP 400
   (2026-09-20 i 2026-10-05), dlatego helper zwraca tylko odnośnik i nie obiecuje pobierania.
 - Strony błędów portalu: HTTP 400 `<h2>Błąd danych</h2>` i HTTP 404 „Strona o podanym adresie
-  nie istnieje” (nieznane ID, tytuł „Błąd - Portal Orzeczeń…”). 2026-10-05 „Błąd danych”
-  zwracała zakładka „Treść” (także w przeglądarce i na podportalach sądów) dla 9 z 14
-  sprawdzonych dokumentów — wszystkie świeżo opublikowane i bez zakładek „Powołane przepisy”/
-  „Orzeczenia podobne” w metryce; dla nich `/regulations` daje 200 z pustym `<ol id="regulations">`.
-  Dalsza weryfikacja 2026-10-05 (ok. 45 dokumentów, curl): treść zwraca każdy dokument opublikowany
-  do 2026-09-23, „Błąd danych” — każdy opublikowany od 2026-09-24, niezależnie od sądu; to samo na
-  podportalach sądów. Zaplecze `https://apiorzeczenia.wroclaw.sa.gov.pl/ncourt-api/judgement/details?id=<ID>`
-  oddaje dla nich metrykę (XML), a SAOS (który stamtąd importuje) — pustą treść. Awaria po stronie MS.
+  nie istnieje” (nieznane ID, tytuł „Błąd - Portal Orzeczeń…”). „Błąd danych” na zakładce
+  „Treść” helper zgłasza jako UNKNOWN (kod 2) z zaleceniem ponowienia — nigdy jako brak wyników.
+- Zdarzenie historyczne — awaria treści po 24.09.2026. 2026-10-05 „Błąd danych” zwracała zakładka
+  „Treść” (także w przeglądarce i na podportalach sądów) dla 9 z 14 sprawdzonych dokumentów —
+  wszystkie świeżo opublikowane i bez zakładek „Powołane przepisy”/„Orzeczenia podobne” w metryce;
+  dla nich `/regulations` dawało 200 z pustym `<ol id="regulations">`. Dalsza weryfikacja 2026-10-05
+  (ok. 45 dokumentów, curl): treść zwracał każdy dokument opublikowany do 2026-09-23, „Błąd danych” —
+  każdy opublikowany od 2026-09-24, niezależnie od sądu; to samo na podportalach sądów. Zaplecze
+  `https://apiorzeczenia.wroclaw.sa.gov.pl/ncourt-api/judgement/details?id=<ID>` oddawało dla nich
+  metrykę (XML), a SAOS (który stamtąd importuje) — pustą treść. Awaria po stronie MS.
+  Ponowny pomiar 2026-11-13 (helper, portal centralny): 59 dokumentów — 4 opublikowane 21–23.09.2026
+  i 55 opublikowanych 24.09–12.11.2026 (34 z nich 24.09–9.10, po 2–3 z każdego z 12 dni
+  roboczych tego okna) — 59/59 z treścią, 0 × „Błąd danych”. 7 z 59 nie ma w metryce zakładek „Powołane przepisy”/
+  „Orzeczenia podobne”, a wszystkie 7 mają treść, więc brak zakładek nie przewiduje już braku
+  treści (helper nie dodaje o tym uwagi). Data końca awarii jest nieznana (między 5.10 a 13.11.2026).
+  Przeglądarki, podportali sądów i SAOS 2026-11-13 nie sprawdzano ponownie.
 - PDF: adres odczytywany z `/content.pdffile/...` na stronie treści; nie budować ścieżki
   do pliku ręcznie. Sprawdzać sygnaturę `%PDF-` przed zapisem.
 

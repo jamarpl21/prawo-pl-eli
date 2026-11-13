@@ -2134,6 +2134,137 @@ class TestOcrSkanow(unittest.TestCase):
             self.assertEqual(eli._ocr_strona("/tmp/x.pdf", 1, "k"), "1) § 2 otrzymuje brzmienie: „§2. 1. Sąd”")
 
 
+class TestOcrParagrafOsiem(unittest.TestCase):
+    """tesseract czyta „§" jako „8" (DU 1998 poz. 875: 20 z 21 paragrafów to „8 N."; DU 1992 poz. 316: „81."–„84.").
+    Zamiana tylko na stronach z OCR i tylko, gdy potwierdza ją ciąg numeracji; poprawki po odczycie z pamięci."""
+
+    STRONA_875 = ("8 1. 1. Ławników do sądów wojskowych wybiera\nsię spośród żołnierzy.\n\n"
+                  "8 2. Prezesi właściwych sądów wojskowych, co naj-\nmniej na 3 miesiące.\n\n"
+                  "8 3. Dowódca garnizonu ustala liczbę ławników\n\n"
+                  "8 7. 1. Prawo zgłaszania kandydatów na ławników\no których mowa w 8 1 ust. 2.\n\n"
+                  "8 8. Przed przystąpieniem do wyboru kandydat po-\n\n"
+                  "8 11. Zebranie dokonuje wyboru ławników w dro-\n\n"
+                  "przeprowadza się stosując zasady określone w 8 7—13.\n\n"
+                  "8 12. Rozporządzenie wchodzi w życie po upływie\n")
+
+    def popraw(self, strony, ocr_idx=None):
+        return eli._ocr_popraw_paragrafy(strony, range(len(strony)) if ocr_idx is None else ocr_idx)
+
+    def test_rozstrzelony_paragraf_w_ciagu_numeracji(self):
+        s = self.popraw([eli._ocr_popraw_strone(self.STRONA_875)])[0]
+        for n in (1, 2, 3, 7, 8, 11, 12):
+            self.assertRegex(s, rf"(?m)^§ {n}\. ")
+        self.assertIn("o których mowa w § 1 ust. 2.", s)
+        self.assertIn("określone w § 7—13.", s)
+        self.assertNotRegex(s, r"(?m)^8 ")
+        self.assertEqual(self.popraw([s])[0], s)
+
+    def test_fragment_paragrafu_z_tekstu_ocr(self):
+        s = self.popraw([eli._ocr_popraw_strone(self.STRONA_875)])[0]
+        self.assertTrue(eli._hity_paragrafu(s, "§ 11"))
+
+    def test_sklejony_ciag_od_poczatku_aktu_do_paragrafu_na_nastepnej_stronie(self):
+        # DU 1992 poz. 316: skan strony 1 (OCR), § 5 na stronie 2 z warstwą tekstową
+        ocr = ("zarządza się,\nco następuje:\n\n81. Wspomaganie nauczania historii, geografii i języka\n\n"
+               "1) kierowanie nauczycieli do pracy za granicą,\n\n82. 1. Do pracy za granicą w celu, o którym mowa\n\n"
+               "3. Na czas skierowania nauczyciele otrzymują urlop.\n\n83. 1. O skierowanie do pracy za granicą mogą\n\n"
+               "84. 1. Jednostka kierująca zawiera z nauczycielem\n")
+        tekst = "    § 5. Nauczycielowi przysługuje dodatek.\n    § 6. Rozporządzenie wchodzi w życie."
+        wynik = self.popraw([ocr, tekst], [0])
+        for n in (1, 2, 3, 4):
+            self.assertRegex(wynik[0], rf"(?m)^§{n}\. ")
+        self.assertIn("3. Na czas skierowania", wynik[0])
+        self.assertEqual(wynik[1], tekst)
+        # bez § 5 za ciągiem (np. strona 2 niedostępna) — ciąg 81.–84. nie ma ramy z obu stron: bez zmian
+        self.assertEqual(self.popraw([ocr], [0])[0], ocr)
+
+    def test_sklejony_miedzy_rozstrzelonymi_i_idempotencja(self):
+        # DU 1996 poz. 457: „8 4. 1.", „85. 1.", „8 6. 1."
+        s = ("8 3. Pracownikowi zatrudnionemu w niepełnym\n\n8 4. 1. Ustala się:\n\n"
+             "85. 1. Pracownikowi zatrudnionemu na stanowi-\n\n8 6. 1. Pracownikowi zatrudnionemu w zakładzie,\n")
+        raz = self.popraw([s])
+        self.assertEqual(raz[0], "§ 3. Pracownikowi zatrudnionemu w niepełnym\n\n§ 4. 1. Ustala się:\n\n"
+                                 "§5. 1. Pracownikowi zatrudnionemu na stanowi-\n\n§ 6. 1. Pracownikowi zatrudnionemu w zakładzie,\n")
+        self.assertEqual(self.popraw(raz), raz)
+
+    def test_wyliczenie_81_89_w_paragrafie_bez_zmian(self):
+        # punkty 80.–89. wykazu w § 2: przed nimi § 2, za nimi § 3 — nie są paragrafami
+        s = ("§ 2. Wykaz obejmuje:\n" + "".join(f"8{k}. Wyrób numer {k}\n" for k in range(0, 10))
+             + "90. Wyrób numer dziewięćdziesiąty\n§ 3. Rozporządzenie wchodzi w życie.\n")
+        self.assertEqual(self.popraw([s])[0], s)
+        # to samo bez żadnego pewnego nagłówka wokół
+        s = "".join(f"8{k}. Pozycja wykazu {k}\n" for k in range(1, 6))
+        self.assertEqual(self.popraw([s])[0], s)
+
+    def test_punkt_osiem_i_wiersz_tabeli_bez_zmian(self):
+        s = ("§ 3. Ustala się stawki:\n1. Pierwsza.\n8. Ósma pozycja wyliczenia.\n"
+             "Lp. Nazwa Stawka\n1 2 3\n7 1. Owies 12,50\n8 1. Pszenica 15,00\n"
+             "§ 4. Rozporządzenie wchodzi w życie.\n")
+        self.assertEqual(self.popraw([s])[0], s)
+        # wiersz tabeli z numerem sąsiedniego paragrafu: obok jest już pewny § z tym samym numerem
+        for wiersz in ("8 3. Pszenica 15,00", "8 4. Pszenica 15,00"):
+            s = f"§ 3. Ustala się stawki:\nLp. Nazwa Stawka\n{wiersz}\n§ 4. Rozporządzenie wchodzi w życie.\n"
+            self.assertEqual(self.popraw([s])[0], s)
+
+    def test_strona_z_warstwa_tekstowa_bez_zmian(self):
+        s = "8 2. Prezesi sądów\n8 3. Dowódca garnizonu\n"
+        self.assertEqual(self.popraw([s], [])[0], s)
+        self.assertEqual(self.popraw([s, s], [1]), [s, eli._ocr_popraw_paragrafy([s], [0])[0]])
+
+    def test_odeslania_w_srodku_wiersza(self):
+        f = eli._ocr_popraw_strone
+        self.assertEqual(f("o których mowa w 8 1 ust. 2."), "o których mowa w § 1 ust. 2.")
+        self.assertEqual(f("głosowania określone w\n8 11—14."), "głosowania określone w\n§ 11—14.")
+        self.assertEqual(f("zgodnie z 8 4 pkt 2"), "zgodnie z § 4 pkt 2")
+        self.assertEqual(f("stosuje się do 8 3 ust. 1 i do 8 5—7"), "stosuje się do § 3 ust. 1 i do § 5—7")
+        self.assertEqual(f("ustalonego zgodnie z 8 16."), "ustalonego zgodnie z § 16.")
+        self.assertEqual(f("sił określonych w 8 14, a ponadto"), "sił określonych w § 14, a ponadto")
+        self.assertEqual(f("z zastrzeżeniem\n8 14, wszystkie"), "z zastrzeżeniem\n§ 14, wszystkie")
+        self.assertEqual(f("Na podstawie art. 23715 8 1 Kodeksu pracy"), "Na podstawie art. 23715 § 1 Kodeksu pracy")
+        self.assertEqual(f("art. 228 8 1 Kodeksu pracy"), "art. 228 § 1 Kodeksu pracy")
+        for bez_zmian in ("kara od 8 500 zł do 10 000 zł", "z 8 500 zł", "w 8 egzemplarzach", "w 8-10 dni",
+                          "z dnia 8 1 marca 1998 r.", "do 8 1998 r.", "art. 8 ust. 1", "w 8 10 przypadkach",
+                          "wynosi 8 1/2 godziny", "w 8 ust. 2", "w 8 12. 1998", "art. 8 1 ustawy",
+                          "wyznacza się na niedzielę dnia 8 3. Rozporządzenie",
+                          "od 7 00 do 8 00.", "od godz. 7 do 8 30, a w soboty", "na wysokości w 8 14,5 m",
+                          "z 8 05, a następnie",
+                          # odesłanie zawinięte na początek wiersza wyglądałoby jak nagłówek „§ 16."
+                          "ustalonego zgodnie z\n8 16.\n"):
+            self.assertEqual(f(bez_zmian), bez_zmian)
+        s = f("w $ 3 i w 8 7—13, a także $2.")
+        self.assertEqual(s, "w § 3 i w § 7—13, a także §2.")
+        self.assertEqual(f(s), s)
+
+    def test_poprawki_takze_dla_wpisu_z_pamieci_podrecznej(self):
+        # pamięć trzyma surowy wynik tesseracta; poprawki — po odczycie z niej, bez wywołania tesseracta
+        import tempfile
+        pdf = b"%PDF-1.3 skan"
+        klucz = eli.hashlib.sha256(pdf).hexdigest()[:16]
+        surowy = "zarządza się, co następuje:\n\n$ 1. Ilekroć w rozporządzeniu\n\n8 2. Dowódca garnizonu\n\n" \
+                 "8 3. Rozporządzenie wchodzi w życie z dniem ogłoszenia, o którym mowa w 8 2 ust. 1.\n"
+        meta = {"ELI": "DU/1998/875", "year": 1998, "pos": None, "publisher": "DU", "textHTML": False,
+                "texts": [{"fileName": "D19980875.pdf", "type": "T"}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(eli.os.path.join(tmp, f"{klucz}-1-{eli._OCR_DPI}.txt"), "w", encoding="utf-8") as f:
+                f.write(surowy)
+            with mock.patch.object(eli, "_ocr_katalog", return_value=tmp), \
+                    mock.patch.object(eli.subprocess, "run", side_effect=AssertionError("tesseract nie powinien ruszyć")), \
+                    mock.patch.object(eli, "_get_bytes", return_value=pdf), \
+                    mock.patch.object(eli, "pdftotext_dostepny", return_value=True), \
+                    mock.patch.object(eli, "ocr_dostepny", return_value=True), \
+                    mock.patch.object(eli, "pdf_do_tekstu_z_notkami", return_value=("\f", {}, {})):
+                self.assertIn("§ 1. Ilekroć", eli.pdf_ocr_stron(pdf, [0])[0])
+                info = {}
+                txt, _, err = eli._tekst_z_pdf("/acts/DU/1998/875", "DU 1998 poz. 875", meta, info)
+            with open(eli.os.path.join(tmp, f"{klucz}-1-{eli._OCR_DPI}.txt"), encoding="utf-8") as f:
+                self.assertEqual(f.read(), surowy)       # wpis w pamięci bez zmian
+        self.assertEqual(err, "")
+        self.assertEqual(info.get("ocr_strony"), (1, 1))
+        for n in (1, 2, 3):
+            self.assertRegex(txt, rf"(?m)^§ {n}\. ")
+        self.assertIn("o którym mowa w § 2 ust. 1.", txt)
+
+
 class TestAudyt2026Cache(unittest.TestCase):
     def test_get_bez_parametrow_jest_cache_owany_a_z_parametrami_nie(self):
         eli._CACHE.clear()

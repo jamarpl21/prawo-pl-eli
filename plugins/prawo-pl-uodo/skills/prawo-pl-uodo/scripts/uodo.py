@@ -28,7 +28,7 @@ Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
 import sys, json, re, time, argparse, urllib.request, urllib.parse, urllib.error
 from html.parser import HTMLParser
 
-__version__ = "2.2.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "2.3.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://orzeczenia.uodo.gov.pl/api"
 CONTENT_HOSTS = ("orzeczenia.uodo.gov.pl",)
 POLA = "id,refid,refname,title,dates,kind,parts,publication"  # domyślne pola listy wyników
@@ -75,9 +75,10 @@ class _PrzekierowaniaHttps(urllib.request.HTTPRedirectHandler):
 _opener = urllib.request.build_opener(_PrzekierowaniaHttps())
 
 
-def _get(path, params=None, raw=False, brak_ok=False):
+def _get(path, params=None, raw=False, brak_ok=False, podpowiedz_5xx=""):
     """GET z jednym ponowieniem na błąd przejściowy. raw=True: zwróć tekst (body.txt/html).
-    brak_ok=True: HTTP 404 zwraca None zamiast kończyć program."""
+    brak_ok=True: HTTP 404 zwraca None zamiast kończyć program. podpowiedz_5xx: dopisek do
+    komunikatu, gdy HTTP 5xx trwa także po ponowieniu (np. składnia wyrażenia regularnego)."""
     url = BASE + path
     if params:
         # `v not in (None, "", False)` odrzucałoby też int 0 (0 == False) — np. from=0 pierwszej strony
@@ -106,6 +107,8 @@ def _get(path, params=None, raw=False, brak_ok=False):
                 sys.exit(f"BŁĄD HTTP {e.code}: {url}\n"
                          "API UODO zaczęło wymagać autoryzacji na tym endpointcie — sprawdź "
                          "https://orzeczenia.uodo.gov.pl/api-doc/ (dotąd działało bez klucza).")
+            if e.code >= 500 and podpowiedz_5xx:
+                sys.exit(f"BŁĄD HTTP {e.code}: {url}\n{podpowiedz_5xx}")
             sys.exit(f"BŁĄD HTTP {e.code}: {url}")
         except Exception as e:  # noqa: BLE001
             if attempt == 1:
@@ -412,11 +415,64 @@ def _szukaj(timespan, warunek=None, limit=10, strona=0):
     """GET /documents/search/PublicDocument/{timespan}[/{warunek}] — lista dokumentów.
     timespan filtruje po dacie DECYZJI/orzeczenia (announcement), NIE po dacie publikacji."""
     sciezka = f"/documents/search/PublicDocument/{urllib.parse.quote(timespan, safe=',')}"
+    podpowiedz = ""
     if warunek:
         sciezka += "/" + urllib.parse.quote(warunek, safe=":,()")
+        indeks_op_wartosc = warunek.split(":", 2)
+        # podpowiedź tylko, gdy wyrażenie ma znak specjalny — przy zwykłym „monitoring” 5xx to awaria
+        if (indeks_op_wartosc[1:2] == ["regex"]
+                and any(z in ZNAKI_SPECJALNE_REGEX for z in indeks_op_wartosc[2])):
+            podpowiedz = PODPOWIEDZ_REGEX_5XX
     limit = _limit(limit)
     return _get(sciezka, {"order": "-id", "from": max(0, strona) * limit,
-                          "count": limit, "fields": POLA})
+                          "count": limit, "fields": POLA}, podpowiedz_5xx=podpowiedz)
+
+
+# Pomiar na żywo 2026-11-13 (content_pl/title_pl:regex:…): wyrażenie, którego silnik API nie umie
+# skompilować, kończy się gołym HTTP 500 — tak dla „lit. f)”, „(monitoring”, „C++”, „[a”, „?a”,
+# „*a”, „a\” (z końcowym ukośnikiem), „x{2,1}”. Ucieczka „\x” działa dla każdego znaku specjalnego
+# (\. \( \) \[ \] \{ \} \* \+ \? \| \^ \$ \\ → HTTP 200). Silnik API NIE jest pythonowym `re`:
+# kwantyfikatory zaborcze („C++”, „a*+”) i grupy atomowe „(?>…)” odrzuca, choć Python ≥ 3.11 je
+# przyjmuje — dlatego sam `re.compile` nie wystarcza (wynik zależałby od wersji Pythona).
+# Grupy nazwane „(?P<x>…)” też dają 500, ale to świadomy regex — zostawiamy je podpowiedzi przy 5xx.
+ZNAKI_SPECJALNE_REGEX = "\\.^$*+?()[]{}|"
+_ZABORCZY_LUB_ATOMOWY = re.compile(r"[*+?}]\+|\(\?>")
+PODPOWIEDZ_REGEX_5XX = (
+    "Warunek zawiera wyrażenie regularne (operator regex): przyczyną HTTP 5xx może być SKŁADNIA "
+    "wyrażenia, a nie awaria portalu — silnik API nie jest zgodny z pythonowym (odrzuca m.in. "
+    "grupy nazwane (?P<…>), kwantyfikatory zaborcze ++ i grupy atomowe (?>…)). Aby szukać "
+    "dosłownie, poprzedź znaki . ^ $ * + ? ( ) [ ] { } | \\ ukośnikiem odwrotnym, np. 'lit\\. f\\)'. "
+    "Jeśli zwykła fraza (np. 'monitoring') też daje 5xx — to awaria portalu, spróbuj później.")
+
+
+def _doslownie(fraza):
+    """Zabezpiecza znaki specjalne wyrażenia regularnego — fraza dopasowuje się dosłownie.
+    Własna lista zamiast re.escape: ten ucieka też spację, #, &, ~, a takich ucieczek
+    na API nie mierzyliśmy (a wynik ma być czytelny w komunikacie)."""
+    return "".join("\\" + z if z in ZNAKI_SPECJALNE_REGEX else z for z in fraza)
+
+
+def _poprawny_regex(fraza):
+    """Przybliżenie składni silnika API: kompiluje się w Pythonie ORAZ (po usunięciu ucieczek
+    i klas znaków) nie ma kwantyfikatora zaborczego ani grupy atomowej (zob. pomiar wyżej)."""
+    try:
+        re.compile(fraza)
+    except re.error:
+        return False
+    bez_ucieczek = re.sub(r"\\.|\[(?:\\.|[^\]\\])*\]", "_", fraza)
+    return not _ZABORCZY_LUB_ATOMOWY.search(bez_ucieczek)
+
+
+def _regex_lub_doslownie(fraza, opis):
+    """Fraza poprawna jako regex → bez zmian (świadome „monitoring|biometr” działa jak dotąd);
+    niepoprawna („lit. f)”, „(monitoring”, „C++”) → dosłownie, z jednym wierszem na stderr."""
+    if _poprawny_regex(fraza):
+        return fraza
+    doslowna = _doslownie(fraza)
+    # bez !r — repr podwoiłby ukośniki i pokazał inną postać niż faktycznie wysłana
+    print(f"UWAGA: {opis} '{fraza}' nie jest poprawnym wyrażeniem regularnym dla API UODO — "
+          f"traktuję ją DOSŁOWNIE: '{doslowna}'.", file=sys.stderr)
+    return doslowna
 
 
 def _wiersz(item):
@@ -466,10 +522,10 @@ def cmd_szukaj(a):
     warunki = []
     if a.warunek:
         warunki.append(a.warunek)
-    if a.fraza:
-        warunki.append(f"content_pl:regex:{a.fraza}")
+    if a.fraza:   # --warunek zostaje surowy (zaawansowany); fraza i tytuł — zabezpieczane
+        warunki.append(f"content_pl:regex:{_regex_lub_doslownie(a.fraza, 'fraza')}")
     if a.tytul:
-        warunki.append(f"title_pl:regex:{a.tytul}")
+        warunki.append(f"title_pl:regex:{_regex_lub_doslownie(a.tytul, 'fraza --tytul')}")
     pub_od, pub_do = a.pub_od, a.pub_do
     if not warunki and not (a.od or a.do or pub_od or pub_do):
         sys.exit("Podaj kryterium: frazę (pełnotekstowo) albo --tytul / --warunek / zakres dat "

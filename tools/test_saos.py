@@ -18,6 +18,17 @@ _spec = importlib.util.spec_from_file_location(
 saos = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(saos)
 
+DZIS = "2026-11-13"  # „dziś” w testach — niezależnie od zegara (daty z przyszłości, granice zbiorów)
+_dzis_patch = mock.patch.object(saos, "_dzis", return_value=DZIS)
+
+
+def setUpModule():
+    _dzis_patch.start()
+
+
+def tearDownModule():
+    _dzis_patch.stop()
+
 
 class TestCourtType(unittest.TestCase):
     def test_aliases(self):
@@ -469,8 +480,15 @@ class SaosVerificationContractTests(unittest.TestCase):
         with mock.patch.object(saos._opener, "open", return_value=html), mock.patch.object(saos.time, "sleep"):
             with self.assertRaisesRegex(saos.VerificationUnknown, "przerw"):
                 saos._get("/search/judgments", soft=True)
-            with self.assertRaisesRegex(SystemExit, "przerwę techniczną"):
+            with self.assertRaisesRegex(SystemExit, "przerwę techniczną") as caught:
                 saos._get("/search/judgments")
+        msg = str(caught.exception)
+        self.assertIn("prawo-pl-orzeczenia-ms", msg)
+        self.assertIn("prawo-pl-cbosa", msg)
+        self.assertIn("https://www.sn.pl/pl/wyszukiwarka-orzeczen", msg)
+        self.assertIn("22.06.2016", msg)
+        self.assertIn("NIE jest brak orzeczeń", msg)
+        self.assertNotIn("nocn", msg)
 
     def test_soft_transport_error_is_unknown(self):
         with mock.patch.object(saos._opener, "open", side_effect=urllib.error.URLError("offline")), \
@@ -737,6 +755,22 @@ class TestSnId(unittest.TestCase):
         with mock.patch.object(saos._opener, "open", return_value=_odp_sn({"error": "x"})):
             self.assertIsNone(saos._sn_id("I UK 328/10", "2011-03-24"))
 
+    def test_krotki_limit_czasu(self):  # link pomocniczy nie może kosztować 20 s
+        with mock.patch.object(saos._opener, "open", return_value=_odp_sn(LISTA_SN_328)) as op:
+            saos._sn_id("I UK 328/10", "2011-03-24")
+        self.assertLessEqual(op.call_args.kwargs.get("timeout"), 8)
+        self.assertGreaterEqual(op.call_args.kwargs.get("timeout"), 5)
+
+    def test_strona_filtra_antybotowego_to_none(self):
+        # 2026-11-13: sn.pl odpowiada HTTP 200 text/html ze skryptem wyzwania zamiast JSON-a
+        # (atrapa w tym kształcie, nie zrzut prawdziwej odpowiedzi)
+        odp = mock.MagicMock()
+        odp.__enter__.return_value.read.return_value = (
+            b'<html><head><META NAME="robots" CONTENT="noindex,nofollow">'
+            b'<script src="/_Incapsula_Resource?x=atrapa"></script></head></html>')
+        with mock.patch.object(saos._opener, "open", return_value=odp):
+            self.assertIsNone(saos._sn_id("I UK 328/10", "2011-03-24"))
+
 
 class TestOrzeczenieWyjscie(unittest.TestCase):
     """cmd_orzeczenie: źródła, nota o indeksach górnych, etykieta listy przepisów, okna z „…"."""
@@ -910,22 +944,148 @@ class TestUzasadnienieData(unittest.TestCase):
         self.assertIsNone(saos._uwaga_uzasadnienie({"judgmentType": "SENTENCE"}, ""))
 
 
-class TestPustaTrescPoAwariiMS(unittest.TestCase):
-    """2026-10-05: portal MS nie wydaje treści orzeczeń publikowanych od 24.09.2026 — SAOS ma je bez tekstu."""
+class TestPustaTrescOdsylaDoPortaluMS(unittest.TestCase):
+    """Regresja 2026-11-13: SAOS 553102 (II K 295/25) nie ma treści, a silnik twierdził, że portal MS jej
+    nie wydaje — tymczasem portal MS wydaje ją (16 331 znaków). Brak treści w SAOS ≠ brak u źródła."""
 
-    def _orzeczenie(self, publikacja):
-        data = {"data": {"id": 553102, "courtType": "COMMON", "judgmentType": "SENTENCE", "judgmentDate": "2026-09-16",
-                         "courtCases": [{"caseNumber": "II K 295/25"}], "textContent": "",
-                         "source": {"code": "COMMON_COURT", "publicationDate": publikacja}}}
+    URL = ("https://apiorzeczenia.wroclaw.sa.gov.pl/ncourt-api/judgement/details?"
+           "id=150515150001006_II_K_000295_2025_Uz_2026-09-16_002")
+
+    def _orzeczenie(self, publikacja="2026-10-02", url=URL, ct="COMMON", sygn="II K 295/25"):
+        src = {"code": "COMMON_COURT", "publicationDate": publikacja}
+        if url is not None:
+            src["judgmentUrl"] = url
+        data = {"data": {"id": 553102, "courtType": ct, "judgmentType": "SENTENCE", "judgmentDate": "2026-09-16",
+                         "courtCases": [{"caseNumber": sygn}], "textContent": "", "source": src}}
         out = io.StringIO()
-        with mock.patch.object(saos, "_get", return_value=data), \
+        with mock.patch.object(saos, "_get", return_value=data), mock.patch.object(saos, "_sn_id", return_value=None), \
                 mock.patch.object(sys, "argv", ["saos.py", "orzeczenie", "553102"]), contextlib.redirect_stdout(out):
             saos.main()
         return out.getvalue()
 
-    def test_ostrzezenie_tylko_dla_publikacji_od_24_09_2026(self):
-        self.assertIn("portal MS nie wydaje treści nowych orzeczeń", self._orzeczenie("2026-10-02"))
-        self.assertNotIn("portal MS nie wydaje", self._orzeczenie("2026-09-23"))
+    def test_z_identyfikatorem_gotowa_komenda_portalu(self):
+        out = self._orzeczenie()
+        self.assertIn("SAOS nie ma treści tego orzeczenia", out)
+        self.assertIn("prawo-pl-orzeczenia-ms", out)
+        self.assertIn("orzeczenia_ms.py orzeczenie 150515150001006_II_K_000295_2025_Uz_2026-09-16_002", out)
+        self.assertIn("Nie odtwarzaj treści z pamięci ani z fragmentów", out)
+        self.assertNotIn("niedostępna u źródła", out)
+        self.assertNotIn("nie wydaje", out)
+
+    def test_niezaleznie_od_daty_publikacji(self):
+        for pub in ("2026-09-23", "2026-10-02", "2026-11-12", ""):
+            with self.subTest(pub=pub):
+                self.assertIn("orzeczenia_ms.py orzeczenie 150515150001006_", self._orzeczenie(pub))
+
+    def test_bez_identyfikatora_odsyla_do_sygnatury(self):
+        for url in (None, "https://apiorzeczenia.wroclaw.sa.gov.pl/ncourt-api/judgement/details?id=1",
+                    "https://example.test/x?id=15051515000100_za_krotki", "nie-url"):
+            with self.subTest(url=url):
+                out = self._orzeczenie(url=url)
+                self.assertIn("orzeczenia_ms.py sygnatura II K 295/25", out)
+                self.assertNotIn("orzeczenia_ms.py orzeczenie", out)
+                self.assertIn("Nie odtwarzaj treści z pamięci", out)
+
+    def test_inny_sad_bez_odeslania_do_portalu_ms(self):
+        out = self._orzeczenie(url="http://www.sn.pl/orzecznictwo/SitePages/Baza_orzeczen", ct="SUPREME",
+                               sygn="I CSK 1/15")
+        self.assertIn("brak treści w API", out)
+        self.assertNotIn("orzeczenia_ms.py", out)
+
+    def test_id_portalu_ms(self):
+        self.assertEqual(saos._id_portalu_ms(self.URL), "150515150001006_II_K_000295_2025_Uz_2026-09-16_002")
+        self.assertEqual(saos._id_portalu_ms(self.URL + "&x=1"),
+                         "150515150001006_II_K_000295_2025_Uz_2026-09-16_002")
+        self.assertIsNone(saos._id_portalu_ms(self.URL.replace("_002", "_002/../x")))
+        self.assertIsNone(saos._id_portalu_ms(None))
+        self.assertIsNone(saos._id_portalu_ms("https://apiorzeczenia.wroclaw.sa.gov.pl/details?id=1"))
+
+
+def _it(id_, data, ct="SUPREME", typ="SENTENCE", sygn="III KK 1/16"):
+    return {"id": id_, "courtType": ct, "courtCases": [{"caseNumber": sygn}], "judgmentType": typ,
+            "judgmentDate": data}
+
+
+class TestDataZPrzyszlosci(unittest.TestCase):
+    """Regresja 2026-11-13: SAOS ma rekordy z niemożliwą datą (3013-12-04, 2101-04-14, 2026-12-16);
+    sort po dacie malejąco wynosi je na górę. Nie mogą udawać daty ani przesuwać granicy zbioru."""
+
+    def setUp(self):
+        saos._granice_na_zywo.clear()
+
+    def test_z_przyszlosci(self):
+        self.assertTrue(saos._z_przyszlosci("3013-12-04"))
+        self.assertTrue(saos._z_przyszlosci("2026-11-14"))
+        for d in (DZIS, "2016-06-22", None, "", "?", "3013-12"):
+            with self.subTest(d=d):
+                self.assertFalse(saos._z_przyszlosci(d))
+
+    def test_lista_wynikow_oznacza_date(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            saos._wiersz(_it(31345, "3013-12-04", "COMMON"))
+            saos._wiersz(_it(543475, "2026-11-28", "COMMON", "REASONS"))
+            saos._wiersz(_it(1, DZIS, "COMMON"))
+        linie = [l for l in out.getvalue().splitlines() if l.startswith("  [")]
+        self.assertIn("3013-12-04 — data z przyszłości — błąd w danych SAOS", linie[0])
+        self.assertIn("data z przyszłości", linie[1])
+        self.assertIn("data uzasadnienia, nie wyroku", linie[1])
+        self.assertNotIn("przyszłości", linie[2])
+
+    def test_sygnatura_oznacza_date(self):
+        out = io.StringIO()
+        odp = {"items": [_it(31345, "3013-12-04", "COMMON", sygn="I ACa 772/13")], "info": {"totalResults": 1}}
+        with mock.patch.object(saos, "_get", return_value=odp), \
+                mock.patch.object(sys, "argv", ["saos.py", "sygnatura", "I", "ACa", "772/13"]), \
+                contextlib.redirect_stdout(out):
+            saos.main()
+        self.assertIn("(3013-12-04 — data z przyszłości", out.getvalue())
+
+    def test_naglowek_orzeczenia(self):
+        def uruchom(data):
+            out = io.StringIO()
+            d = {"data": {**_it(31345, data, "COMMON", sygn="I ACa 772/13"), "textContent": "<p>Wyrok</p>"}}
+            with mock.patch.object(saos, "_get", return_value=d), \
+                    mock.patch.object(sys, "argv", ["saos.py", "orzeczenie", "31345"]), contextlib.redirect_stdout(out):
+                saos.main()
+            return out.getvalue()
+        self.assertIn("UWAGA: data z przyszłości — błąd w danych SAOS", uruchom("3013-12-04"))
+        self.assertNotIn("przyszłości", uruchom(DZIS))
+
+    def test_granica_znana_nie_przesuwa_sie_w_przyszlosc(self):
+        self.assertEqual(saos._granica_znana("SUPREME", [_it(1, "3013-12-04"), _it(2, "2016-06-20")]),
+                         ("2016-06-22", False))
+        self.assertNotIn("SUPREME", saos._granice_na_zywo)
+        # prawdziwe wznowienie zasilania (data ≤ dziś) nadal przesuwa granicę
+        self.assertEqual(saos._granica_znana("SUPREME", [_it(1, "3013-12-04"), _it(2, "2025-01-15")]),
+                         ("2025-01-15", True))
+
+    def test_granica_na_zywo_ma_gorny_limit_dzis_i_odrzuca_przyszlosc(self):
+        odp = {"items": [_it(1, "2101-04-14")], "info": {"totalResults": 1}}
+        with mock.patch.object(saos, "_get", return_value=odp) as get:
+            self.assertEqual(saos._granica_zbioru("CONSTITUTIONAL_TRIBUNAL"), ("2015-12-09", False))
+        self.assertEqual(get.call_args.args[1]["judgmentDateTo"], DZIS)
+        self.assertEqual(get.call_args.args[1]["pageSize"], 1)
+
+    def test_strict_blokuje_mimo_rekordu_z_przyszlosci(self):
+        odp = {"items": [_it(1, "3013-12-04")], "info": {"totalResults": 1}}
+        out = io.StringIO()
+        with mock.patch.object(sys, "argv", ["saos.py", "szukaj", "--sad", "SN", "--strict"]), \
+                mock.patch.object(saos, "_get", return_value=odp), contextlib.redirect_stdout(out):
+            with self.assertRaises(SystemExit) as caught:
+                saos.main()
+        self.assertIn("--do 2016-06-22", str(caught.exception))
+        self.assertNotIn("3013", str(caught.exception))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_ostrzezenie_o_koncu_zbioru_mimo_rekordu_z_przyszlosci(self):
+        odp = {"items": [_it(1, "3013-12-04"), _it(2, "2016-06-22")], "info": {"totalResults": 2}}
+        out = io.StringIO()
+        with mock.patch.object(sys, "argv", ["saos.py", "szukaj", "--sad", "SN"]), \
+                mock.patch.object(saos, "_get", return_value=odp), contextlib.redirect_stdout(out):
+            saos.main()
+        self.assertIn("kończy się DOKŁADNIE na 22.06.2016", out.getvalue())
+        self.assertNotIn("04.12.3013", out.getvalue())
 
 
 if __name__ == "__main__":

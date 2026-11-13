@@ -9,7 +9,8 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def release_notes(changelog, version):
-    version = version.removeprefix("v")
+    if version.startswith("v"):  # str.removeprefix jest dopiero od Pythona 3.9
+        version = version[1:]
     if not re.fullmatch(r"\d+\.\d+\.\d+", version):
         raise ValueError(f"Nieprawidłowa wersja: {version}")
     heading = re.search(rf"^## {re.escape(version)} — \d{{4}}-\d{{2}}-\d{{2}}\s*$",

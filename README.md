@@ -129,10 +129,17 @@ taka odpowiedź to błąd, nie zero trafień. Metryka rozdziela datę wyroku i p
 Brak oznaczenia prawomocności to `null`; `--strict` blokuje wtedy pobranie dokumentu.
 RSS to ograniczone okno publikacji, nie kompletne archiwum.
 
-**Stan źródła (sprawdzone 5.10.2026):** od 24.09.2026 portal MS — także portale poszczególnych sądów —
-nie wydaje treści żadnego nowo opublikowanego orzeczenia (strona „Błąd danych”), a SAOS, który importuje
-z tego samego zaplecza, ma te orzeczenia bez tekstu. Oba silniki mówią to wprost; treści nie wolno
-odtwarzać z fragmentu wyszukiwarki. Metryka takich orzeczeń działa. Szczegóły i filtry:
+**Stan źródła (sprawdzone 13.11.2026):** portal wydaje treść orzeczeń, także tych opublikowanych
+podczas awarii z przełomu września i października 2026 (59 z 59 sprawdzonych dokumentów ma treść).
+SAOS zaimportował orzeczenia z tamtego okresu bez tekstu — `saos.py` podaje wtedy gotową komendę
+do portalu MS. Gdy portal zwróci dla treści stronę „Błąd danych”, silnik kończy się kodem 2;
+treści nie wolno odtwarzać z fragmentu wyszukiwarki.
+
+**Stronicowanie:** portal nie ma stabilnej kolejności pozycji o równym kluczu sortowania, więc
+przy wynikach dłuższych niż jedna strona (10 pozycji) kolejne strony mogą powtarzać i gubić
+pozycje — przy każdym `--sort`, także `data`. Pełną listę (statystyka, przegląd orzeczeń sądu
+z danego okresu) zwraca opcja `--wszystkie`: łączy strony po `id`, sprawdza komplet i ma limit
+200 trafień na zapytanie; bez niej silnik ostrzega o tym w `uwagi`. Szczegóły i filtry:
 [SKILL.md](plugins/prawo-pl-orzeczenia-ms/skills/prawo-pl-orzeczenia-ms/SKILL.md).
 
 ## prawo-pl-cbosa
@@ -283,9 +290,9 @@ Każdy tag `v*` publikuje po jednym zipie na plugin w GitHub Releases
 dla każdego z ośmiu pluginów):
 
 ```bash
-claude --plugin-dir ./prawo-pl-saos-v2.2.0.zip
+claude --plugin-dir ./prawo-pl-saos-v2.3.0.zip
 # albo zdalnie, bez pobierania:
-claude --plugin-url https://github.com/jamarpl21/prawo-pl-eli/releases/download/v2.2.0/prawo-pl-saos-v2.2.0.zip
+claude --plugin-url https://github.com/jamarpl21/prawo-pl-eli/releases/download/v2.3.0/prawo-pl-saos-v2.3.0.zip
 ```
 
 ## Użycie jako samodzielne CLI (bez żadnego LLM-a)
@@ -505,14 +512,14 @@ docs/                                    # raport audytu merytorycznego, instruk
 
 - **push / PR** → `tools/validate.py` waliduje manifesty WSZYSTKICH pluginów (Claude + Codex), oba marketplace'y
   i frontmattery `SKILL.md`; `tools/release_notes.py` sprawdza wpis w `CHANGELOG.md` dla bieżącej
-  wersji; `tools/test_*.py` testują silniki (offline, bez sieci).
+  wersji; `tools/test_*.py` testują silniki (offline, bez sieci) — na Pythonie 3.8, 3.9 i 3.15.
 - **tag `v*`** → build po jednym zipie na plugin + GitHub Release z paczkami
   (instalowalnymi przez `claude --plugin-dir` / `--plugin-url`) i opisem zmian z sekcji tej wersji
   w `CHANGELOG.md`.
 
 ## Wersjonowanie
 
-Wszystkie pluginy są wersjonowane **razem (lockstep)** — jedna wersja (obecnie **2.2.0**) zadeklarowana
+Wszystkie pluginy są wersjonowane **razem (lockstep)** — jedna wersja (obecnie **2.3.0**) zadeklarowana
 we wszystkich miejscach, identyczna; `tools/validate.py` wymusza to w CI:
 
 - `plugins/<plugin>/.claude-plugin/plugin.json` i `.codex-plugin/plugin.json` (pole `version`) — wszystkie pluginy,

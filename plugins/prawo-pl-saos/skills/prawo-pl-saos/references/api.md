@@ -23,8 +23,9 @@ granicę tym samym zapytaniem (`_granica_zbioru`, cache w procesie).
 ## Wydajność i okna serwisowe
 
 `/search/judgments` bywa bardzo wolne (40–60 s na zapytanie, stan z 2026-08-22/23); `/judgments/{id}` jest
-szybkie. W nocy SAOS zwraca HTTP 200 ze stroną HTML „Przerwa techniczna" zamiast JSON — helper traktuje to
-jako stan UNKNOWN (błąd, kod ≠ 0), nigdy jako zero trafień. Limit na żądanie w helperze: 90 s, 2 próby.
+szybkie. W czasie przerwy technicznej SAOS zwraca HTTP 200 ze stroną HTML „Przerwa techniczna" zamiast JSON —
+helper traktuje to jako stan UNKNOWN (błąd, kod ≠ 0), nigdy jako zero trafień, i w komunikacie wskazuje źródła
+niezależne od SAOS (portal MS, CBOSA, wyszukiwarka SN). Limit na żądanie w helperze: 90 s, 2 próby.
 
 ## Endpointy
 
@@ -96,10 +97,24 @@ aktu + powołane artykuły, oraz `journalTitle/journalYear/journalNo/journalEntr
   `https://www.sn.pl/pl/index.php?option=com_ajax&plugin=snproxy&format=json&task=searchOrzeczenia&sygnatura=<sygn>`
   → `data[0].data[] = {sygnatura_sprawy, data_wydania, forma_orzeczenia, id}` (dopasowanie fragmentem —
   „328/10” zwraca też IV CSK 328/10 — więc `saos.py` wymaga dokładnej sygnatury i daty; awaria → link do
-  wyszukiwarki z instrukcją). Wyszukiwarka nie przyjmuje sygnatury w adresie URL. TK
+  wyszukiwarki z instrukcją). Działało 2026-10-05; od października 2026 sn.pl stoi za filtrem antybotowym
+  (Incapsula) — 2026-11-13 proxy zwróciło HTTP 200 `text/html` ze stroną wyzwania zamiast JSON-a, więc zwykle
+  wynikiem jest link do wyszukiwarki z instrukcją. Helper próbuje raz (limit 7 s) i filtra nie obchodzi.
+  Wyszukiwarka nie przyjmuje sygnatury w adresie URL. TK
   `https://ipo.trybunal.gov.pl/ipo/`, KIO `https://orzeczenia.uzp.gov.pl/Home/Search`; sądy powszechne
   `apiorzeczenia.*.sa.gov.pl/ncourt-api/judgement/details?id=…` (działa).
 - Anonimizacja i treść sądów powszechnych są zgodne z feedem sądu (I C 374/25: różnice tylko w numeracji list).
+- **Sądy powszechne bez treści.** Część orzeczeń ma w SAOS `textContent` puste (sama metryka). Próba
+  2026-11-13 (200 z 578 orzeczeń z 1.09–10.10.2026): wszystkie 36 z `source.publicationDate` 24.09–9.10.2026
+  bez treści (okres awarii Portalu Orzeczeń MS), od publikacji 12.10 wszystkie z treścią; w 36/36
+  `source.judgmentUrl` ma parametr `id=` z identyfikatorem portalu (`[0-9]{15}_[A-Za-z0-9_-]+`), a portal MS
+  wydaje treść tych dokumentów (3/3, np. II K 295/25 — 16 331 znaków). Helper odsyła do
+  `orzeczenia_ms.py orzeczenie <ID>` (skill prawo-pl-orzeczenia-ms), bez ID — do `sygnatura <sygn.>`.
+- **Daty z przyszłości.** Np. I ACa 772/13 → `judgmentDate` 3013-12-04, II K 84/16 → 2101-04-14,
+  I ACa 1027/23 → 2026-12-16 (2026-11-13). Sortowanie `JUDGMENT_DATE DESC` wynosi je na górę. Helper oznacza
+  je na liście i w nagłówku, a zapytanie o granicę zbioru SN/TK/KIO ma `judgmentDateTo=<dziś>` (i odrzuca
+  datę z przyszłości), żeby błędny rekord nie przesunął granicy. SN/TK/KIO takich rekordów nie miały
+  (2026-11-13: najnowsze 2016-06-22, 2015-12-09, 2018-09-06).
 
 ### Pole `division` (opis sądu — różne kształty)
 
@@ -117,6 +132,6 @@ Helper `_court_label()` w `saos.py` obsługuje oba kształty.
 - **Sądy administracyjne**: `courtType=ADMINISTRATIVE` zwykle zwraca `totalResults: 0` — użyj skilla
   **prawo-pl-cbosa** (baza CBOSA, `https://orzeczenia.nsa.gov.pl`).
 - Do dosłownego cytatu w piśmie/sądzie korzystaj ze źródła urzędowego, bo SAOS to agregat: dla sądów
-  powszechnych `source.judgmentUrl`, dla SN strona orzeczenia w wyszukiwarce sn.pl, dla TK/KIO wyszukiwarki OTK/UZP (wyżej) —
+  powszechnych `source.judgmentUrl` (albo skill prawo-pl-orzeczenia-ms), dla SN wyszukiwarka sn.pl, dla TK/KIO wyszukiwarki OTK/UZP (wyżej) —
   `source.judgmentUrl` dla SN/TK/KIO nie działa.
 - Licencja danych: orzeczenia jawne, udostępniane publicznie; przy reużyciu podawaj źródło (SAOS) i sygnaturę.

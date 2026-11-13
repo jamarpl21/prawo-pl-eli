@@ -43,6 +43,14 @@ najnowszych — tak sortuje silnik), `fields` (lista pól przez przecinek, np.
 - do pełnego tekstu (`content_pl`) używaj **`regex`, nie `glob`** — glob dopasowuje całą wartość
   i na wielolinijkowej treści zawodzi (`content_pl:glob:*biometri*` → 0; `content_pl:regex:biometr.*` → trafienia);
 - regex działa **bez rozróżniania wielkości liter**;
+- wyrażenie, którego silnik API nie skompiluje, daje **goły HTTP 500** (pomiar 2026-11-13: `lit. f)`,
+  `(monitoring`, `C++`, `[a`, `?a`, `*a`, `a\`, `x{2,1}`); ucieczka `\x` działa dla każdego znaku
+  specjalnego (`\. \( \) \[ \] \{ \} \* \+ \? \| \^ \$ \\` → 200). Dialekt ≠ Python `re`: kwantyfikatory
+  zaborcze (`a++`, `a*+`), grupy atomowe `(?>…)` i nazwane (`(?P<x>…)`, `(?<x>…)`) → 500; `(?i)`,
+  `(?=…)`, `(?<=…)`, `\w` → 200; `\b`, `^`, `$`, `\A` → 200, ale 0 trafień
+  przy `\bmonitor`, `^monitoring`, `monitoring$` — nie polegaj na kotwicach i granicy słowa.
+  `szukaj`/`--tytul` same zabezpieczają frazę niepoprawną jako regex (komunikat na stderr), `--warunek`
+  idzie surowo; przy 5xx na warunku `regex` silnik podpowiada składnię;
 - `order=-id` sortuje po `id`, które koduje datę OGŁOSZENIA — „najnowsze" = ostatnio wydane, nie
   ostatnio opublikowane (starsze decyzje dopisywane do portalu lądują głęboko w liście);
 - **łańcuch warunków** (`/{warunek1}/{warunek2}`) zwraca 200, ale drugi warunek bywa ignorowany —

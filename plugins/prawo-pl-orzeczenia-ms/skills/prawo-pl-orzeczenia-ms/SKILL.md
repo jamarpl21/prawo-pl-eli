@@ -1,7 +1,7 @@
 ---
 name: prawo-pl-orzeczenia-ms
 metadata:
-  version: "2.2.0"
+  version: "2.3.0"
 description: >-
   Pobiera orzeczenia sądów powszechnych (SA/SO/SR) bezpośrednio z Portalu Orzeczeń
   Ministerstwa Sprawiedliwości (orzeczenia.ms.gov.pl). Używaj, gdy użytkownik wskazuje
@@ -34,7 +34,7 @@ MS="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-orzeczenia-ms/scripts/orzeczenia_ms.py
 #    sprawdzana w kodzie przed zapisem i przed każdym uruchomieniem; niezgodna = helper nie startuje.
 [ -f "$MS" ] || MS=$(python3 - <<'EOF'
 import hashlib, os, sys, urllib.request
-WERSJA, SHA256 = "2.2.0", "01b70681e67f7f7a7ea1b81c16e6c6d43a06e1aaf20545f7d64a2f446025d160"
+WERSJA, SHA256 = "2.3.0", "61a724d8eaa18bd7451313d7bdc58c3d883c000a7de9ab4889093b665e9cf8a6"
 URL = f"https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/v{WERSJA}/plugins/prawo-pl-orzeczenia-ms/skills/prawo-pl-orzeczenia-ms/scripts/orzeczenia_ms.py"
 p = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"prawo-pl-orzeczenia-ms-{WERSJA}", "orzeczenia_ms.py")
 try:
@@ -58,6 +58,7 @@ W przykładach `python3 "$MS"` wskazuje na helper ustalony powyżej.
 python3 "$MS" szukaj "dobra osobiste" --od 2021-01-01 --do 2021-12-31 --json
 python3 "$MS" sygnatura I ACa 1410/23 --json
 python3 "$MS" szukaj --sad 15050500 --sort datapublikacji --strona 1
+python3 "$MS" szukaj --sad 15051510 --wydzial 06 --od 2024-01-01 --do 2024-12-31 --wszystkie --json
 python3 "$MS" orzeczenie 152010000000503_I_C_002715_2021_Uz_2021-09-29_001 --json
 python3 "$MS" metryka <ID-lub-link-centralnego-portalu>
 python3 "$MS" przepisy <ID>
@@ -79,16 +80,23 @@ python3 "$MS" rss --sad 15050000 --limit 5
 - Strona od **1**, po 10 rekordów. `--sort score|data|datapublikacji|istotnosc`,
   `--kierunek ascending|descending`. Dla konkretnego dnia ustaw `--od` i `--do` na tę samą datę.
   Strona poza zakresem to błąd (kod 2, z numerem ostatniej strony), nie „brak wyników”.
+- Kolejne strony powtarzają i gubią pozycje (portal przestawia pozycje o równym kluczu sortowania).
+  Do PEŁNEJ listy (statystyka, przegląd wszystkich orzeczeń sądu/okresu) używaj `--wszystkie`
+  (bez `--strona`; `--sort` tylko `data`): silnik zbiera strony, łączy po `id`, zwraca listę tylko
+  przy komplecie (`kompletna: true`), a bez kompletu po 3 rundach — kod 2 bez listy. Limit 200
+  trafień: przy większej liczbie zawęź zapytanie (`--sad`, `--wydzial`, krótszy zakres `--od/--do`)
+  i złóż wynik z kilku zawężonych. Nie składaj pełnej listy ręcznie ze stron.
+  Pomiar: [references/api.md](references/api.md).
 - Pozycja listy ma `oznaczenie_nieprawomocne: true`, gdy portal pisze na liście „Orzeczenie
   nieprawomocne”; `null` niczego nie potwierdza. Ta sama sygnatura bywa w wielu sądach
   (np. II K 1/20 w trzech) — silnik dodaje wtedy uwagę; rozróżniaj po `sad` i `id`.
 - `orzeczenie` pobiera metrykę i pełny tekst; nie zastępuj uzasadnienia fragmentem z wyszukiwarki.
-  Od 24.09.2026 (stan na 5.10.2026) portal — także w przeglądarce i na portalach sądów — odpowiada
-  na zakładkę „Treść” KAŻDEGO nowo opublikowanego orzeczenia stroną „Błąd danych” (HTTP 400); SAOS,
-  który importuje z tego samego zaplecza MS, ma dla nich pustą treść. To awaria po stronie MS:
-  silnik zwraca kod 2 z tym opisem, metryka działa. Nie szukaj treści gdzie indziej w sieci i nie
-  odtwarzaj jej z fragmentu wyszukiwarki — napisz, że treść jest niedostępna u źródła. Takie dokumenty nie mają w metryce zakładek „Powołane przepisy”/„Orzeczenia
-  podobne” (obserwacja z 5.10.2026, uwaga w `uwagi`). `przepisy` pokazuje osobną listę portalu
+  Gdy portal odpowie na treść stroną „Błąd danych” (HTTP 400), silnik zwraca kod 2 (UNKNOWN, nigdy
+  „brak wyników”): to błąd portalu, metryka zwykle działa. Ponów później; nie szukaj treści gdzie
+  indziej w sieci i nie odtwarzaj jej z fragmentu wyszukiwarki ani z pamięci — napisz, że treść jest
+  w tej chwili niedostępna u źródła.
+  (Przykład: dokumenty opublikowane od 24.09.2026 tak odpowiadały 5.10.2026; 13.11.2026 wszystkie
+  55 sprawdzonych miało treść — szczegóły w api.md.) `przepisy` pokazuje osobną listę portalu
   (może być niepełna); pusta lista dostaje uwagę i odsyła do pola „Podstawa prawna”.
   `pdf` pobiera eksport urzędowy i nie nadpisuje istniejącego pliku. Link do podobnych orzeczeń
   jest w `podobne_url`; jego dostępność nie jest gwarantowana (5.10.2026 endpoint zwracał HTTP 400).

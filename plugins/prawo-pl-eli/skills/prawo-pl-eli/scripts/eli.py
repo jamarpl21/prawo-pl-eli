@@ -27,7 +27,7 @@ import urllib.request, urllib.parse, urllib.error
 from html.parser import HTMLParser
 from html import unescape as _unescape
 
-__version__ = "2.2.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "2.3.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://api.sejm.gov.pl/eli"
 CONTENT_HOSTS = ("api.sejm.gov.pl",)
 # Pamięć podręczna udanych GET-ów bez parametrów (metadane, odniesienia) w obrębie jednego
@@ -2315,12 +2315,147 @@ def _ocr_katalog():
     return os.path.join(baza, "prawo-pl-eli", "ocr")
 
 
+# Poprawki tekstu z OCR tesseracta. Pamięć podręczna trzyma SUROWY wynik tesseracta, a poprawki idą po odczycie
+# z niej (`_ocr_strona`) i po złożeniu stron (`_ocr_popraw_paragrafy`) — muszą więc być idempotentne. Dzięki temu
+# nowa albo poprawiona reguła działa też na stronach odczytanych wcześniej, bez zmiany klucza pamięci.
+#
+# tesseract czyta „§" jako „$" (aktów prawnych nie pisze się w dolarach): „$ 2", „$2." → „§ 2", „§2."
+_OCR_DOLAR = re.compile(r"\$(?=\s?\d)")
+# …i jako „8" w odesłaniu w środku zdania. Zamieniamy tylko w kontekście, w którym „8 N" nie ma innego sensu:
+# - po „w"/„z"/„zastrzeżeniem" (też przez koniec wiersza), a przed „ust."/„pkt", zakresem „N—M" albo znakiem
+#   kończącym odesłanie (po „do" — tylko przed „ust."/„pkt"/zakresem: „do 8 30," to godzina) (DU 1998 poz. 875: „o których mowa w 8 1 ust. 2", „stosując zasady określone w 8 7—13",
+#   „określone w\n8 11—14."; DU 1998 poz. 767: „ustalonego zgodnie z 8 16."; DU 2000 poz. 313: „określonych w 8 14,
+#   a ponadto"; DU 1996 poz. 457: „z zastrzeżeniem\n8 14, wszystkie");
+# - za numerem artykułu, przed nazwą aktu (DU 2000 poz. 313: „art. 23715 8 1 Kodeksu pracy" — indeks górny „237¹⁵"
+#   zgubiony przez OCR).
+# Numer ma 1–2 cyfry (bez zera na początku), a zakres — półpauzę albo pauzę, nie dywiz: „z 8 500 zł" (kwota ze
+# spacją tysięcy), „w 8 egzemplarzach", „w 8-10 dni", „z dnia 8 1 marca", „w 8 12. 1998", „w 8 14,5 m",
+# „od 7 00 do 8 00." zostają bez zmian.
+_OCR_8_ODESLANIE = re.compile(r"(?<![\w§])((?:w|z|zastrzeżeniem)[ \t]*\n?[ \t]*)8[ ]([1-9]\d?)"
+                              r"(?=[ ](?:ust\.|pkt\b)|[ ]?[—–][ ]?\d|,(?!\d)|[;:]|(\.)(?:\s+[^\d\s]|\s*$))"
+                              r"|(?<![\w§])(do[ \t]*\n?[ \t]*)8[ ]([1-9]\d?)(?=[ ](?:ust\.|pkt\b)|[ ]?[—–][ ]?\d)")
+_OCR_8_W_ARTYKULE = re.compile(r"(?<![\w§])(art\.[ ]?\d{1,6}[a-z]*[ ])8[ ](\d{1,2})(?=[ ][A-ZĄĆĘŁŃÓŚŹŻa-ząćęłńóśźż])")
+
+
+def _ocr_popraw_strone(tekst):
+    """Poprawki jednej strony tekstu z OCR tesseracta (idempotentne): „$"→„§" i jednoznaczne odesłania „w 8 N ust."."""
+    tekst = _OCR_DOLAR.sub("§", tekst)
+    # „z\n8 16." na początku wiersza wyglądałoby po zamianie jak nagłówek „§ 16." — taki wiersz zostaje
+    tekst = _OCR_8_ODESLANIE.sub(lambda m: m.group(0) if m.group(3) and "\n" in m.group(1)
+                                 else (m.group(1) or m.group(4)) + "§ " + (m.group(2) or m.group(5)), tekst)
+    return _OCR_8_W_ARTYKULE.sub(r"\1§ \2", tekst)
+
+
+# Nagłówek paragrafu odczytany jako „8": „8 11. Zebranie dokonuje…" (rozstrzelony) albo „85. 1. Pracownikowi…"
+# (sklejony; DU 1992 poz. 316: „81.", „82. 1." … „84. 1." to § 1–4). Za numerem — wielka litera, ewentualnie po
+# numerze ustępu („8 4. 1. Ustala się:"). Bez litery w numerze i bez numeru 0 („80.").
+_OCR_8_PARAGRAF = re.compile(r"(?m)^([ \t]*)8([ ]?)([1-9]\d{0,2})\.(?=[ \t]+(?:\d{1,2}\.[ \t]+)?[A-ZĄĆĘŁŃÓŚŹŻ])")
+# świadectwa numeracji: nagłówek paragrafu „§ N." na początku wiersza, początek aktu („zarządza się, co następuje:"
+# — przed § 1), nagłówek artykułu (rozdziela ciągi; nie świadczy o numerze paragrafu)
+_OCR_SWIADEK_PARAGRAF = re.compile(r"(?m)^[ \t]*§[ \t]?(\d{1,3})[a-z]?\.")
+_OCR_SWIADEK_POCZATEK = re.compile(r"co\s+nastę-?\s*puje")
+_OCR_SWIADEK_ART = re.compile(r"(?m)^[ \t]*Art\.[ \t]?\d")
+
+
+def _ocr_popraw_paragrafy(strony, ocr_idx, luz=0):
+    """Strony tekstu PDF (lista, kolejność dokumentu) → te same strony, na stronach z OCR tesseracta (`ocr_idx`)
+    z nagłówkami paragrafów „8 N." / „8N." poprawionymi na „§". Idempotentne (powtarzane do stałego wyniku).
+
+    Sam wzorzec nie wystarcza: „8 1." bywa wierszem tabeli, a „81."–„89." — punktem wyliczenia. Rozstrzyga ciąg
+    numeracji paragrafów w całym dokumencie (strony z warstwą tekstową czytane łam po łamie, `_pdf_lamy(luz)`):
+    - rozstrzelony „8 N." — gdy poprzedni albo następny nagłówek („§ M." albo inny rozstrzelony kandydat) ma numer
+      N−1 albo N+1 (DU 1998 poz. 875: 20 z 21 paragrafów to „8 N.");
+    - sklejony „8N." — tylko jako ciąg kolejnych numerów a…b, który zamykają z OBU stron nagłówki: tuż przed nim
+      § a−1 (dla a = 1 — „co następuje"), tuż za nim § b+1, przy czym co najmniej jeden z nich pewny (DU 1992
+      poz. 316: „co następuje:", 81.–84., „§ 5." na następnej stronie; DU 1996 poz. 457: „8 4.", „85. 1.", „8 6.").
+      Punkty 81.–89. wyliczenia w § k nie mają takiej ramy: przed nimi § k, za nimi § k+1. Sklejony kandydat nie
+      świadczy o niczym, dopóki nie zostanie przyjęty."""
+    ocr_idx = {i for i in ocr_idx if i < len(strony)}
+    if not any(_OCR_8_PARAGRAF.search(strony[i]) for i in ocr_idx):
+        return strony
+    # świadkowie ze stron z warstwą tekstową nie zmieniają się między przebiegami — liczeni raz
+    stali = [z for i, s in enumerate(strony) if i not in ocr_idx for z in _ocr_swiadkowie(i, _pdf_lamy(s, luz=luz))]
+    # każdy przebieg tylko zamienia „8" na „§", więc ciąg przebiegów się kończy
+    while True:
+        nowe = _ocr_popraw_paragrafy_raz(strony, ocr_idx, stali)
+        if nowe == strony:
+            return list(strony)
+        strony = nowe
+
+
+def _ocr_swiadkowie(i, tekst):
+    """Znaczniki numeracji strony `i`: (strona, pozycja, rodzaj, numer, dopasowanie); pozycja tylko do kolejności."""
+    return ([(i, m.start(), "paragraf", int(m.group(1)), None) for m in _OCR_SWIADEK_PARAGRAF.finditer(tekst)]
+            + [(i, m.start(), "poczatek", 0, None) for m in _OCR_SWIADEK_POCZATEK.finditer(tekst)]
+            + [(i, m.start(), "art", None, None) for m in _OCR_SWIADEK_ART.finditer(tekst)])
+
+
+def _ocr_popraw_paragrafy_raz(strony, ocr_idx, stali):
+    znaczniki = list(stali)
+    for i in ocr_idx:
+        s = strony[i]
+        znaczniki += [(i, m.start(), "rozstrzelony" if m.group(2) else "sklejony", int(m.group(3)), m)
+                      for m in _OCR_8_PARAGRAF.finditer(s)]
+        znaczniki += _ocr_swiadkowie(i, s)
+    znaczniki.sort(key=lambda z: (z[0], z[1]))
+    przyjete = set()
+    # rozstrzelone: świadkami są pewne nagłówki i pozostali rozstrzeleni kandydaci
+    sw = [k for k, z in enumerate(znaczniki) if z[2] in ("paragraf", "poczatek", "rozstrzelony")]
+    for j, k in enumerate(sw):
+        z = znaczniki[k]
+        if z[2] != "rozstrzelony":
+            continue
+        przed = znaczniki[sw[j - 1]] if j > 0 else None
+        za = znaczniki[sw[j + 1]] if j + 1 < len(sw) else None
+        # pewny nagłówek z TYM SAMYM numerem tuż obok — nie ma tu miejsca na paragraf („§ 3.", „8 3. Pszenica 15,00"
+        # w tabeli, „§ 4." — wiersz tabeli, nie drugi § 3)
+        if any(n and n[2] == "paragraf" and n[3] == z[3] for n in (przed, za)):
+            continue
+        if przed and przed[3] == z[3] - 1 or za and za[2] != "poczatek" and za[3] == z[3] + 1:
+            przyjete.add(k)
+    # sklejone: ciąg kolejnych numerów, tuż przed nim nagłówek a−1, tuż za nim nagłówek b+1. Jedną z tych ram może
+    # być odrzucony dotąd rozstrzelony kandydat — wtedy przyjmujemy też jego (DU 1996 poz. 457: ostatni z ciągu
+    # „§ 4.", „85.", „8 6." nie miał sąsiada 5 ani 7 wśród świadków), ale druga rama musi być pewna.
+    def pewny(k):
+        return znaczniki[k][2] in ("paragraf", "poczatek") or k in przyjete
+
+    def rama(k, numer):
+        """0 — nie pasuje, 1 — pasuje rozstrzelony kandydat, 2 — pasuje pewny nagłówek"""
+        if not 0 <= k < len(znaczniki) or znaczniki[k][3] != numer:
+            return 0
+        return 2 if pewny(k) else 1 if znaczniki[k][2] == "rozstrzelony" else 0
+    k = 0
+    while k < len(znaczniki):
+        if znaczniki[k][2] != "sklejony":
+            k += 1
+            continue
+        koniec = k
+        while koniec + 1 < len(znaczniki) and znaczniki[koniec + 1][2] == "sklejony" \
+                and znaczniki[koniec + 1][3] == znaczniki[koniec][3] + 1:
+            koniec += 1
+        a, b = znaczniki[k][3], znaczniki[koniec][3]
+        przed = rama(k - 1, a - 1)
+        za = rama(koniec + 1, b + 1) if koniec + 1 < len(znaczniki) and znaczniki[koniec + 1][2] != "poczatek" else 0
+        if przed and za and przed + za >= 3:
+            przyjete.update(range(k - (przed == 1), koniec + 1 + (za == 1)))
+        k = koniec + 1
+    if not przyjete:
+        return strony
+    wynik = list(strony)
+    for k in przyjete:
+        i, _, _, _, m = znaczniki[k]
+        p = m.start() + len(m.group(1))         # „8" za wcięciem → „§" (znak za znak — pozycje innych bez zmian)
+        wynik[i] = wynik[i][:p] + "§" + wynik[i][p + 1:]
+    return wynik
+
+
 def _ocr_strona(pdf_path, nr, klucz):
-    """OCR jednej strony (nr od 1) → tekst; wynik zapamiętany na dysku (ten sam PDF = ten sam wynik)."""
+    """OCR jednej strony (nr od 1) → tekst; surowy wynik tesseracta zapamiętany na dysku (ten sam PDF = ten sam
+    wynik), poprawki `_ocr_popraw_strone` — po odczycie, także z pamięci."""
     plik = os.path.join(_ocr_katalog(), f"{klucz}-{nr}-{_OCR_DPI}.txt")
     try:
         with open(plik, encoding="utf-8") as f:
-            return f.read()
+            return _ocr_popraw_strone(f.read())
     except OSError:
         pass
     with tempfile.TemporaryDirectory() as tmp:
@@ -2329,15 +2464,14 @@ def _ocr_strona(pdf_path, nr, klucz):
                         "-singlefile", pdf_path, obraz], capture_output=True, timeout=180, check=True)
         r = subprocess.run(["tesseract", obraz + ".png", "-", "-l", "pol", "--psm", "1"],
                            capture_output=True, timeout=300, check=True)
-    # tesseract czyta „§" jako „$" (aktów prawnych nie pisze się w dolarach): „$ 2", „$2." → „§ 2", „§2."
-    tekst = re.sub(r"\$(?=\s?\d)", "§", r.stdout.decode("utf-8", "replace"))
+    tekst = r.stdout.decode("utf-8", "replace")
     try:
         os.makedirs(_ocr_katalog(), exist_ok=True)
         with open(plik, "w", encoding="utf-8") as f:
             f.write(tekst)
     except OSError:
         pass        # brak zapisu (piaskownica) nie przeszkadza — następnym razem OCR od nowa
-    return tekst
+    return _ocr_popraw_strone(tekst)
 
 
 def pdf_ocr_stron(pdf_bytes, numery):
@@ -2402,6 +2536,9 @@ def _tekst_z_pdf(path, label, meta, info=None, ocr=None):
                         kawalki[i], reklamy = "", reklamy + 1
                     else:
                         kawalki[i] = t.replace("\f", "")
+                # „8 11." → „§ 11." na stronach z OCR, gdy potwierdza to ciąg numeracji paragrafów całego PDF
+                kawalki = _ocr_popraw_paragrafy(kawalki, [i for i in odczytane if kawalki[i]],
+                                                luz=_PDF_LUZ_OCR if zeszyt and rok < 2000 else 0)
                 raw = "\f".join(kawalki)
                 if len(odczytane) > reklamy:
                     info["ocr_strony"] = (len(odczytane) - reklamy, len(strony))

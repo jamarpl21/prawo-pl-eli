@@ -354,13 +354,38 @@ class Audit20261005(unittest.TestCase):
                 self.assertEqual(ctx.exception.reason, reason)
 
     def test_content_data_error_explained(self):
-        # Treść świeżych publikacji: portal (także w przeglądarce) zwraca HTTP 400 „Błąd danych”.
+        # HTTP 400 „Błąd danych” na treści (awaria obserwowana 2026-10-05; 2026-11-13 już nie występowała):
+        # komunikat ma mówić, co robić, i nie twierdzić, że awaria trwa.
         client = unittest.mock.Mock()
         client.get.side_effect = [fixture('details_reasons.html'), ms.PortalError(400, 'Błąd danych', 'u')]
         with self.assertRaises(ms.Unknown) as ctx:
             ms.run(ms.parser().parse_args(['orzeczenie', REASONS_ID]), client)
-        self.assertIn('Portal nie udostępnia treści', str(ctx.exception))
-        self.assertIn('Błąd danych', str(ctx.exception))
+        message = str(ctx.exception)
+        self.assertIn('Portal nie wydał treści', message)
+        self.assertIn('Błąd danych', message)
+        self.assertIn('Ponów później', message)
+        self.assertIn('metryka', message)
+        self.assertIn('NIE odtwarzaj treści', message)
+        for stale in ('24.09', '2026-10-05', 'awaria', 'SAOS'):
+            self.assertNotIn(stale, message)
+        client.get.side_effect = [fixture('details_reasons.html'), ms.PortalError(400, 'Błąd danych', 'u')]
+        with self.assertRaises(ms.Unknown) as ctx:
+            ms.run(ms.parser().parse_args(['przepisy', REASONS_ID]), client)
+        self.assertIn('Portal nie wydał listy powołanych przepisów', str(ctx.exception))
+        self.assertIn('Podstawa prawna', str(ctx.exception))
+        self.assertNotIn('wniosek o odpis', str(ctx.exception))
+
+    def test_content_data_error_exit_code_2_no_stdout(self):
+        def get(self, url, pdf=False):
+            if '/content/' in url:
+                raise ms.PortalError(400, 'Błąd danych', url)
+            return fixture('details_reasons.html')
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with patch.object(ms.Client, 'get', get), redirect_stdout(stdout), redirect_stderr(stderr):
+            self.assertEqual(ms.main(['orzeczenie', REASONS_ID, '--json']), 2)
+        self.assertEqual(stdout.getvalue(), '')
+        self.assertIn('BŁĄD (UNKNOWN)', stderr.getvalue())
+        self.assertIn('Błąd danych', stderr.getvalue())
 
     def test_unknown_id_404_explained(self):
         client = unittest.mock.Mock()
@@ -375,7 +400,9 @@ class Audit20261005(unittest.TestCase):
         self.assertEqual(r['typ'], 'zarządzenie, uzasadnienie')
         self.assertEqual(r['data_orzeczenia'], '2026-09-25')
         self.assertTrue(any('bywa datą uzasadnienia' in u for u in r['uwagi']))
-        self.assertTrue(any('Powołane przepisy' in u for u in r['uwagi']))  # dokument jeszcze nieprzetworzony
+        # Fixtura z 2026-10-05 nie ma zakładek „Powołane przepisy”/„Orzeczenia podobne”; 2026-11-13 brak
+        # zakładek nie przewidywał już braku treści (7/7 z treścią) — silnik nie dodaje o tym uwagi.
+        self.assertFalse(any('zakładek' in u for u in r['uwagi']))
         # „zarządzenie, wyrok, uzasadnienie” zawiera sentencję — bez uwagi o dacie
         r = ms.parse_meta(DETAILS_ACA10, ACA10_ID)
         self.assertEqual(r['typ'], 'zarządzenie, wyrok, uzasadnienie')
@@ -438,6 +465,315 @@ class Audit20261005(unittest.TestCase):
         with self.assertRaises(ms.Unknown) as ctx:
             ms.run(ms.parser().parse_args(['metryka', ID, '--strict']), client)
         self.assertIn('oznacza orzeczenie jako nieprawomocne', str(ctx.exception))
+
+
+def search_page(total, rows=10):
+    """search.html z `rows` pozycjami i `total` trafieniami (pełna strona listy portalu)."""
+    import re
+    source = fixture('search.html')
+    row = re.search(r'<tr class="t-first t-last">.*</tr>', source, re.S).group(0)
+    return source.replace(row, row * rows).replace('big_number">1<', 'big_number">%d<' % total)
+
+
+class Paging20261113(unittest.TestCase):
+    """Pomiar 2026-11-13: przy remisach klucza strony powtarzają i gubią pozycje (także przy --sort data)."""
+
+    def search(self, *argv, total=72, rows=10):
+        client = unittest.mock.Mock()
+        client.get.return_value = search_page(total, rows)
+        return ms.run(ms.parser().parse_args(['szukaj', '--sad', '15051510'] + list(argv)), client)
+
+    def paging_notes(self, result):
+        return [u for u in result['uwagi'] if 'więcej niż jedną stronę' in u]
+
+    def test_unstable_sorts_warn_and_point_to_all_pages_mode(self):
+        for sort in ('score', 'istotnosc', 'datapublikacji'):
+            with self.subTest(sort=sort):
+                notes = self.paging_notes(self.search('--sort', sort))
+                self.assertEqual(len(notes), 1)
+                self.assertIn('--sort ' + sort + ' jest niestabilna', notes[0])
+                self.assertIn('Pełną listę (72 trafienia) pobierz opcją --wszystkie', notes[0])
+                self.assertIn('Nie składaj jej ręcznie', notes[0])
+        notes = self.paging_notes(self.search())  # domyślne score
+        self.assertIn('--sort score jest niestabilna', notes[0])
+        self.assertNotIn('None', notes[0])
+
+    def test_over_limit_note_says_narrow_the_query(self):
+        notes = self.paging_notes(self.search(total=3192))
+        self.assertIn('Pełnej listy (3192 trafienia) nie pobierzesz', notes[0])
+        self.assertIn('limit 200', notes[0])
+        self.assertIn('--wydzial', notes[0])
+        self.assertEqual(ms.hits(205), '205 trafień')
+        self.assertEqual(ms.hits(212), '212 trafień')
+        self.assertEqual(ms.hits(1), '1 trafienie')
+
+    def test_data_sort_still_warns_about_date_ties(self):
+        for direction in ('descending', 'ascending'):
+            with self.subTest(direction=direction):
+                notes = self.paging_notes(self.search('--sort', 'data', '--kierunek', direction, '--strona', '2'))
+                self.assertEqual(len(notes), 1)
+                self.assertIn('także przy --sort data', notes[0])
+                self.assertIn('--wszystkie', notes[0])
+
+    def test_single_page_result_has_no_paging_note(self):
+        for total in (1, 10):
+            with self.subTest(total=total):
+                self.assertFalse(self.paging_notes(self.search('--sort', 'score', total=total, rows=total)))
+        self.assertTrue(self.paging_notes(self.search('--sort', 'score', total=11)))
+
+    def test_default_sort_unchanged_on_later_pages(self):
+        # Domyślne sortowanie nie zależy od numeru strony (strona 1 po score + strona 2 po dacie = gorsza suma).
+        for page in ('1', '2'):
+            args = ms.parser().parse_args(['szukaj', 'x', '--strona', page])
+            self.assertEqual(ms.search_url(args).split('/')[-3:], ['score', 'descending', page])
+
+    def test_signature_search_gets_note_too(self):
+        client = unittest.mock.Mock()
+        client.get.return_value = search_page(15)
+        r = ms.run(ms.parser().parse_args(['sygnatura', 'I', 'ACa', '1410/23']), client)
+        self.assertTrue(self.paging_notes(r))
+
+
+def row_html(ident, date, nonfinal=False, typ='wyrok z uzasadnieniem'):
+    flag = '<p>Orzeczenie nieprawomocne</p>' if nonfinal else ''
+    return ('<tr><td class="title"><div class="single_result"><div class="title"><h4><a href="/details/$N/%s">I C %s</a></h4>'
+            '<p>%s</p><p>Sąd Rejonowy w Giżycku</p>%s<p>Data orzeczenia: %s</p><p>Data publikacji: 2025-01-01</p></div>'
+            '</div></td></tr>') % (ident, ident[-6:], typ, flag, date)
+
+
+def list_page(total, rows):
+    """Strona listy portalu: `rows` = [(id, data, nieprawomocne), …], `total` w .big_number."""
+    return ('<!DOCTYPE html><html><head><title>Portal Orzeczeń Sądów Powszechnych</title></head><body>'
+            '<span class="big_number">%d</span><section id="results"><table><tbody>%s</tbody></table></section>'
+            '</body></html>') % (total, ''.join(row_html(*r) for r in rows))
+
+
+def item(n, date=None):
+    """Pozycja n: ID zgodne z formatem portalu, kilka pozycji z tą samą datą (remisy klucza)."""
+    return ('15051510000%04d_II_K_%06d_2024_Uz_2024-01-01_001' % (n, n), date or '2024-%02d-%02d' % (1 + n // 28 % 12, 1 + n % 28 // 3), False)
+
+
+class FakePortal:
+    """Portal z mokowaną listą: `layout(round, direction, page)` → (liczba_wynikow, [numery pozycji])."""
+
+    def __init__(self, layout, items=None):
+        self.layout, self.calls, self.round = layout, [], 0
+        self.items = items or {}
+
+    def get(self, url):
+        sort, direction, page = url.split('/')[-3:]
+        page = int(page)
+        if page == 1:
+            self.round += 1
+        self.calls.append((sort, direction, page))
+        total, numbers = self.layout(self.round, direction, page)
+        if total == 0:
+            return fixture('empty.html')
+        return list_page(total, [self.items.get(n) or item(n) for n in numbers])
+
+
+def stable(total):
+    def layout(rnd, direction, page):
+        return total, list(range((page - 1) * 10, min(total, page * 10)))
+    return layout
+
+
+def losing(total, lost, good_round=None):
+    """Kolejność z remisem na granicy stron: strona 2 powtarza pozycję 9 zamiast `lost`."""
+    def layout(rnd, direction, page):
+        numbers = list(range((page - 1) * 10, min(total, page * 10)))
+        if rnd != good_round and lost in numbers:
+            numbers[numbers.index(lost)] = 9
+        return total, numbers
+    return layout
+
+
+class AllPages20261113(unittest.TestCase):
+    """--wszystkie: pełna lista z kontrolą kompletu (limit 200 trafień, najwyżej 3 rundy = 60 zapytań)."""
+
+    def run_all(self, portal, *argv):
+        return ms.run(ms.parser().parse_args(['szukaj', '--sad', '15051510', '--wszystkie'] + list(argv)), portal)
+
+    def ids(self, result):
+        return [w['id'] for w in result['wyniki']]
+
+    def test_complete_in_first_round(self):
+        portal = FakePortal(stable(25))
+        r = self.run_all(portal)
+        self.assertEqual((r['liczba_wynikow'], len(r['wyniki']), r['rundy'], r['zapytania']), (25, 25, 1, 3))
+        self.assertIs(r['kompletna'], True)
+        self.assertNotIn('strona', r)
+        self.assertEqual({c[0] for c in portal.calls}, {'data'})  # portal pytany po dacie orzeczenia
+        self.assertEqual([c[2] for c in portal.calls], [1, 2, 3])
+        self.assertFalse(any('więcej niż jedną stronę' in u for u in r['uwagi']))  # bez uwagi o stronicowaniu
+        self.assertTrue(any('Pełna lista (--wszystkie): 25 z 25 pozycji' in u and 'rundy: 1, zapytania: 3' in u
+                            for u in r['uwagi']))
+
+    def test_complete_in_second_round_stops_mid_round(self):
+        portal = FakePortal(losing(25, 15, good_round=2))
+        r = self.run_all(portal)
+        self.assertEqual((len(set(self.ids(r))), r['rundy'], r['zapytania']), (25, 2, 5))
+        # Runda 2 kończy się na stronie 2, gdy brakująca pozycja się znalazła; strony 3 nie pobrano.
+        self.assertEqual([(c[1], c[2]) for c in portal.calls],
+                         [('descending', 1), ('descending', 2), ('descending', 3), ('descending', 1), ('descending', 2)])
+
+    def test_complete_in_third_round(self):
+        portal = FakePortal(losing(25, 15, good_round=3))
+        r = self.run_all(portal)
+        self.assertEqual((len(r['wyniki']), r['rundy'], r['zapytania']), (25, 3, 8))
+        # Każda runda pyta tak samo (przemienny kierunek nie pomógł w pomiarze 2026-11-13).
+        self.assertEqual([c[1] for c in portal.calls if c[2] == 1], ['descending'] * 3)
+        portal = FakePortal(losing(25, 15, good_round=2))
+        self.run_all(portal, '--kierunek', 'ascending')
+        self.assertEqual({c[:2] for c in portal.calls}, {('data', 'ascending')})
+
+    def test_incomplete_after_three_rounds_is_unknown_without_list(self):
+        portal = FakePortal(losing(25, 15))
+        with self.assertRaises(ms.Unknown) as ctx:
+            self.run_all(portal)
+        self.assertEqual(len(portal.calls), 9)
+        self.assertIn('zebrano 24 z 25 unikalnych pozycji', str(ctx.exception))
+        self.assertIn('Niepełnej listy nie wypisano', str(ctx.exception))
+        stdout, stderr = io.StringIO(), io.StringIO()
+        portal = FakePortal(losing(25, 15))
+        with patch.object(ms.Client, 'get', lambda self, url: portal.get(url)), redirect_stdout(stdout), redirect_stderr(stderr):
+            self.assertEqual(ms.main(['szukaj', '--sad', '15051510', '--wszystkie', '--json']), 2)
+        self.assertEqual(stdout.getvalue(), '')
+        self.assertIn('BŁĄD (UNKNOWN): --wszystkie: po 3 rundach (9 zapytań) zebrano 24 z 25', stderr.getvalue())
+
+    def test_limit_200_stops_after_one_request(self):
+        portal = FakePortal(lambda rnd, d, page: (201, list(range(10))))
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with patch.object(ms.Client, 'get', lambda self, url: portal.get(url)), redirect_stdout(stdout), redirect_stderr(stderr):
+            self.assertEqual(ms.main(['szukaj', '--sad', '15051510', '--wszystkie', '--json']), 2)
+        self.assertEqual(len(portal.calls), 1)
+        self.assertEqual(stdout.getvalue(), '')
+        self.assertIn('Zapytanie ma 201 trafień, a --wszystkie pobiera najwyżej 200', stderr.getvalue())
+        self.assertIn('--wydzial', stderr.getvalue())
+        r = self.run_all(FakePortal(stable(200)))  # 200 to jeszcze w limicie: 20 stron
+        self.assertEqual((len(r['wyniki']), r['zapytania']), (200, 20))
+
+    def test_single_page_is_one_request(self):
+        for total in (1, 7, 10):
+            with self.subTest(total=total):
+                portal = FakePortal(stable(total))
+                r = self.run_all(portal)
+                self.assertEqual((len(r['wyniki']), r['rundy'], r['zapytania'], len(portal.calls)), (total, 1, 1, 1))
+
+    def test_zero_results_and_portal_error_keep_codes(self):
+        with self.assertRaises(ms.Empty):
+            self.run_all(FakePortal(lambda rnd, d, page: (0, [])))
+        client = unittest.mock.Mock()
+        client.get.side_effect = ms.PortalError(400, 'Błąd danych', 'u')
+        with self.assertRaises(ms.Unknown):
+            self.run_all(client)
+        self.assertEqual(client.get.call_count, 1)
+
+    def test_total_change_restarts_and_drops_collected_items(self):
+        def layout(rnd, direction, page):
+            total = 25 if (rnd, page) == (1, 1) else 26
+            return total, list(range((page - 1) * 10, min(total, page * 10)))
+        portal = FakePortal(layout)
+        r = self.run_all(portal)
+        self.assertEqual((r['liczba_wynikow'], len(r['wyniki']), r['rundy'], r['zapytania']), (26, 26, 2, 5))
+        self.assertTrue(any('zmieniła się w trakcie' in u and '25 → 26' in u for u in r['uwagi']))
+
+    def test_shrinking_list_is_never_empty_code(self):
+        # Druga strona nagle „Nie znaleziono” — to zmiana listy (UNKNOWN), nie brak wyników (kod 1).
+        def layout(rnd, direction, page):
+            return (0, []) if page == 2 else (25, list(range(10)))
+        portal = FakePortal(layout)
+        with self.assertRaises(ms.Unknown) as ctx:
+            self.run_all(portal)
+        self.assertNotIsInstance(ctx.exception, ms.Empty)
+        self.assertIn('zmieniała się w trakcie', str(ctx.exception))
+        self.assertEqual(len(portal.calls), 6)
+
+    def test_more_unique_ids_than_total_restarts(self):
+        # Runda 1: 14 z 15 (brak 14); runda 2: dwie nowe pozycje przy tej samej liczbie trafień — lista
+        # zmieniła skład (16 różnych ID > 15), więc zebrane pozycje są odrzucane, a runda 3 zaczyna od nowa.
+        # Zamiana jednej pozycji na inną przy tej samej liczbie trafień jest niewykrywalna (api.md).
+        def layout(rnd, direction, page):
+            if rnd == 2 and page == 1:
+                return 15, [100, 101] + list(range(2, 10))
+            return losing(15, 14, good_round=3)(rnd, direction, page)
+        r = self.run_all(FakePortal(layout))
+        self.assertEqual((len(r['wyniki']), r['rundy']), (15, 3))
+        self.assertEqual(set(self.ids(r)), {item(n)[0] for n in range(15)})
+        self.assertTrue(any('liczba_wynikow 15, a zebrano 16 różnych ID' in u for u in r['uwagi']))
+
+    def test_request_count_never_exceeds_60(self):
+        portal = FakePortal(losing(200, 15))  # 20 stron, komplet nigdy
+        with self.assertRaises(ms.Unknown):
+            self.run_all(portal)
+        self.assertEqual(len(portal.calls), 60)
+        self.assertEqual(ms.MAX_REQUESTS, 60)
+        counter = iter(range(10 ** 6))  # liczba trafień zmienia się przy KAŻDYM zapytaniu
+        portal = FakePortal(lambda rnd, d, page: (11 + next(counter) % 150, list(range((page - 1) * 10, page * 10))))
+        with self.assertRaises(ms.Unknown):
+            self.run_all(portal)
+        self.assertLessEqual(len(portal.calls), 60)
+
+    def test_conflicting_options_rejected_before_request(self):
+        for argv in (['--strona', '2'], ['--sort', 'score'], ['--sort', 'istotnosc'], ['--sort', 'datapublikacji']):
+            with self.subTest(argv=argv):
+                portal = FakePortal(stable(25))
+                with self.assertRaises(ValueError) as ctx:
+                    self.run_all(portal, *argv)
+                self.assertEqual(portal.calls, [])
+                self.assertIn('--wszystkie', str(ctx.exception))
+        self.assertEqual(len(self.run_all(FakePortal(stable(25)), '--sort', 'data')['wyniki']), 25)
+        with self.assertRaises(ValueError):  # puste zapytanie odrzucone także w tym trybie
+            ms.run(ms.parser().parse_args(['szukaj', '--wszystkie']), FakePortal(stable(5)))
+
+    def test_order_is_deterministic_and_local(self):
+        def shuffled(seed):
+            import random
+            rng = random.Random(seed)
+            def layout(rnd, direction, page):
+                order = list(range(25))
+                rng.shuffle(order)  # kolejność portalu różna przy każdym zapytaniu
+                return 25, order[(page - 1) * 10:page * 10]
+            return layout
+        runs = []
+        for seed in range(6):
+            try:
+                runs.append(self.ids(self.run_all(FakePortal(shuffled(seed)))))
+            except ms.Unknown:
+                pass
+        self.assertGreaterEqual(len(runs), 2)
+        self.assertTrue(all(r == runs[0] for r in runs))
+        r = self.run_all(FakePortal(stable(25)))
+        keys = [(w['data_orzeczenia'], w['id']) for w in r['wyniki']]
+        self.assertEqual(keys, sorted(keys, reverse=True))
+        r = self.run_all(FakePortal(stable(25)), '--kierunek', 'ascending')
+        keys = [(w['data_orzeczenia'], w['id']) for w in r['wyniki']]
+        self.assertEqual(keys, sorted(keys))
+        self.assertTrue(any('data orzeczenia rosnąco, potem ID' in u for u in r['uwagi']))
+
+    def test_item_notes_cover_whole_list(self):
+        items = {3: item(3)[:2] + (True,), 17: item(17)[:2] + (True,)}
+        r = self.run_all(FakePortal(stable(25), items))
+        self.assertTrue(any('2 z 25 pozycji na liście' in u for u in r['uwagi']))
+
+    def test_signature_collision_across_pages(self):
+        portal = FakePortal(stable(12))
+
+        def get(url):
+            text = portal.get(url)
+            return text.replace('Sąd Rejonowy w Giżycku', 'Sąd Okręgowy w Koninie') if url.endswith('/2') else text
+        client = unittest.mock.Mock()
+        client.get.side_effect = get
+        r = ms.run(ms.parser().parse_args(['sygnatura', 'II', 'K', '1/20', '--wszystkie']), client)
+        self.assertEqual(len(r['wyniki']), 12)
+        self.assertTrue(any('występuje w 2 sądach' in u for u in r['uwagi']))
+
+    def test_default_mode_unchanged(self):
+        portal = FakePortal(stable(25))
+        r = ms.run(ms.parser().parse_args(['szukaj', '--sad', '15051510']), portal)
+        self.assertEqual((r['strona'], len(r['wyniki']), len(portal.calls)), (1, 10, 1))
+        self.assertEqual(portal.calls[0][:2], ('score', 'descending'))
+        self.assertNotIn('kompletna', r)
 
 
 if __name__ == '__main__':

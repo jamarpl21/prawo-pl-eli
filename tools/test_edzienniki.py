@@ -653,7 +653,10 @@ class TestTls(unittest.TestCase):
             wynik = edz._ctx_z_aia("edziennik.example")
         self.assertIs(wynik, ctx)
         self.assertEqual(zaladowane, [pem])
-        self.assertFalse(ctx.verify_flags & ssl.VERIFY_X509_PARTIAL_CHAIN)
+        # ssl.VERIFY_X509_PARTIAL_CHAIN jest od Pythona 3.10; wcześniej sprawdzamy ten sam bit
+        # (X509_V_FLAG_PARTIAL_CHAIN = 0x80000 w OpenSSL) — silnik nie ma tam czego zdejmować,
+        # bo domyślny kontekst go nie ustawia, ale zwrócony kontekst nadal nie może go mieć
+        self.assertFalse(ctx.verify_flags & getattr(ssl, "VERIFY_X509_PARTIAL_CHAIN", 0x80000))
         self.assertEqual(ctx.verify_mode, ssl.CERT_REQUIRED)
 
     def test_przekierowanie_http_na_hoscie_dziennika_jest_podnoszone_a_obce_odrzucane(self):
@@ -1013,11 +1016,16 @@ class TestPozycjeTechniczne(unittest.TestCase):
 
     def test_przekierowanie_na_404_notfound_to_404(self):
         req = edz.urllib.request.Request("https://dzienniki.slask.eu/api/eli/acts/POL_WOJ_SL/2026/5464")
+        # w prawdziwym działaniu http_error_302 podaje tu odpowiedź serwera; z fp=None HTTPError
+        # w Pythonie 3.8/3.9 nie inicjuje klas bazowych i close() kończy się KeyError: 'file'
+        odpowiedz = io.BytesIO(b"")
         with self.assertRaises(edz.urllib.error.HTTPError) as cm:
             edz._PrzekierowaniaHttps().redirect_request(
-                req, None, 302, "Found", {}, "https://dzienniki.slask.eu/api/eli/acts/POL_WOJ_SL/2026/404_notfound")
+                req, odpowiedz, 302, "Found", {}, "https://dzienniki.slask.eu/api/eli/acts/POL_WOJ_SL/2026/404_notfound")
         self.assertEqual(cm.exception.code, 404)
+        self.assertIs(cm.exception.fp, odpowiedz)
         cm.exception.close()
+        self.assertTrue(odpowiedz.closed)
 
     def test_akt_nieistniejacy_bez_rejestru(self):
         out, e = _uruchom(["akt", "SL", "2026", "99999"], _get={"return_value": None},

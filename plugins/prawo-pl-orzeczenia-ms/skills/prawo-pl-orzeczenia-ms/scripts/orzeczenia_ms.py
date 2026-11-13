@@ -14,7 +14,7 @@ import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 from pathlib import Path
 
-__version__ = "2.2.0"
+__version__ = "2.3.0"
 SKILL_VERSION = __version__
 BASE = "https://orzeczenia.ms.gov.pl"
 USER_AGENT = "curl/8.7.1"  # sprawdzone 2026-09-20; inne UA uruchamiają F5/TSPD
@@ -28,6 +28,10 @@ class Unknown(RuntimeError):
 
 class Empty(RuntimeError):
     """Rozpoznana, poprawna odpowiedź bez wyników."""
+
+
+class OutOfRange(ValueError):
+    """Strona za ostatnią: portal ma trafienia, ale nie na tej stronie."""
 
 
 class PortalError(Unknown):
@@ -184,10 +188,6 @@ def bound_to(container, ident, what):
         raise Unknown(f"{what} dotyczy innego orzeczenia.")
 
 
-def tabs(container):
-    return {n.plain() for ul in container.all("ul", cls="tabs") for n in ul.all("a")}
-
-
 REASONS_ONLY_NOTE = ("Dokument bez sentencji wyroku/postanowienia (typ: {typ}): „Data orzeczenia” w portalu "
                      "bywa datą uzasadnienia lub zarządzenia, a nie datą wydania wyroku — datę wyroku sprawdź w treści.")
 
@@ -270,7 +270,7 @@ def finality(node):
     return None
 
 
-def search_url(args):
+def search_url(args, sort=None, direction=None, number=None):
     values = [None] * 15
     for index, key in [(0, "fraza"), (1, "sygnatura"), (2, "sad"), (3, "wydzial"),
                        (4, "apelacja"), (5, "okreg"), (7, "od"), (8, "do"),
@@ -285,7 +285,22 @@ def search_url(args):
         # Portal bez kryterium zwraca sam formularz (bez listy) — to nie jest „zero wyników”.
         raise ValueError("Podaj co najmniej jedno kryterium (frazę, sygnaturę, datę, sąd, wydział, hasło…); "
                          "portal nie zwraca listy dla pustego zapytania.")
-    return BASE + "/search/advanced/" + "/".join([slot(v) for v in values] + [args.sort, args.kierunek, str(args.strona)])
+    tail = [sort or args.sort or "score", direction or args.kierunek, str(number or args.strona)]
+    return BASE + "/search/advanced/" + "/".join([slot(v) for v in values] + tail)
+
+
+def list_notes(items, scope):
+    """Uwagi liczone z pozycji listy; `scope` = „na tej stronie” albo „na liście”."""
+    notes = [NOTE]
+    flagged = sum(1 for i in items if i["oznaczenie_nieprawomocne"])
+    if flagged:
+        notes.append(f"{flagged} z {len(items)} pozycji {scope} portal oznacza jako „Orzeczenie nieprawomocne” "
+                     "(pole oznaczenie_nieprawomocne). Brak oznaczenia nie potwierdza prawomocności — sprawdź metrykę.")
+    reasons = sorted({i["sygnatura"] for i in items if reasons_only(i["typ"])})
+    if reasons:
+        notes.append("Pozycje bez sentencji (typ „uzasadnienie”/„zarządzenie, uzasadnienie”): " + ", ".join(reasons)
+                     + " — ich „data_orzeczenia” bywa datą uzasadnienia lub zarządzenia, nie wyroku.")
+    return notes
 
 
 def parse_search(text, url, number=1):
@@ -321,22 +336,13 @@ def parse_search(text, url, number=1):
     expected = max(0, min(10, total - (number - 1) * 10))
     if total and not expected and not items:
         # Trafienia są — to błędny numer strony, nie brak orzeczeń (kod 1 wprowadzałby w błąd).
-        raise ValueError(f"Strona {number} jest poza zakresem: portal ma {total} trafień, "
+        raise OutOfRange(f"Strona {number} jest poza zakresem: portal ma {total} trafień, "
                          f"ostatnia strona to {-(-total // 10)}.")
     if len(items) != expected:
         raise Unknown(f"Niekompletna lista: oczekiwano {expected}, odczytano {len(items)}.")
     if not items:
         raise Empty(f"Portal nie znalazł wyników na stronie {number}. {NOTE}")
-    notes = [NOTE]
-    flagged = sum(1 for i in items if i["oznaczenie_nieprawomocne"])
-    if flagged:
-        notes.append(f"{flagged} z {len(items)} pozycji na tej stronie portal oznacza jako „Orzeczenie nieprawomocne” "
-                     "(pole oznaczenie_nieprawomocne). Brak oznaczenia nie potwierdza prawomocności — sprawdź metrykę.")
-    reasons = sorted({i["sygnatura"] for i in items if reasons_only(i["typ"])})
-    if reasons:
-        notes.append("Pozycje bez sentencji (typ „uzasadnienie”/„zarządzenie, uzasadnienie”): " + ", ".join(reasons)
-                     + " — ich „data_orzeczenia” bywa datą uzasadnienia lub zarządzenia, nie wyroku.")
-    return dict(zrodlo=url, liczba_wynikow=total, strona=number, wyniki=items, uwagi=notes)
+    return dict(zrodlo=url, liczba_wynikow=total, strona=number, wyniki=items, uwagi=list_notes(items, "na tej stronie"))
 
 
 def parse_meta(text, ident):
@@ -387,10 +393,9 @@ def parse_meta(text, ident):
         notes.append("Portal nie potwierdza prawomocności tego orzeczenia.")
     if reasons_only(typ):
         notes.append(REASONS_ONLY_NOTE.format(typ=typ))
-    if not {"Powołane przepisy", "Orzeczenia podobne"} & tabs(container):
-        # Obserwacja 2026-10-05 (14/14 dokumentów): bez tych zakładek portal zwraca „Błąd danych” dla treści.
-        notes.append("Portal nie pokazuje zakładek „Powołane przepisy”/„Orzeczenia podobne” — "
-                     "zaobserwowano, że treść takich (zwykle świeżo opublikowanych) dokumentów bywa jeszcze niedostępna.")
+    # Do 2.2.0 brak zakładek „Powołane przepisy”/„Orzeczenia podobne” dawał uwagę o niedostępnej
+    # treści (obserwacja 2026-10-05, 14/14). Sprawdzone 2026-11-13: 7 z 59 dokumentów bez tych
+    # zakładek, wszystkie 7 z treścią — sygnał nic już nie przewiduje, uwaga usunięta.
     return dict(id=ident, sygnatura=fields["Sygnatura"], sad=fields["Sąd"], typ=typ,
                 data_orzeczenia=polish_date(fields["Data orzeczenia"]),
                 data_publikacji=polish_date(fields["Data publikacji"]) if fields.get("Data publikacji") else None,
@@ -507,9 +512,15 @@ def parser():
         sub.add_argument("--przepis", help="Pole Podstawa prawna portalu; nie weryfikuje brzmienia przepisu")
         sub.add_argument("--tezowane", action="store_true")
         sub.add_argument("--istotnosc", type=int, choices=range(0, 6))
-        sub.add_argument("--strona", type=positive, default=1)
-        sub.add_argument("--sort", choices=["score", "data", "datapublikacji", "istotnosc"], default="score")
-        sub.add_argument("--kierunek", choices=["ascending", "descending"], default="descending")
+        sub.add_argument("--strona", type=positive, default=1, help="Numer strony (po 10 pozycji); nie z --wszystkie")
+        # default=None odróżnia „nie podano” (dla --wszystkie dozwolone) od jawnego --sort score.
+        sub.add_argument("--sort", choices=["score", "data", "datapublikacji", "istotnosc"], default=None,
+                         help="Domyślnie score; z --wszystkie tylko data (wynik i tak porządkowany lokalnie)")
+        sub.add_argument("--kierunek", choices=["ascending", "descending"], default="descending",
+                         help="Kierunek sortowania; z --wszystkie: kolejność daty orzeczenia w wyniku")
+        sub.add_argument("--wszystkie", action="store_true",
+                         help=f"Pełna lista: pobiera wszystkie strony, łączy po ID i sprawdza komplet "
+                              f"(najwyżej {MAX_ROUNDS} rundy, limit {MAX_TOTAL} trafień — więcej = błąd, zawęź zapytanie)")
     for command in ("metryka", "orzeczenie", "przepisy", "pdf"):
         sub = subs.add_parser(command, parents=[flags])
         sub.add_argument("id", type=doc_id)
@@ -521,17 +532,151 @@ def parser():
     return p
 
 
+PAGE_SIZE = 10
+# --wszystkie (decyzja właściciela repo, 2026-11-13): stałe w kodzie, bez flagi do ich podniesienia —
+# ochrona portalu przed masowym pobieraniem. Najwyżej 20 stron × 3 rundy = 60 zapytań w odstępach 0,6 s.
+MAX_TOTAL = 200
+MAX_ROUNDS = 3
+MAX_REQUESTS = MAX_ROUNDS * -(-MAX_TOTAL // PAGE_SIZE)
+# Każda runda pyta portal tak samo (--sort data, kierunek z --kierunek). Przemienny kierunek w kolejnych
+# rundach (malejąco, rosnąco, malejąco) sprawdzono 2026-11-13 na apelacji warszawskiej z 10.06.2025
+# (28 trafień, jedna data): komplet 1 z 3 przebiegów, przy tym samym kierunku 2 z 3 — przewagi nie
+# potwierdzono. Przypadku remisu na granicy stron (Giżycko: malejąco 71, 71, 72) z przemiennym
+# kierunkiem nie mierzono.
+
+
+def hits(n):
+    """„1 trafienie”, „72 trafienia”, „205 trafień” (odmiana liczebnika)."""
+    if n == 1:
+        return "1 trafienie"
+    return f"{n} trafienia" if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14) else f"{n} trafień"
+
+
+def paging_note(total, sort):
+    # Pomiar 2026-11-13 (strony 1–N, unikalne ID / trafienia): SR w Giżycku, wydz. 06, 2024 r. —
+    # score 60/72 i 50/72, istotnosc 55/72, datapublikacji 60/72, data descending 71/72 (dwa razy,
+    # ta sama pozycja z datą 2024-07-31 na stronach 2 i 3), data ascending 72/72 (dwa razy).
+    # Apelacja warszawska, jeden dzień (28 trafień, wszystkie z tą samą datą): data 24, 20, 20, 18/28,
+    # score 20/28. Kolejność remisów klucza zmienia się między zapytaniami — żadne sortowanie nie jest
+    # stabilne, więc pełną listę składa silnik (--wszystkie), a nie użytkownik ze stron.
+    if total <= PAGE_SIZE:
+        return None
+    if sort == "data":
+        head = ("Wynik zajmuje więcej niż jedną stronę. Pozycje z tą samą datą orzeczenia zmieniają kolejność "
+                "między zapytaniami także przy --sort data, więc kolejne strony mogą powtarzać i gubić pozycje.")
+    else:
+        head = (f"Wynik zajmuje więcej niż jedną stronę, a kolejność przy --sort {sort} jest niestabilna między "
+                "zapytaniami: kolejne strony mogą powtarzać i gubić pozycje.")
+    if total > MAX_TOTAL:
+        tail = (f" Pełnej listy ({hits(total)}) nie pobierzesz jednym zapytaniem (--wszystkie ma limit {MAX_TOTAL}): "
+                "zawęź zapytanie (--sad, --wydzial, krótszy zakres --od/--do) i złóż wynik z kilku zawężonych "
+                "zapytań z --wszystkie. Nie składaj pełnej listy ręcznie ze stron.")
+    else:
+        tail = (f" Pełną listę ({hits(total)}) pobierz opcją --wszystkie: silnik łączy strony po `id` i sprawdza, "
+                "czy zebrał wszystkie liczba_wynikow. Nie składaj jej ręcznie ze stron i nie podawaj statystyki "
+                "z jednej strony.")
+    return head + tail
+
+
+def fetch_all(args, client):
+    """--wszystkie: wszystkie strony zapytania, łączone po ID, w najwyżej MAX_ROUNDS rundach.
+
+    Wynik zwracamy tylko wtedy, gdy unikalnych ID jest dokładnie tyle, ile podaje portal; niepełna
+    lista to UNKNOWN (kod 2), nigdy wynik. Zmiana liczby trafień w trakcie unieważnia zebrane pozycje
+    (usunięte orzeczenie mogłoby „dopełnić” licznik za brakujące) i zaczyna rundę od nowa.
+    """
+    if args.strona != 1:
+        raise ValueError("--strona nie łączy się z --wszystkie: tryb pełnej listy sam pobiera wszystkie strony.")
+    if args.sort not in (None, "data"):
+        raise ValueError(f"--wszystkie pyta portal po dacie orzeczenia (--sort data) i porządkuje wynik lokalnie "
+                         f"(data orzeczenia wg --kierunek, potem ID), bo kolejność portalu nie jest powtarzalna; "
+                         f"--sort {args.sort} nie ma w tym trybie znaczenia. Pomiń --sort albo podaj --sort data.")
+    seen, restarts = {}, []
+    total = first_url = changed = None
+    requests = rounds = 0
+    while rounds < MAX_ROUNDS:
+        rounds += 1
+        number, changed = 1, None
+        while total is None or number <= -(-total // PAGE_SIZE):
+            if requests >= MAX_REQUESTS:  # bezpiecznik; przy poprawnej pętli nieosiągalny
+                raise Unknown(f"--wszystkie: osiągnięto limit {MAX_REQUESTS} zapytań bez kompletu listy.")
+            url = search_url(args, "data", args.kierunek, number)
+            text = client.get(url)
+            requests += 1
+            try:
+                result = parse_search(text, url, number)
+            except (Empty, OutOfRange):
+                if requests == 1:
+                    raise  # pierwsze zapytanie: zwykłe „brak wyników” (kod 1) albo błąd zakresu
+                # Zero trafień albo strona za końcem w trakcie = lista się skurczyła; nigdy kod 1.
+                changed = f"strona {number} pusta lub poza zakresem" + (f" (liczba_wynikow była {total})" if total else "")
+                break
+            if total is None:
+                total = result["liczba_wynikow"]
+                first_url = first_url or url
+                if total > MAX_TOTAL:
+                    raise ValueError(
+                        f"Zapytanie ma {hits(total)}, a --wszystkie pobiera najwyżej {MAX_TOTAL} (ochrona portalu "
+                        "przed masowym pobieraniem; kolejnych stron nie pobrano). Zawęź zapytanie: --sad, --wydzial "
+                        "albo krótszy zakres --od/--do — i złóż wynik z kilku zawężonych zapytań z --wszystkie.")
+            elif result["liczba_wynikow"] != total:
+                changed = f"{total} → {result['liczba_wynikow']}"
+                break
+            for item in result["wyniki"]:
+                seen.setdefault(item["id"], item)
+            if len(seen) > total:
+                changed = f"liczba_wynikow {total}, a zebrano {len(seen)} różnych ID"
+                break
+            if len(seen) == total:
+                return complete_list(args, seen, first_url, total, rounds, requests, restarts)
+            number += 1
+        if changed:
+            restarts.append(changed)
+            seen, total = {}, None
+    if changed:
+        raise Unknown(f"--wszystkie: lista portalu zmieniała się w trakcie pobierania ({'; '.join(restarts)}) — "
+                      f"po {MAX_ROUNDS} rundach ({requests} zapytań) brak spójnego kompletu. Niepełnej listy nie "
+                      "wypisano. Ponów za kilka minut.")
+    raise Unknown(f"--wszystkie: po {MAX_ROUNDS} rundach ({requests} zapytań) zebrano {len(seen)} z {total} unikalnych "
+                  "pozycji — portal przestawia pozycje o tej samej dacie między stronami i nie oddał kompletu"
+                  + (f" (wcześniej zmieniła się liczba trafień: {'; '.join(restarts)})" if restarts else "")
+                  + ". Niepełnej listy nie wypisano. Zawęź zapytanie (--sad, --wydzial, krótszy zakres --od/--do) "
+                  "albo ponów później.")
+
+
+def complete_list(args, seen, url, total, rounds, requests, restarts):
+    descending = args.kierunek == "descending"
+    items = sorted(seen.values(), key=lambda i: (i["data_orzeczenia"], i["id"]), reverse=descending)
+    notes = list_notes(items, "na liście")
+    notes.append(f"Pełna lista (--wszystkie): {total} z {total} pozycji, bez powtórzeń (łączone po `id`); "
+                 f"rundy: {rounds}, zapytania: {requests}. Kolejność ustalona lokalnie — data orzeczenia "
+                 f"{'malejąco' if descending else 'rosnąco'}, potem ID — bo kolejność portalu nie jest powtarzalna.")
+    if restarts:
+        notes.append("Liczba trafień zmieniła się w trakcie pobierania (" + "; ".join(restarts)
+                     + "); zebrane wcześniej pozycje odrzucono i pobrano listę od nowa.")
+    return dict(zrodlo=url, liczba_wynikow=total, kompletna=True, rundy=rounds, zapytania=requests,
+                wyniki=items, uwagi=notes)
+
+
 def run(args, client):
     strict = getattr(args, "strict", False)
     if args.command in ("szukaj", "sygnatura"):
         if args.command == "sygnatura":
             args.sygnatura = " ".join(args.sygnatura)
-        url = search_url(args)
-        result = parse_search(client.get(url), url, args.strona)
+        if args.wszystkie:
+            search_url(args)  # walidacja kryteriów przed pierwszym zapytaniem
+            result = fetch_all(args, client)
+        else:
+            args.sort = args.sort or "score"
+            url = search_url(args)
+            result = parse_search(client.get(url), url, args.strona)
         courts = sorted({i["sad"] for i in result["wyniki"]})
         if args.sygnatura and len(courts) > 1:
             result["uwagi"].append(f"Sygnatura „{args.sygnatura}” występuje w {len(courts)} sądach ({'; '.join(courts)}) — "
                                    "to różne sprawy; wybierz pozycję po sądzie (filtr --sad) i podawaj ID.")
+        paging = None if args.wszystkie else paging_note(result["liczba_wynikow"], args.sort)
+        if paging:
+            result["uwagi"].append(paging)
         if strict:
             result["uwagi"].append("--strict nie filtruje listy wyników: prawomocność każdej pozycji sprawdź komendą metryka.")
         return result
@@ -572,15 +717,17 @@ def run(args, client):
             result.update(parse_content(client.get(doc_url("content", ident)), ident))
     except PortalError as e:
         what = "listy powołanych przepisów" if args.command == "przepisy" else "treści"
-        # Zweryfikowane 2026-10-05 na ok. 45 dokumentach: KAŻDY opublikowany od 2026-09-24 → „Błąd danych”,
-        # każdy wcześniejszy → treść; to samo na podportalach sądów, a SAOS (import z zaplecza MS
-        # apiorzeczenia…/ncourt-api) ma dla nich pustą treść. Awaria po stronie MS, nie silnika.
-        raise Unknown(f"Portal nie udostępnia {what} tego orzeczenia: zwraca stronę „{e.reason}” (HTTP {e.code}), "
-                      "również w przeglądarce i na portalu sądu. Metryka jest dostępna (komenda metryka). "
-                      "Stan na 2026-10-05: tak odpowiada portal dla orzeczeń opublikowanych od 24.09.2026 — awaria "
-                      "po stronie MS; SAOS importuje z tego samego zaplecza i też nie ma ich treści. Treść uzyskasz "
-                      "w sądzie (wniosek o odpis) albo po naprawie portalu. NIE cytuj treści z fragmentu wyszukiwarki "
-                      "ani z pamięci.") from e
+        # Historia: 2026-10-05 (ok. 45 dokumentów) każdy dokument opublikowany od 2026-09-24 dawał dla
+        # treści „Błąd danych” (HTTP 400) — awaria po stronie MS. 2026-11-13: 55 z 55 dokumentów
+        # opublikowanych 24.09–12.11.2026 (34 z okna 24.09–9.10) ma treść; data końca awarii nieznana.
+        # Komunikat nie zakłada więc trwającej awarii, tylko mówi, co znaczy ta strona i co robić.
+        raise Unknown(f"Portal nie wydał {what} tego orzeczenia: zwrócił stronę błędu „{e.reason}” (HTTP {e.code}). "
+                      "To błąd po stronie portalu, a nie brak orzeczenia — metryka jest dostępna (komenda metryka). "
+                      + ("Ponów później; jeśli błąd się utrzymuje, treść uzyskasz w sądzie (wniosek o odpis). "
+                         "NIE odtwarzaj treści z fragmentu wyszukiwarki ani z pamięci."
+                         if what == "treści" else
+                         "Ponów później; do tego czasu korzystaj z pola metryki „Podstawa prawna” i treści "
+                         "orzeczenia. NIE odtwarzaj listy przepisów z pamięci.")) from e
     if args.command == "pdf":
         if not result["pdf_url"]:
             raise Unknown("Portal nie udostępnił linku do PDF.")

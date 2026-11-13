@@ -2,6 +2,44 @@
 
 ## Niewydane
 
+## 2.3.0 — 2026-11-13
+
+### ELI — strony-skany odczytane przez OCR
+
+- `tekst --fragment "§ N"` znajduje paragrafy na stronach-skanach, na których OCR odczytał „§” jako „8” (zgłoszenie #15). Dotąd np. w Dz.U. 1998 poz. 875 tylko 1 z 21 paragrafów zaczynał się od „§”, a `--fragment "§ 11"` kończył się „Nie znaleziono frazy”; teraz `"§ 11"`, `"§ 20"` i `"§ 2"` trafiają. Narzędzie zamienia „8 11.” i sklejone „85.” na początku wiersza tylko wtedy, gdy potwierdza to ciąg numeracji paragrafów aktu, więc wiersze tabel i punkty wyliczeń 80–89 zostają bez zmian. Poprawiane są też jednoznaczne odesłania w zdaniu („o których mowa w § 1 ust. 2”, „określone w § 7—13”).
+- Pomiar na 58 stronach-skanach (37 z lat 1990–1999, 21 z lat 2000–2011, 26 aktów; 7 stron odłożonych do sprawdzenia po zamrożeniu reguł): paragrafów zaczynających się od „§” 85 → 156, odesłań poprawionych 6, fałszywych zamian 0. Każdą zamianę potwierdza ciąg § 1…N aktu, a wszystkie sklejone i odesłania także obraz strony PDF. Niepoprawionych zostaje 10 nagłówków (ok. 6%): z dodatkowym znakiem przed numerem („„8 12,”), z dwoma łamami sklejonymi przez OCR albo z inną cyfrą zamiast „§” („586.”) — tekst z OCR nadal ma ostrzeżenie o niepewności.
+- Poprawki tekstu z OCR działają także na stronach odczytanych wcześniej: pamięć podręczna trzyma surowy wynik OCR, a poprawki idą po odczycie. Dotąd strona zapisana przed poprawką zostawała z błędem na stałe (np. Dz.U. 1992 poz. 413 pokazywała „$ 2” zamiast „§ 2”).
+
+### Portal Orzeczeń MS
+
+- Nowa opcja `--wszystkie` w `szukaj` i `sygnatura` zwraca pełną listę trafień zapytania (zgłoszenie #17). Portal zmienia między zapytaniami kolejność pozycji o równym kluczu sortowania, więc strony pobierane po kolei powtarzały jedne orzeczenia, a innych nie pokazywały wcale — przy każdym sortowaniu, także po dacie. `--wszystkie` pobiera wszystkie strony, łączy pozycje po `id` i w razie braków powtarza pobieranie (najwyżej 3 rundy); wynik ma pole `kompletna`, liczbę rund i zapytań oraz kolejność ustaloną lokalnie (data orzeczenia, potem ID). Gdy kompletu nie uda się zebrać, narzędzie kończy się kodem 2 i nie wypisuje niepełnej listy.
+- `--wszystkie` ma stały limit 200 trafień: przy większej liczbie kończy się błędem po jednym zapytaniu i każe zawęzić zapytanie (sąd, wydział, krótszy zakres dat). Pobiera tylko pozycje listy, bez metryk i treści orzeczeń, z dotychczasowym odstępem 0,6 s między zapytaniami — najwyżej 60 zapytań.
+- Bez `--wszystkie` `szukaj` i `sygnatura` działają jak dotąd (jedna strona, domyślne sortowanie bez zmian), ale przy ponad 10 trafieniach ostrzegają, że lista złożona ręcznie ze stron może być niepełna, i odsyłają do `--wszystkie`.
+- Pomiar `--wszystkie` 13.11.2026: SR w Giżycku (72 trafienia) — komplet w 3 z 3 przebiegów, w 1–3 rundach (8–18 zapytań); apelacja warszawska, jeden dzień (28 trafień z tą samą datą) — komplet w 2 z 3 przebiegów, trzeci po 3 rundach zebrał 26 z 28 i skończył się błędem. Przy wielu orzeczeniach z tą samą datą 3 rundy bywają więc za mało; narzędzie zgłasza wtedy błąd, a dokumentacja każe zawęzić zapytanie. W tym pomiarze pięć dalszych przebiegów przerwał błąd połączenia z portalem (przekroczony czas, zerwane połączenie): `--wszystkie` nie ponawia po takim błędzie, tylko kończy się kodem 2 bez listy.
+- Pomiar stronicowania bez `--wszystkie` 13.11.2026, unikalne pozycje na wszystkich stronach: SR w Giżycku, wydział 06, 2024 r. (72 trafienia) — `score` 48–60, `istotnosc` 51–55, `datapublikacji` 60, `data` malejąco 71–72, `data` rosnąco 72; apelacja warszawska, jeden dzień (28 trafień z tą samą datą) — `data` 18–26, `score` 20. Suma dwóch przebiegów dała w tym drugim zapytaniu komplet 28.
+- Komunikaty i dokumentacja nie twierdzą już, że portal nie wydaje treści orzeczeń opublikowanych od 24.09.2026. Sprawdzone 13.11.2026 na 59 dokumentach (34 opublikowane 24.09–9.10, 21 opublikowanych 12.10–12.11, 4 kontrolne sprzed awarii): wszystkie mają treść, żaden nie zwraca „Błąd danych”. Gdy portal zwróci tę stronę, narzędzie nadal kończy się kodem 2 i mówi, co robić, ale bez wskazywania trwającej awarii.
+- `metryka` nie ostrzega już o braku zakładek „Powołane przepisy”/„Orzeczenia podobne”: 7 z 59 dokumentów ich nie ma i wszystkie 7 mają treść, więc uwaga byłaby fałszywym alarmem.
+
+### SAOS
+
+- `orzeczenie` nie twierdzi już, że treść orzeczenia sądu powszechnego „jest niedostępna u źródła”. Wydanie 2.2.0 wpisało tak na stałe dla publikacji od 24.09.2026 (awaria Portalu Orzeczeń MS), a portal od dawna wydaje te treści — np. `orzeczenie 553102` (II K 295/25, SR w Kętrzynie) dalej nie ma tekstu w SAOS, ale portal MS podaje 16 331 znaków. Teraz każde orzeczenie sądu powszechnego bez treści w SAOS dostaje gotową komendę do portalu MS (`orzeczenia_ms.py orzeczenie <ID>`, identyfikator z linku źródłowego SAOS). Próba 13.11.2026: 200 z 578 orzeczeń z 1.09–10.10.2026 — bez treści 36, wszystkie z publikacją 24.09–9.10 i wszystkie z identyfikatorem portalu; 3 z 3 sprawdzonych portal MS wydaje z treścią.
+- Orzeczenia z datą z przyszłości (błąd w danych SAOS, np. I ACa 772/13 z datą 3013-12-04) są oznaczane na liście wyników, w `sygnatura` i w `orzeczenie`; dotąd wychodziły na początek listy bez słowa. Taka data nie przesuwa już granicy zamkniętych zbiorów SN, TK i KIO, więc nie może wyłączyć ostrzeżenia „zbiór kończy się na…” ani blokady `--strict` (dziś żaden z tych trzech zbiorów nie ma takiego rekordu).
+- Link do orzeczenia SN: od października 2026 sn.pl odpowiada skryptom stroną filtra antybotowego, więc bezpośredni link z wydania 2.2.0 zwykle się nie pojawia — narzędzie podaje wtedy wyszukiwarkę SN z instrukcją „wpisz sygnaturę”. Dokumentacja mówi to wprost, a próba ustalenia linku trwa najwyżej 7 s (było 20). Filtra narzędzie nie obchodzi.
+- Komunikat o przerwie technicznej SAOS wskazuje, gdzie szukać w tym czasie (sądy powszechne — prawo-pl-orzeczenia-ms, sądy administracyjne — prawo-pl-cbosa, SN — wyszukiwarka sn.pl). Z dokumentacji zniknęło niezweryfikowane twierdzenie, że przerwy są tylko nocą.
+- Odrzucone (zgłoszenie #16): kanał orzeczeń SN przez API wyszukiwarki sn.pl wywoływane z karty przeglądarki (Chrome DevTools Protocol). To obejście filtra antybotowego, wymaga sterowania przeglądarką użytkownika i łamie zasadę „tylko biblioteka standardowa”.
+
+### UODO
+
+- `szukaj` i `szukaj --tytul` działają dla fraz z nawiasem lub plusem, np. `szukaj "lit. f)"` (art. 6 ust. 1 lit. f) RODO), `"(monitoring"`, `"C++"`. Dotąd taka fraza kończyła się gołym „BŁĄD HTTP 500”, bo API traktuje frazę jako wyrażenie regularne. Teraz fraza, która nie jest poprawnym wyrażeniem, jest szukana dosłownie, a narzędzie pisze, w jakiej postaci ją wysłało (`lit\. f\)`). Świadome wyrażenia (`monitoring|biometr`) działają jak dotąd; `--warunek` idzie bez zmian.
+- Gdy API mimo to odpowie błędem 5xx na wyrażenie regularne ze znakiem specjalnym, komunikat podpowiada, że przyczyną może być składnia wyrażenia (API odrzuca m.in. grupy nazwane), i jak zapisać frazę dosłownie.
+- Pomiar na żywo 13.11.2026, ok. 60 zapytań: każdy z 14 znaków specjalnych poprzedzony ukośnikiem odwrotnym API przyjmuje; trafienia dla `(monitoring` sprawdzone w treści dwóch decyzji (DKN.5131.4.2024, DKN.5131.51.2021).
+
+### Testy i CI
+
+- CI uruchamia walidator i testy silników na Pythonie 3.8, 3.9 i 3.15 — dotąd tylko na jednej wersji, choć README obiecuje „Python 3.8+”. Wersje 3.8 i 3.9 biegną na Ubuntu 24.04, bo nowsze obrazy ich nie mają.
+- `tools/release_notes.py` działa na Pythonie 3.8 (dotąd kończył się błędem na `str.removeprefix`), a dwa testy `tools/test_edzienniki.py` przechodzą na 3.8 i 3.9. Sam silnik e-dzienników działał na tych wersjach poprawnie — błąd był w testach (sprawdzone na lokalnym serwerze z przekierowaniem na `404_notfound`).
+- Workflow ma najmniejsze potrzebne uprawnienia: zapis do repozytorium dostaje tylko zadanie publikujące wydanie, a nie zadanie, które uruchamia testy z pull requestów. Akcja publikująca wydanie jest przypięta do pełnego SHA commita (v3.0.4) zamiast do ruchomego tagu.
+
 ## 2.2.0 — 2026-10-05
 
 ### Modele i dokumentacja

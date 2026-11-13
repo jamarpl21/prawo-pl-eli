@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-saos
-version: 2.2.0
+version: 2.3.0
 description: >-
   Odpytuje PUBLICZNE API SAOS (saos.org.pl) — bazę polskiego ORZECZNICTWA: wyroki, postanowienia
   i uchwały Sądu Najwyższego (SN), Trybunału Konstytucyjnego (TK), sądów powszechnych (SA/SO/SR)
@@ -59,7 +59,7 @@ SAOS="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-saos/scripts/saos.py"
 #    sprawdzana w kodzie przed zapisem i przed każdym uruchomieniem; niezgodna = helper nie startuje.
 [ -f "$SAOS" ] || SAOS=$(python3 - <<'EOF'
 import hashlib, os, sys, urllib.request
-WERSJA, SHA256 = "2.2.0", "08a279f1aab0499e88c84ca91d4bb4249d5ba594b322efab87307449bf195191"
+WERSJA, SHA256 = "2.3.0", "93f527e490f6ad289bd9ada9622b1de5e02e543d8f13910438b894d6daf1a532"
 URL = f"https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/v{WERSJA}/plugins/prawo-pl-saos/skills/prawo-pl-saos/scripts/saos.py"
 p = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"prawo-pl-saos-{WERSJA}", "saos.py")
 try:
@@ -101,6 +101,14 @@ Nie szukaj helpera przez `find` po katalogach użytkownika ani systemu i nie pob
   **Typ „uzasadnienie”:** pole „Data” to data sporządzenia UZASADNIENIA, nie data wyroku (VI Ka 1622/25:
   2026-06-08, a wyrok zapadł 20.05.2026; portal MS podaje tak samo) — silnik ostrzega, podaje datę
   z nagłówka treści jako prawdopodobną datę wyroku (do potwierdzenia) i datę publikacji w źródle.
+  **Brak treści orzeczenia sądu powszechnego** (0 znaków) to brak w SAOS, nie u źródła — tak było
+  m.in. z orzeczeniami publikowanymi od 24.09.2026 do początku października 2026; Portal Orzeczeń MS
+  wydaje ich treść (sprawdzone 2026-11-13). Silnik podaje gotową komendę
+  `orzeczenia_ms.py orzeczenie <ID>` (ID z `source.judgmentUrl`) albo `orzeczenia_ms.py sygnatura <sygn.>`
+  (skill **prawo-pl-orzeczenia-ms**). Treści nie odtwarzaj z pamięci ani z fragmentów.
+  **Data z przyszłości** (np. 3013-12-04, 2101-04-14 — błędy w danych SAOS; sortowanie po dacie
+  wynosi je na początek listy) jest oznaczana „data z przyszłości — błąd w danych SAOS”; datę ustal
+  w treści. Taka data nie przesuwa granicy zbiorów SN/TK/KIO.
 - **sygnatura** — szybkie odszukanie po numerze sprawy:
   `python3 scripts/saos.py sygnatura III CSK 203/09`
   Przy każdym trafieniu pokazuje **sąd i wydział**. Ta sama sygnatura bywa w wielu sądach
@@ -118,8 +126,10 @@ Nie szukaj helpera przez `find` po katalogach użytkownika ani systemu i nie pob
   (3) żadna z tych kontroli nie przepuszcza „pustego" wyniku jako sukcesu. `--strict` NIE sprawdza
   prawdziwości treści ani kompletności listy powołanych przepisów.
 - Czas: `/search/judgments` bywa bardzo wolne (40–60 s); limit na żądanie to 90 s, 2 próby. Przekroczenie
-  czasu lub „Przerwa techniczna" (nocne okno serwisowe SAOS) to `BŁĄD sieci` / `przerwa techniczna`
-  z kodem ≠ 0 — nigdy fałszywe zero trafień. Wtedy ponów później, nie wnioskuj „brak orzecznictwa".
+  czasu lub „Przerwa techniczna" (okno serwisowe SAOS) to `BŁĄD sieci` / `przerwa techniczna`
+  z kodem ≠ 0 — nigdy fałszywe zero trafień. Wtedy ponów później, nie wnioskuj „brak orzecznictwa";
+  w czasie przerwy sądy powszechne sprawdź skillem prawo-pl-orzeczenia-ms, administracyjne —
+  prawo-pl-cbosa, SN — w wyszukiwarce `sn.pl/pl/wyszukiwarka-orzeczen` (komunikat błędu to podaje).
 
 Typowy przepływ: `szukaj` (zawęź `--sad`/`--przepis`/`--haslo`) → wybierz ID → `orzeczenie <id>`
 → w razie potrzeby skacz po `referencedCourtCases` do powołanych orzeczeń.
@@ -131,9 +141,11 @@ Typowy przepływ: `szukaj` (zawęź `--sad`/`--przepis`/`--haslo`) → wybierz I
    martwy albo ogólny** (sprawdzone 2026-08-23: `sn.pl/…/Baza_orzeczen` → 404, `otk.trybunal.gov.pl`
    i `ftp.uzp.gov.pl` nieosiągalne) — silnik pokazuje go tylko jako „link z metadanych SAOS" i NIE jest to
    ścieżka weryfikacji. Zamiast tego `orzeczenie` drukuje **źródło urzędowe**: dla SN stronę orzeczenia
-   w nowej wyszukiwarce SN `https://www.sn.pl/pl/wyszukiwarka-orzeczen?orzeczenie=<id>` (id silnik ustala
-   na żywo po dokładnej sygnaturze i dacie; gdy się nie uda — link do wyszukiwarki z instrukcją „wpisz
-   sygnaturę”). Dawny wzorzec PDF `sn.pl/sites/orzecznictwo/Orzeczenia3/<sygn>.pdf` kieruje obecnie
+   w wyszukiwarce SN. Od października 2026 sn.pl zwykle odpowiada stroną filtra antybotowego
+   (sprawdzone 2026-11-13), więc **najczęściej dostaniesz link `https://www.sn.pl/pl/wyszukiwarka-orzeczen`
+   z instrukcją „wpisz sygnaturę”**; bezpośredni link `…/wyszukiwarka-orzeczen?orzeczenie=<id>` pojawia się
+   tylko, gdy proxy wyszukiwarki odpowie (silnik próbuje raz, z krótkim limitem czasu, po dokładnej
+   sygnaturze i dacie; filtra nie obchodzi). Dawny wzorzec PDF `sn.pl/sites/orzecznictwo/Orzeczenia3/<sygn>.pdf` kieruje obecnie
    na `sn.pl/404.html` — nie podawaj go (sprawdzone 2026-10-05, 5/5). Dla TK wyszukiwarkę OTK
    (`ipo.trybunal.gov.pl/ipo/`), dla KIO wyszukiwarkę UZP (`orzeczenia.uzp.gov.pl/Home/Search`). Linki
    sądów powszechnych (`apiorzeczenia.*.sa.gov.pl`) działają. Zawsze podawaj **sygnaturę + sąd + datę**
@@ -182,5 +194,5 @@ za zobowiązania spółki — znajdź orzecznictwo".
    → lista orzeczeń SN z sygnaturami i ID.
 3. `orzeczenie <id>` → teza/uzasadnienie + powołane przepisy + powołane orzeczenia (skok po linii orzeczniczej).
 4. W odpowiedzi: zacytuj tezę, podaj sygnaturę + sąd + datę, zaznacz „baza SAOS (wtórna) — do dosłownego
-   cytatu zweryfikuj w portalu sądu" (dla SN: wzorzec PDF z `orzeczenie`), a dla SN/TK/KIO nie przepisuj
+   cytatu zweryfikuj w portalu sądu" (dla SN: źródło urzędowe z `orzeczenie` — wyszukiwarka SN), a dla SN/TK/KIO nie przepisuj
    spłaszczonych numerów przepisów (art. 4171 → art. 417¹) i pamiętaj, że zbiór SN kończy się 22.06.2016.

@@ -91,7 +91,7 @@ HTML_DECYZJI = """<h1>
 
 def _fake_get(odpowiedzi):
     """Zastępuje uodo._get: dopasowanie po fragmencie ścieżki; brak dopasowania = HTTP 404."""
-    def f(path, params=None, raw=False, brak_ok=False):
+    def f(path, params=None, raw=False, brak_ok=False, **_):
         for klucz, wart in odpowiedzi.items():
             if klucz in path:
                 if isinstance(wart, BaseException):
@@ -549,6 +549,89 @@ class TestLimitIOffset(unittest.TestCase):
                 uodo.main()
         self.assertIn("obcięty do 100", err.getvalue())
         self.assertEqual(sz.call_args.args[2], 100)
+
+
+class TestFrazaRegexDoslownie(unittest.TestCase):
+    """Fraza niepoprawna jako regex → HTTP 500 portalu (pomiar 2026-11-13); silnik ją zabezpiecza."""
+
+    def _szukaj(self, argv):
+        err = io.StringIO()
+        with mock.patch.object(uodo, "_szukaj", return_value=[]) as sz, \
+                mock.patch.object(sys, "argv", ["uodo.py", "szukaj"] + argv), \
+                contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                uodo.main()
+        return sz.call_args.args[1], err.getvalue()
+
+    def test_fraza_z_nawiasem_doslownie_z_komunikatem(self):
+        warunek, err = self._szukaj(["lit. f)"])
+        self.assertEqual(warunek, "content_pl:regex:lit\\. f\\)")
+        self.assertIn("UWAGA: fraza 'lit. f)' nie jest poprawnym wyrażeniem regularnym", err)
+        self.assertIn("DOSŁOWNIE: 'lit\\. f\\)'", err)   # postać wysłana, bez podwojonych ukośników
+
+    def test_plus_plus_doslownie_na_kazdej_wersji_pythona(self):
+        # Python ≥ 3.11 kompiluje „C++” (kwantyfikator zaborczy), API odpowiada 500 — wynik ma być ten sam
+        for fraza, oczekiwana in (("C++", "C\\+\\+"), ("(monitoring", "\\(monitoring"),
+                                  ("a*+", "a\\*\\+"), ("(?>a)", "\\(\\?>a\\)"),
+                                  ("a{2}+", "a\\{2\\}\\+"), ("x\\", "x\\\\")):
+            with self.subTest(fraza=fraza):
+                warunek, err = self._szukaj([fraza])
+                self.assertEqual(warunek, "content_pl:regex:" + oczekiwana)
+                self.assertIn("DOSŁOWNIE", err)
+
+    def test_poprawny_regex_bez_zmian_i_bez_komunikatu(self):
+        for fraza in ("monitoring|biometr", "art. 6 ust. 1 lit. f\\) RODO", "lit. f[)]",
+                      "ust. 1 lit. [af]\\)", "biometr.*", "a{2}", "[+*]+", "C\\+\\+"):
+            with self.subTest(fraza=fraza):
+                warunek, err = self._szukaj([fraza])
+                self.assertEqual(warunek, "content_pl:regex:" + fraza)
+                self.assertEqual(err, "")
+
+    def test_tytul_tak_samo(self):
+        warunek, err = self._szukaj(["--tytul", "(monitoring"])
+        self.assertEqual(warunek, "title_pl:regex:\\(monitoring")
+        self.assertIn("UWAGA: fraza --tytul '(monitoring'", err)
+        warunek, err = self._szukaj(["--tytul", "pieniężn"])
+        self.assertEqual((warunek, err), ("title_pl:regex:pieniężn", ""))
+
+    def test_warunek_surowy_nietkniety(self):
+        warunek, err = self._szukaj(["--warunek", "content_pl:regex:lit. f)"])
+        self.assertEqual(warunek, "content_pl:regex:lit. f)")
+        self.assertEqual(err, "")
+
+    def test_ucieczka_dochodzi_do_url(self):
+        with mock.patch.object(uodo, "_get", return_value=[]) as g:
+            uodo._szukaj(",", "content_pl:regex:" + uodo._doslownie("lit. f) C++ [a]{1}|^$"))
+        self.assertTrue(g.call_args.args[0].endswith(
+            "/content_pl:regex:lit%5C.%20f%5C)%20C%5C%2B%5C%2B%20%5C%5Ba%5C%5D%5C%7B1%5C%7D%5C%7C%5C%5E%5C%24"))
+
+
+class TestPodpowiedzRegex5xx(unittest.TestCase):
+    def _blad(self, warunek):
+        blad = urllib.error.HTTPError("https://x", 500, "Internal Server Error", {}, None)
+        with mock.patch.object(uodo._opener, "open", side_effect=blad) as op, \
+                mock.patch.object(uodo.time, "sleep"):
+            with self.assertRaises(SystemExit) as cm:
+                uodo._szukaj(",", warunek, limit=2)
+        self.assertEqual(op.call_count, 2)   # jedno ponowienie jak dotąd
+        return str(cm.exception.code)
+
+    def test_5xx_z_warunkiem_regex_podpowiada_skladnie(self):
+        msg = self._blad("content_pl:regex:(?P<x>a)")
+        self.assertIn("BŁĄD HTTP 500", msg)
+        self.assertIn("przyczyną HTTP 5xx może być SKŁADNIA wyrażenia", msg)
+        self.assertIn("'lit\\. f\\)'", msg)
+
+    def test_5xx_bez_regex_bez_podpowiedzi(self):
+        msg = self._blad("date_publication:ge:2026-01-01")
+        self.assertIn("BŁĄD HTTP 500", msg)
+        self.assertNotIn("SKŁADNI", msg)
+        self.assertNotIn("SKŁADNI", self._blad(None))
+
+    def test_5xx_na_zwyklej_frazie_regex_to_nie_skladnia(self):
+        # „monitoring” nie ma znaku specjalnego — 5xx to awaria portalu, nie składnia
+        self.assertNotIn("SKŁADNI", self._blad("content_pl:regex:monitoring"))
+        self.assertIn("SKŁADNI", self._blad("content_pl:regex:lit. f)"))   # surowy --warunek
 
 
 META_DKN1 = {  # DKN.5131.1.2025 (live meta.json 2026-10-05): kara 27 124 816 zł; pkt 1 prawomocny,

@@ -20,10 +20,10 @@ Komendy:
 Globalnie: --json  (zrzut surowego JSON zamiast podsumowania)
            --strict  (blokuje wynik, gdy nie udało się zweryfikować aktualności lub kompletności)
 """
-import sys, json, re, time, argparse, urllib.request, urllib.parse, urllib.error
+import sys, json, re, time, datetime, argparse, urllib.request, urllib.parse, urllib.error
 from html.parser import HTMLParser
 
-__version__ = "2.2.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "2.3.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 BASE = "https://www.saos.org.pl/api"
 CONTENT_HOSTS = ("saos.org.pl",)
 
@@ -102,6 +102,24 @@ ZASIEG = {
 _granice_na_zywo = {}  # courtType -> data najnowszego orzeczenia wg API (cache tylko w procesie)
 
 
+def _dzis():
+    """Dzisiejsza data ISO (RRRR-MM-DD). Osobna funkcja, żeby testy mogły ją podmienić."""
+    return datetime.date.today().isoformat()
+
+
+def _z_przyszlosci(iso):
+    """Czy data orzeczenia jest późniejsza niż dziś — czyli na pewno błędna.
+
+    SAOS ma rekordy z niemożliwymi datami (sprawdzone 2026-11-13: I ACa 772/13 → 3013-12-04,
+    II K 84/16 → 2101-04-14, I ACa 1027/23 → 2026-12-16); sortowanie po dacie malejąco wynosi je
+    na początek listy. Brak daty albo inny format to nie „przyszłość"."""
+    iso = str(iso or "")
+    return bool(re.match(r"^\d{4}-\d{2}-\d{2}$", iso)) and iso > _dzis()
+
+
+UWAGA_PRZYSZLOSC = "data z przyszłości — błąd w danych SAOS, sprawdź datę w treści"
+
+
 def _data_pl(iso):
     """'2016-06-22' → '22.06.2016' (format dat w polskich pismach)."""
     if iso and re.match(r"^\d{4}-\d{2}-\d{2}$", iso):
@@ -139,6 +157,11 @@ def _granica_zbioru(ct):
     Zwraca (data_ISO, potwierdzona_na_zywo: bool). Jedno tanie zapytanie (pageSize=1, sort po dacie
     malejąco) na proces; przy awarii transportu lub przerwie technicznej zostaje znana granica.
     Gdyby SAOS wznowił zasilanie, granica na żywo będzie późniejsza od znanej i to ona obowiązuje.
+
+    Zapytanie ma górną granicę „dziś": SAOS ma rekordy z datą z przyszłości (2026-11-13: sądy
+    powszechne 3013-12-04, 2101-04-14). Taki rekord na szczycie zbioru SN/TK/KIO przesunąłby granicę
+    w przyszłość i wyłączył ostrzeżenie oraz blokadę --strict — najgroźniejszy fałszywy negatyw.
+    Gdyby API zignorowało filtr, rekord z przyszłości i tak odrzucamy (granica zostaje znana).
     """
     znana = ZASIEG[ct][0]
     if ct in _granice_na_zywo:
@@ -146,12 +169,13 @@ def _granica_zbioru(ct):
         return (max(znana, zywa), True) if zywa else (znana, False)
     zywa = None
     try:
-        d = _get("/search/judgments", {"courtType": ct, "pageSize": 1, "pageNumber": 0,
-                                       "sortingField": "JUDGMENT_DATE",
+        d = _get("/search/judgments", {"courtType": ct, "judgmentDateTo": _dzis(), "pageSize": 1,
+                                       "pageNumber": 0, "sortingField": "JUDGMENT_DATE",
                                        "sortingDirection": "DESC"}, soft=True)
         items = d.get("items") if isinstance(d, dict) else None
-        if isinstance(items, list) and items and re.match(r"^\d{4}-\d{2}-\d{2}$",
-                                                           str(items[0].get("judgmentDate", ""))):
+        if isinstance(items, list) and items and isinstance(items[0], dict) \
+                and re.match(r"^\d{4}-\d{2}-\d{2}$", str(items[0].get("judgmentDate", ""))) \
+                and not _z_przyszlosci(items[0]["judgmentDate"]):
             zywa = items[0]["judgmentDate"]
     except VerificationUnknown:
         zywa = None
@@ -162,13 +186,15 @@ def _granica_zbioru(ct):
 def _granica_znana(ct, items=()):
     """Granica zbioru bez zapytania: cache z potwierdzenia na żywo albo stała; a jeśli wśród wyników
     (posortowanych po dacie malejąco) jest orzeczenie PÓŹNIEJSZE niż granica, to ona się przesuwa —
-    wynik wyszukiwania sam dowodzi, że SAOS wznowił zasilanie."""
+    wynik wyszukiwania sam dowodzi, że SAOS wznowił zasilanie. Data z przyszłości niczego nie
+    dowodzi (błąd w danych SAOS, zob. _z_przyszlosci) i granicy nie przesuwa."""
     granica, potwierdzona = ZASIEG[ct][0], False
     zywa = _granice_na_zywo.get(ct)
     if zywa:
         granica, potwierdzona = max(granica, zywa), True
     daty = [str(it.get("judgmentDate") or "") for it in items if isinstance(it, dict)]
-    daty = [d for d in daty if re.match(r"^\d{4}-\d{2}-\d{2}$", d) and d > granica]
+    daty = [d for d in daty if re.match(r"^\d{4}-\d{2}-\d{2}$", d) and d > granica
+            and not _z_przyszlosci(d)]
     if daty:
         granica, potwierdzona = max(daty), True
         _granice_na_zywo[ct] = granica
@@ -228,6 +254,16 @@ def _sprawdz_zasieg_strict(a, ct):
              f"kompletności nie da się zweryfikować. {rada[0].upper() + rada[1:]}.")
 
 
+# Przerwa techniczna nie mówi nic o istnieniu orzeczeń — zamiast samego „ponów" wskazujemy źródła,
+# które działają niezależnie od SAOS (kiedy przerwy występują, nie jest zweryfikowane).
+UWAGA_PRZERWA = (
+    "BŁĄD: SAOS ma przerwę techniczną (serwis chwilowo niedostępny) — spróbuj ponownie później. "
+    "To NIE jest brak orzeczeń. W czasie przerwy szukaj u źródła: sądy powszechne — skill "
+    "prawo-pl-orzeczenia-ms (Portal Orzeczeń MS); sądy administracyjne — skill prawo-pl-cbosa (CBOSA); "
+    "SN — wyszukiwarka https://www.sn.pl/pl/wyszukiwarka-orzeczen (zbiór SN w SAOS i tak kończy się "
+    "na 22.06.2016).")
+
+
 def _get(path, params=None, soft=False):
     """GET z jednym ponowieniem (limit 90 s na żądanie — /search/judgments bywa bardzo wolny).
 
@@ -255,7 +291,7 @@ def _get(path, params=None, soft=False):
                     time.sleep(2); continue
                 if soft:
                     raise VerificationUnknown("SAOS ma przerwę techniczną")
-                sys.exit("BŁĄD: SAOS ma przerwę techniczną (serwis chwilowo niedostępny) — spróbuj ponownie później.")
+                sys.exit(UWAGA_PRZERWA)
             break
         except urllib.error.HTTPError as e:
             if e.code >= 500 and attempt == 1:
@@ -529,6 +565,7 @@ UWAGA_INDEKSY = ("UWAGA: SAOS spłaszcza indeksy górne w tekstach SN/TK/KIO (ar
 
 SN_WYSZUKIWARKA = "https://www.sn.pl/pl/wyszukiwarka-orzeczen"
 SN_PROXY = "https://www.sn.pl/pl/index.php?option=com_ajax&plugin=snproxy&format=json"
+SN_TIMEOUT = 7  # s; dawniej 20 — przy filtrze antybotowym sn.pl (2026-11) link zwykle i tak się nie uda
 
 
 def _norm_sygn(s):
@@ -542,7 +579,14 @@ def _sn_id(sygnatura, data):
     orzeczenia otwiera jako `?orzeczenie=<id>` — sprawdzone na żywo 2026-10-05 (I UK 328/10 →
     FV3ISJcBZvGrB8P_g845). Proxy dopasowuje sygnaturę fragmentem („328/10” zwraca też IV CSK 328/10),
     a jedna sygnatura może mieć kilka orzeczeń — dlatego wymagamy DOKŁADNEJ sygnatury i daty.
-    Dane pomocnicze: każda awaria, brak albo niejednoznaczność → None (bez wpływu na --strict)."""
+    Dane pomocnicze: każda awaria, brak albo niejednoznaczność → None (bez wpływu na --strict).
+
+    Od października 2026 sn.pl stoi za filtrem antybotowym (Incapsula): 2026-11-13 to samo żądanie
+    dostało HTTP 200 ze stroną wyzwania (text/html, `_Incapsula_Resource`) zamiast JSON-a. Wtedy
+    json.loads zawodzi → None → link do wyszukiwarki z instrukcją „wpisz sygnaturę" — to dziś
+    zwykły wynik. Filtra NIE obchodzimy (żadnych nagłówków przeglądarki, ciasteczek, headless);
+    próbę zostawiamy, bo z innej sieci albo po zmianie reguł filtra proxy może odpowiedzieć.
+    Limit czasu jest krótki (SN_TIMEOUT): pomocniczy link nie może opóźniać całej odpowiedzi."""
     if not sygnatura or not data:
         return None
     url = SN_PROXY + "&" + urllib.parse.urlencode(
@@ -550,7 +594,7 @@ def _sn_id(sygnatura, data):
     req = urllib.request.Request(url, headers={"User-Agent": f"saos-skill/{__version__}",
                                                "Accept": "application/json"})
     try:
-        with _opener.open(req, timeout=20) as r:
+        with _opener.open(req, timeout=SN_TIMEOUT) as r:
             odp = json.loads(r.read().decode("utf-8", "replace"))
         lista = odp["data"][0]["data"]
     except Exception:  # noqa: BLE001 — link pomocniczy; awaria = link do wyszukiwarki z instrukcją
@@ -572,7 +616,8 @@ def _zrodla_urzedowe(data):
     jest ścieżką weryfikacji. Dawny wzorzec PDF SN (sites/orzecznictwo/Orzeczenia3/<sygn>.pdf)
     przekierowuje obecnie na sn.pl/404.html (5/5 w próbie 2026-10-05) — SN ma nową wyszukiwarkę:
     link do strony orzeczenia (`?orzeczenie=<id>`, id z _sn_id), a gdy się nie uda — link do
-    wyszukiwarki z instrukcją. Dla TK i KIO wyszukiwarki OTK / UZP. Linki sądów powszechnych
+    wyszukiwarki z instrukcją (od 2026-11 to zwykły wynik: proxy sn.pl odpowiada stroną filtra
+    antybotowego). Dla TK i KIO wyszukiwarki OTK / UZP. Linki sądów powszechnych
     (apiorzeczenia.*.sa.gov.pl) działają.
     """
     ct = data.get("courtType", "")
@@ -704,13 +749,21 @@ def _uwaga_uzasadnienie(data, tekst=""):
     return linia
 
 
+def _dopisek_daty(it):
+    """Dopisek przy dacie na liście wyników: data z przyszłości (błąd SAOS), typ „uzasadnienie”."""
+    dop = f" — {UWAGA_PRZYSZLOSC}" if _z_przyszlosci(it.get("judgmentDate")) else ""
+    if it.get("judgmentType") == "REASONS":
+        dop += " — data uzasadnienia, nie wyroku"
+    return dop
+
+
 def _wiersz(it):
     """Jedna pozycja listy wyników (id, sygnatura, sąd, data, forma, hasła, snippet)."""
     cn = _case_numbers(it) or "—"
     ctype = CT_PL.get(it.get("courtType", ""), it.get("courtType", ""))
     court = _court_label(it)
     forma = _forma(it)
-    uz = " — data uzasadnienia, nie wyroku" if it.get("judgmentType") == "REASONS" else ""
+    uz = _dopisek_daty(it)
     print(f"  [{it.get('id')}]  {cn}   ({it.get('judgmentDate', '?')}{uz})")
     drugi = f"    {ctype}" + (f" — {court}" if court else "")
     if forma:
@@ -793,6 +846,45 @@ def cmd_szukaj(a):
             print(f"Kolejna strona: --strona {params['pageNumber'] + 1}")
 
 
+_ID_PORTALU_MS = re.compile(r"[0-9]{15}_[A-Za-z0-9_-]+")  # ten sam walidator co w orzeczenia_ms.py
+
+
+def _id_portalu_ms(url):
+    """Identyfikator dokumentu w Portalu Orzeczeń MS z `source.judgmentUrl` (parametr `id=`) albo None.
+
+    Kształt linku (2026-11-13, 36/36 orzeczeń bez treści w próbie): `https://apiorzeczenia.wroclaw.sa.gov.pl/
+    ncourt-api/judgement/details?id=150515150001006_II_K_000295_2025_Uz_2026-09-16_002`."""
+    try:
+        wartosci = urllib.parse.parse_qs(urllib.parse.urlsplit(str(url or "")).query).get("id") or []
+    except ValueError:
+        return None
+    return next((w for w in wartosci if _ID_PORTALU_MS.fullmatch(w)), None)
+
+
+def _uwaga_brak_tresci_ms(data, cn):
+    """Ostrzeżenie dla orzeczenia sądu powszechnego bez treści w SAOS — z komendą do portalu MS.
+
+    SAOS importuje czasem orzeczenia sądów powszechnych bez tekstu (sama metryka). Tak było z
+    orzeczeniami publikowanymi podczas awarii Portalu Orzeczeń MS od 24.09.2026: w próbie z 2026-11-13
+    (200 z 578 orzeczeń z 1.09–10.10.2026) wszystkie 36 z publikacją 24.09–9.10 nie miały treści,
+    a od publikacji 12.10 wszystkie ją miały. Portal MS wydaje dziś treść tych dokumentów (3/3
+    sprawdzone, m.in. II K 295/25 — 16 331 znaków), więc „brak u źródła" byłby nieprawdą. Dlatego
+    warunkiem nie jest data, tylko sam brak treści, a komunikat odsyła do portalu."""
+    ident = _id_portalu_ms((data.get("source") or {}).get("judgmentUrl"))
+    if ident:
+        jak = f"orzeczenia_ms.py orzeczenie {ident}"
+    else:
+        sygn = next((c.get("caseNumber") for c in (data.get("courtCases") or []) if c.get("caseNumber")),
+                    cn if cn and cn != "—" else "<sygnatura>")
+        jak = (f"orzeczenia_ms.py sygnatura {sygn}  (identyfikatora portalu nie da się odczytać "
+               "z source.judgmentUrl — wybierz trafienie właściwego sądu i daty)")
+    return ("UWAGA: SAOS nie ma treści tego orzeczenia sądu powszechnego (import bez tekstu — tak było "
+            "m.in. z orzeczeniami publikowanymi podczas awarii Portalu Orzeczeń MS od 24.09.2026 do "
+            "początku października 2026). Brak treści w SAOS nie znaczy, że nie ma jej u źródła: pobierz "
+            f"ją z Portalu Orzeczeń MS skillem prawo-pl-orzeczenia-ms: {jak}. "
+            "Nie odtwarzaj treści z pamięci ani z fragmentów.")
+
+
 def cmd_orzeczenie(a):
     d = _get(f"/judgments/{a.id}")
     d = _expect_judgment(d, a.id)
@@ -805,6 +897,8 @@ def cmd_orzeczenie(a):
     print(f"# Orzeczenie [{data.get('id')}]  {cn}")
     print(f"  Sąd:    {ctype}" + (f" — {court}" if court else ""))
     print(f"  Data:   {data.get('judgmentDate', '?')}    typ: {_forma(data)}")
+    if _z_przyszlosci(data.get("judgmentDate")):
+        print(f"  UWAGA: {UWAGA_PRZYSZLOSC} (sentencja/nagłówek) albo w źródle oryginalnym.")
     txt = html_to_text(data.get("textContent") or "")
     uwaga_uz = _uwaga_uzasadnienie(data, txt)
     if uwaga_uz:
@@ -853,13 +947,8 @@ def cmd_orzeczenie(a):
         print(f"({UWAGA_INDEKSY})")
     if not txt:
         print("(brak treści w API — otwórz źródło urzędowe wyżej)")
-        pub = (data.get("source") or {}).get("publicationDate") or ""
-        if ct == "COMMON" and pub >= "2026-09-24":
-            # 2026-10-05: zaplecze Portalu Orzeczeń MS nie wydaje treści orzeczeń publikowanych od
-            # 24.09.2026, więc SAOS importuje je bez tekstu (metryka jest)
-            print("UWAGA: to orzeczenie sądu powszechnego opublikowano w portalu MS po 23.09.2026 — od tej daty "
-                  "portal MS nie wydaje treści nowych orzeczeń („Błąd danych”), dlatego SAOS jej nie ma. Treść "
-                  "jest niedostępna u źródła; nie odtwarzaj jej z pamięci ani z fragmentów.")
+        if ct == "COMMON":
+            print(_uwaga_brak_tresci_ms(data, cn))
         return
     if a.fragment:
         spans = _fragmenty(txt, a.fragment)
@@ -905,7 +994,7 @@ def cmd_sygnatura(a):
         ctype = CT_PL.get(it.get("courtType", ""), it.get("courtType", ""))
         court = _court_label(it)
         forma = _forma(it)
-        uz = " — data uzasadnienia, nie wyroku" if it.get("judgmentType") == "REASONS" else ""
+        uz = _dopisek_daty(it)
         print(f"  [{it.get('id')}]  {cn}  ({it.get('judgmentDate', '?')}{uz})  {forma}".rstrip())
         print(f"    {ctype}" + (f" — {court}" if court else "") + f"   → orzeczenie {it.get('id')}")
     if len(items) == 1:
