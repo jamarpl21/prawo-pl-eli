@@ -18,6 +18,11 @@
 - Audyt, punkt „kolizje sygnatur i flaga prawomocności” (część CBOSA) — wykonany z naprawą (ostrzeżenia `sygnatura` i `orzeczenie` opisane wyżej). Lista `sygnatura "SA/Wa 1/20"` w narzędziu i na surowej stronie wyników: te same 9 doc_id (8 trafień i 1 powiązane). Flaga prawomocności zgodna z surową stroną 8/8 w próbie z punktu o datach i 39/39 na wszystkich stronach, także pole puste przy postanowieniu II SA/Wa 2559/19. Pozostałe pola metryki (sygnatura, sąd, „Treść wyniku”, sygnatury powiązane) i obecność sekcji Tezy, Sentencja, Uzasadnienie też 39/39; 5 stron nie ma sekcji „Uzasadnienie”. Stare sygnatury: `szukaj --sygnatura "SA/Sz" --do 2003-12-31` daje 622 trafienia (na 1. stronie same wyroki NSA oz. w Szczecinie), `sygnatura "SA/Sz 833/03"` — 1 trafienie, bez kolizji z WSA w Szczecinie, a `II SA 1/03` — zero (kod 1). `OSK 150/04` (NSA, 2004) to dwa postanowienia tej samej sprawy. Błąd w danych CBOSA (narzędzie go nie poprawia): pole „Sygn. powiązane” łączy II SA/Wa 546/22 (skarga na decyzję UODO, NSA III OSK 377/23) z II SA/Wa 546/21 — wyrokiem w innej sprawie, dotyczącej Policji.
 - Testy `test_cbosa.py`: 90 → 117 (nowe klasy `TestKodyWyjscia`, `TestKolizjeSygnatur`, `TestPrawomocnyWyrokWsaZWyrokiemNsa`).
 
+### Dokumentacja
+
+- Nowy plik `docs/znane-problemy.md`: lista znanych problemów wpływających na rzetelność danych — wady odczytu, które nie dają ostrzeżenia (przypisy i tabele w tekstach z PDF, OCR starych aktów, kwoty bez waluty w rejestrze umów), błędy w samych źródłach (niekonsekwentna flaga prawomocności i błędne powiązania w CBOSA, brakujące wyroki w portalu UODO, błędy struktury w API Sejmu), obszary niesprawdzone i kłopoty z dostępnością źródeł. README odsyła do niej w sekcji „Ważne zastrzeżenia”. Lista zawiera też przypadek dotąd nieopisany: w Dz.U. 2019 poz. 1500 data z marginesu strony („18.01.2021”) dokleja się do treści przypisu.
+- `AGENTS.md`: lista ma być aktualizowana przy każdym wydaniu — nowy znany problem trafia do niej w tym samym wydaniu, a punkt znika dopiero po naprawie z testem.
+
 ## 2.4.0 — 2026-11-13
 
 ### Portal Orzeczeń MS

@@ -18,6 +18,12 @@ blokuje wydanie bez wpisu dla wydawanej wersji.
 - Każdy punkt z list „Luki” i „Zalecane kolejne testy” raportu audytu (np. `docs/audyt-merytoryczny-2026-08.md`, sekcja D) wykonaj albo świadomie odrzuć. Oba wyniki wpisz do `CHANGELOG.md`: wykonanie ze skutkiem, odrzucenie z uzasadnieniem. Punkt bez wpisu pozostaje otwarty, a raport ma notę o stanie z listą otwartych punktów.
 - Każda nowa ścieżka odczytu źródła (nowy format, nowe API, PDF zamiast HTML, OCR) wymaga testów na próbkach z każdej epoki formatu tego źródła, np. Dz.U. i M.P. z lat 1990–1999 (OCR), 2000–2011 (PDF bez HTML) i od 2012 r. Wynik porównaj z niezależnym źródłem urzędowym i podaj w CHANGELOG liczbę próbek oraz miarę zgodności.
 
+## Znane problemy
+
+- Prowadź `docs/znane-problemy.md`: listę znanych problemów wpływających na rzetelność danych (wady odczytu bez ostrzeżenia, błędy w źródłach, obszary niesprawdzone, dostępność źródeł).
+- Nowy znany problem dopisz w tym samym wydaniu, w którym go wykryto — także wtedy, gdy nie da się go naprawić.
+- Punkt usuń dopiero po naprawie potwierdzonej testem i wpisem w `CHANGELOG.md`. Przed wydaniem zaktualizuj numer wersji i datę w nagłówku listy.
+
 ## Repozytorium publiczne
 
 - Nie wpisuj do kodu, dokumentacji, commitów ani opisów na GitHubie nazw prywatnych projektów ani lokalnych ścieżek.

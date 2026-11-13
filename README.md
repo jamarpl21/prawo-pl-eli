@@ -533,7 +533,7 @@ tools/validate.py                        # walidator manifestów wszystkich plug
 tools/release_notes.py                   # opis wydania z CHANGELOG.md (brak wpisu blokuje wydanie)
 tools/test_*.py, tools/fixtures/         # testy jednostkowe silników, offline (używane w CI)
 CHANGELOG.md                             # historia zmian; sekcja „Niewydane” do kolejnego wydania
-docs/                                    # raport audytu merytorycznego, instrukcja instalacji w aplikacjach
+docs/                                    # raport audytu merytorycznego, lista znanych problemów (znane-problemy.md), instrukcja instalacji w aplikacjach
 .github/workflows/release.yml            # GitHub Actions: walidacja + testy + ZIP-y release na tagu v*
 ```
 
@@ -614,6 +614,9 @@ raportu.
 
 ## Ważne zastrzeżenia
 
+- **Znane problemy wpływające na rzetelność danych** — aktualna lista (wady odczytu, błędy w samych
+  źródłach urzędowych, obszary niesprawdzone) jest w [`docs/znane-problemy.md`](docs/znane-problemy.md).
+  Przeczytaj ją, zanim zacytujesz wynik w piśmie.
 - **To nie jest porada prawna.** Narzędzie pomaga dotrzeć do treści i sygnatury aktu / orzeczenia —
   interpretacja należy do prawnika.
 - **Akt OGŁOSZONY ≠ OBOWIĄZUJĄCY.** Sprawdzaj `wejście w życie`/vacatio legis i odnoś przepis do **daty
