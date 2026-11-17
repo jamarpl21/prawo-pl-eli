@@ -58,6 +58,9 @@ Narzędzie pokazuje dane zgodnie ze źródłem; tam, gdzie to możliwe, dodaje o
 | Portal orzeczeń UODO | Nie ma części wyroków sądów administracyjnych: w 2 z 15 sprawdzonych decyzji brakuje orzeczenia, które jest w CBOSA. | DKN.5131.1.2024 — brak wyroku WSA II SA/Wa 1728/24 uchylającego karę 4 053 173 zł; DKN.5130.3114.2020 — brak wyroku NSA III OSK 1251/22. | `decyzja` pokazuje decyzję jako nieprawomocną, ostrzega, że brak wpisu nie oznacza braku wyroku, i podaje gotowe zapytania CBOSA. |
 | Portal orzeczeń UODO | Przy części wpisów podaje tylko „rozpatrzenie” albo „uprawomocnienie”, bez rozstrzygnięcia. | ZSOŚS.440.8.2018 (wynik zna CBOSA: NSA III OSK 2986/21). | Status „NIEUSTALONY” zamiast zgadywania. |
 | API ELI Sejmu | Błędy w danych struktury aktu. | k.p.c., Dz.U. 2024 poz. 1568: art. 15 zapisany jako „Art. 1522.”, brak „DZIAŁ IIda”. | Podpowiedź przy art. 15; brakującego działu narzędzie nie odtwarza. |
+| EUREKA (MF) | Status „Aktualna” przy interpretacji uchylonej wyrokiem: o uchyleniu mówi tylko komentarz BIP. | 0112-KDIL2-2.4011.893.2025.2.AA (ID 682533): status „Aktualna”, komentarz „Interpretacja uchylona wyrokiem WSA” (I SA/Po 763/26). | `tresc`: nagłówek „!!! INFORMACJA PODWAŻONA”, komentarz z sygnaturą wyroku i zapytaniem CBOSA; `--strict` blokuje; na listach znacznik „!!!”. Filtr `--aktualne` takich nie odsiewa (silnik to mówi). |
+| EUREKA (MF) | Komentarze o uchyleniu lub zmianie są dopisywane z opóźnieniem — interpretacja bez wpisu mogła już zostać zaskarżona albo uchylona. | — | `tresc` pisze, że brak wpisu nie jest gwarancją, i odsyła do CBOSA; silnik szuka też dokumentów zmieniających po odwrotnym powiązaniu (`INFORMACJA_ZMIENIANA`). |
+| EUREKA (MF) | Pojedyncze rekordy mają datę wydania późniejszą niż dzień odczytu. | 0114-KDIP1-1.4012.578.2026.2.ESZ: data wydania 2026-11-30 przy odczycie 2026-11-17. | Brak ostrzeżenia; data podawana bez korekty. |
 | API ELI Sejmu | Brak `/struct` dla tekstów jednolitych bez wersji HTML (wszystkie z lat 2025–2026). | — | `struktura` dla tych aktów nie jest porównywalna z niezależnym źródłem. |
 
 ## 4. Niesprawdzone — rzetelność nieznana
@@ -90,6 +93,12 @@ Dla tych obszarów nie udało się wykonać porównania z niezależnym źródłe
 - **ELI (tabele):** obszar tabeli obejmuje kolejne strony z tabelą, więc fragment tekstu między dwiema tabelami na
   sąsiednich stronach też dostaje ostrzeżenie (i blokadę `--strict`); na 13 z 256 zmierzonych stron w obszarach tabel
   nie było niezgodnego wiersza — nie badano, czy przemieszanie jest tam poza wierszami tabeli.
+- **EUREKA:** kompletność komentarzy BIP (jak często uchylenie wyrokiem nie ma wpisu) — nie porównano z CBOSA.
+- **EUREKA:** porównanie treści z urzędowym eksportem PDF dotyczy tego samego systemu MF (inne źródło
+  niezależne nie istnieje publicznie); tabele i załączniki-skany starszych interpretacji nie były porównywane
+  z obrazem strony.
+- **EUREKA:** WIS i WIA mają w treści dane zastrzeżone („(…)”) — silnik pokazuje je bez zmian; zakres zastrzeżeń
+  nie był badany.
 - **UODO → CBOSA:** stanu trzech decyzji nie dało się rozstrzygnąć w CBOSA — DKN.5131.3.2021,
   DKN.5130.4179.2020, DKN.5131.5.2024.
 
@@ -102,5 +111,8 @@ wyników” — ale mogą uniemożliwić sprawdzenie.
   dwukrotnie w ciągu godziny zrywał połączenia na kilkanaście sekund.
 - **Dziennik dolnośląski** odpowiadał po 66 s na rekord, przy limicie 25 s w narzędziu — `akt DS` kończy
   się wtedy błędem przekroczenia czasu.
+- **EUREKA (eureka.mf.gov.pl)** zwalnia przy serii zapytań: 17.11.2026 po kilkudziesięciu zapytaniach z rzędu
+  wyszukiwarka nie odpowiadała w 45 s, a eksport PDF nie odpowiadał w 120–400 s w 9 z 42 prób. API nie ma publicznej
+  dokumentacji MF, więc zmiana backendu strony może wyłączyć skill do czasu aktualizacji.
 - **`pdftotext` bez współrzędnych słów** (stara wersja albo błąd narzędzia): `eli.py` ostrzega, że
   odsyłacze do przypisów nie zostały rozpoznane, a `--strict` blokuje wynik.

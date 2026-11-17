@@ -59,6 +59,15 @@
       "category": "Productivity"
     },
     {
+      "name": "prawo-pl-eureka",
+      "version": "2.6.0",
+      "source": {
+        "source": "local",
+        "path": "./plugins/prawo-pl-eureka"
+      },
+      "category": "Productivity"
+    },
+    {
       "name": "prawo-pl-rejestr-umow",
       "version": "2.6.0",
       "source": {

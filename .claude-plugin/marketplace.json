@@ -1,6 +1,6 @@
 {
   "name": "gibek-skills",
-  "description": "Otwarte skille prawnicze dla Claude Code i OpenAI Codex (standard Agent Skills): prawo polskie z oficjalnego API ELI Sejmu, prawo miejscowe z wojewódzkich dzienników urzędowych, prawo UE z CELLAR/EUR-Lex, orzecznictwo z API SAOS i bezpośrednio z Portalu Orzeczeń MS, orzecznictwo sądów administracyjnych z CBOSA, decyzje UODO z oficjalnego API oraz umowy jednostek sektora finansów publicznych z Centralnego Rejestru Umów.",
+  "description": "Otwarte skille prawnicze dla Claude Code i OpenAI Codex (standard Agent Skills): prawo polskie z oficjalnego API ELI Sejmu, prawo miejscowe z wojewódzkich dzienników urzędowych, prawo UE z CELLAR/EUR-Lex, orzecznictwo z API SAOS i bezpośrednio z Portalu Orzeczeń MS, orzecznictwo sądów administracyjnych z CBOSA, decyzje UODO z oficjalnego API, interpretacje podatkowe z bazy EUREKA Ministerstwa Finansów oraz umowy jednostek sektora finansów publicznych z Centralnego Rejestru Umów.",
   "owner": {
     "name": "Krzysztof Gibek"
   },
@@ -59,6 +59,16 @@
       "name": "prawo-pl-uodo",
       "source": "./plugins/prawo-pl-uodo",
       "description": "Decyzje Prezesa UODO z oficjalnego API Portalu Orzeczeń UODO (orzeczenia.uodo.gov.pl): kary za naruszenia RODO, upomnienia, nakazy oraz powiązane orzeczenia sądów. Wyszukiwanie pełnotekstowe i po tytule/dacie; pełna treść decyzji po sygnaturze. Read-only, bez klucza.",
+      "version": "2.6.0",
+      "author": {
+        "name": "Krzysztof Gibek",
+        "url": "https://www.linkedin.com/in/kgibek/"
+      }
+    },
+    {
+      "name": "prawo-pl-eureka",
+      "source": "./plugins/prawo-pl-eureka",
+      "description": "Interpretacje podatkowe z bazy EUREKA Ministerstwa Finansów: interpretacje indywidualne i ogólne ze zmianami, interpretacje JST, objaśnienia podatkowe, WIS, WIA. Wyszukiwanie pełnotekstowe, po kategorii, dacie i sygnaturze; pełna treść ze stanem prawnym (uchylona wyrokiem / zmieniona / wygaszona). Read-only, bez klucza.",
       "version": "2.6.0",
       "author": {
         "name": "Krzysztof Gibek",
