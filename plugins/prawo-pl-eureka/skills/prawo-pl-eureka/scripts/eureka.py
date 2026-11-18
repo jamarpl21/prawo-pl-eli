@@ -51,7 +51,11 @@ KATEGORIE = {
     "jst": (69341, "Interpretacja indywidualna JST"),
     "objasnienia": (11, "Objaśnienia podatkowe"),
     "wis": (18, "Wiążąca informacja stawkowa"),
+    "zmiana-wis": (19, "Zmiana wiążącej informacji stawkowej"),
+    "uchylenie-wis": (62915, "Uchylenie wiążącej informacji stawkowej"),
     "wia": (16, "Wiążąca informacja akcyzowa"),
+    "zmiana-wia": (17, "Zmiana wiążącej informacji akcyzowej"),
+    "uchylenie-wia": (62916, "Uchylenie wiążącej informacji akcyzowej"),
     "broszura": (5, "Broszura informacyjna"),
     "pismo": (9, "Pismo Ministerstwa Finansów"),
     "wytyczne": (8, "Wytyczne/wyjaśnienia Ministerstwa Finansów"),
@@ -64,6 +68,8 @@ KATEGORIE = {
 }
 GRUPY = {  # aliasy zbiorcze
     "interpretacje": ("indywidualna", "zmiana", "ogolna", "zmiana-ogolnej", "jst"),
+    "wis-wszystkie": ("wis", "zmiana-wis", "uchylenie-wis"),
+    "wia-wszystkie": ("wia", "zmiana-wia", "uchylenie-wia"),
     "wszystko": (),
 }
 DOMYSLNA_KATEGORIA = "interpretacje"
@@ -75,6 +81,7 @@ KOLUMNY_META = KOLUMNY_LISTY + ["DATA_PUBLIKACJI", "KOM_BIP_OPIS", "PRZEPISY", "
                                 "ZAGADNIENIA", "INFORMACJA_ZMIENIAJACA", "INFORMACJA_ZMIENIANA"]
 # Komentarze BIP, które NIE podważają informacji (reszta: uchylona / zmieniona / wygaszona / nieprawidłowa…)
 KOMENTARZE_NEUTRALNE = re.compile(r"potwierdzona prawomocnym wyrokiem|nie wygasła", re.I)
+KOMENTARZE_NEUTRALNE_ID = {"53", "62639"}  # słownik sid=10: te same dwie pozycje po ID
 HEDGE_BRAK = ("UWAGA: brak w EUREKA ≠ brak interpretacji. Baza obejmuje interpretacje od 2007 r., ale nie "
               "każdy dokument ma komplet metadanych; sprawdź też wyszukiwarkę na https://eureka.mf.gov.pl.")
 NIEOFICJALNE = ("API EUREKA nie ma publicznej dokumentacji MF — zmiana po stronie MF może wymagać "
@@ -249,7 +256,11 @@ def _drukuj_liste(d, a, opis):
         if a.strona and total:
             sys.exit(f"BŁĄD: strona {a.strona} jest pusta (łącznie {total} wyników przy --limit {a.limit}) — "
                      "to NIE jest brak wyników.")
-        raise BrakWynikow(f"Brak wyników w EUREKA: {opis}.\n{HEDGE_BRAK}")
+        podpowiedz = ""
+        if getattr(a, "kategoria", None) != "wszystko" and getattr(a, "cmd", "") == "szukaj":
+            podpowiedz = ("\nFiltr kategorii był włączony (domyślnie tylko interpretacje — bez objaśnień "
+                          "podatkowych, WIS/WIA i pism MF); spróbuj --kategoria wszystko.")
+        raise BrakWynikow(f"Brak wyników w EUREKA: {opis}.{podpowiedz}\n{HEDGE_BRAK}")
     if a.json:
         print(json.dumps(d, ensure_ascii=False, indent=2))
         return
@@ -274,7 +285,8 @@ def cmd_kategorie(a):
     print("Kategorie informacji EUREKA (ID · alias · nazwa):")
     for x in d["content"]:
         print(f"- {x.get('id'):>6} · {alias.get(x.get('id'), '-'):<22} · {x.get('wartosc')}")
-    print(f"\nAliasy zbiorcze: interpretacje = {', '.join(GRUPY['interpretacje'])}; wszystko = bez filtra.")
+    zbiorcze = "; ".join(f"{k} = {', '.join(v)}" for k, v in GRUPY.items() if v)
+    print(f"\nAliasy zbiorcze: {zbiorcze}; wszystko = bez filtra.")
 
 
 def cmd_szukaj(a):
@@ -310,35 +322,83 @@ def cmd_szukaj(a):
         f"wydane {a.od or '…'}–{a.do or '…'}" if (a.od or a.do) else "",
         "tylko aktualne" if a.aktualne else "", f"sort: {sort}") if x)
     _drukuj_liste(d, a, opis)
-    if a.aktualne and not a.json:
-        print("UWAGA: filtr „aktualne” to status EUREKA — interpretacja uchylona przez WSA bywa nadal "
-              "„Aktualna”; patrz znaczniki „!!!”.")
+    if a.aktualne:
+        _uwaga(a, "UWAGA: filtr „aktualne” to status EUREKA — interpretacja uchylona przez WSA bywa nadal "
+                  "„Aktualna”; patrz znaczniki „!!!”.")
 
 
-def _po_sygnaturze(syg, limit=20):
-    """Dokładne trafienia sygnatury (EUREKA dopasowuje fragmenty i rozróżnia wielkość liter)."""
+LIMIT_SYGNATURY = 100
+
+
+def _sygnatury_rekordu(r):
+    """Pole SYG bywa listą kilku sygnatur rozdzielonych średnikiem
+    („COP-13.310.6.2026.GWA; COP-13/31101/1360/GWA/26”) — porównujemy każdą osobno."""
+    return [x.strip().lower() for x in re.split(r"[;\n]", str(r.get("SYG") or "")) if x.strip()]
+
+
+def _fragment_bez_liter(syg):
+    """Najdłuższy fragment sygnatury bez liter (cyfry i separatory), np. Fn-II-2.310.1.2026.AB → 2.310.1.2026.
+    Filtr SYG rozróżnia wielkość liter, a sygnatury JST mają litery mieszane (Fn-II, WPiOL-VI, PiO)."""
+    kandydaci = [c.strip(".-/ ") for c in re.findall(r"[0-9./\- ]+", syg)]
+    kandydaci = [c for c in kandydaci if sum(ch.isdigit() for ch in c) >= 4]
+    return max(kandydaci, key=len) if kandydaci else None
+
+
+def _po_sygnaturze(syg):
+    """Dokładne trafienia sygnatury → (dokladne, czesciowe, kompletne).
+
+    EUREKA dopasowuje FRAGMENT i rozróżnia wielkość liter: `Fn-II-2.310.1.2026.AB` → 1, `FN-II-…` → 0.
+    Kolejność: sygnatura jak podana, wielkimi literami, a przy zerze — fragment bez liter (wynik
+    porównywany po stronie silnika bez rozróżniania wielkości liter). `kompletne=False`, gdy któreś
+    zapytanie miało więcej trafień, niż pobrano — wtedy brak dokładnego trafienia NIE jest zweryfikowany."""
     syg = syg.strip()
-    for wariant in dict.fromkeys((syg, syg.upper())):
-        d = _szukaj(_zapytanie({"SYG": wariant}), limit=limit, sort="data")
-        dokladne = [r for r in d["results"] if str(r.get("SYG") or "").strip().lower() == syg.lower()]
-        if dokladne or d["results"]:
-            return dokladne, d
-    return [], d
+    szukana = syg.lower()
+    czesciowe, kompletne = None, True
+    warianty = list(dict.fromkeys((syg, syg.upper())))
+    fragment = _fragment_bez_liter(syg) if re.search(r"[^\W\d_]", syg) else None
+    if fragment and fragment not in warianty:
+        warianty.append(fragment)
+    for i, wariant in enumerate(warianty):
+        if i == len(warianty) - 1 and wariant == fragment and czesciowe:
+            break  # są już trafienia częściowe dla samej sygnatury — fragment nic nie doda
+        d = _szukaj(_zapytanie({"SYG": wariant}), limit=LIMIT_SYGNATURY, sort="data")
+        dokladne = [r for r in d["results"] if szukana in _sygnatury_rekordu(r)]
+        if dokladne:
+            return dokladne, None, True
+        if (d.get("totalHits") or 0) > len(d["results"]):
+            kompletne = False
+        if d["results"] and wariant != fragment and czesciowe is None:
+            czesciowe = d
+    return [], czesciowe, kompletne
+
+
+def _uwaga(a, tekst):
+    """Uwaga dla czytelnika: na stdout w trybie tekstowym, na stderr z --json (stdout = czysty JSON)."""
+    print(tekst, file=sys.stderr if a.json else sys.stdout)
+
+
+def _brak_sygnatury(syg, kompletne):
+    if not kompletne:
+        sys.exit(f"BŁĄD: nie udało się potwierdzić sygnatury „{syg}” — zapytanie ma więcej niż {LIMIT_SYGNATURY} "
+                 "trafień, a dokładnej sygnatury nie było wśród pobranych. To NIE jest brak wyników; "
+                 "podaj pełną sygnaturę albo szukaj: szukaj --sygnatura … --od/--do.")
+    litery = (" Wielkość liter w sygnaturze ma znaczenie dla wyszukiwarki EUREKA; silnik sprawdził też "
+              "fragment bez liter." if re.search(r"[^\W\d_]", syg) else "")
+    return f"Brak sygnatury „{syg}” w EUREKA.{litery}\n{HEDGE_BRAK}"
 
 
 def cmd_sygnatura(a):
-    a.limit, a.strona = 20, 0
-    dokladne, d = _po_sygnaturze(a.sygnatura)
+    a.limit, a.strona = LIMIT_SYGNATURY, 0
+    dokladne, czesciowe, kompletne = _po_sygnaturze(a.sygnatura)
     if dokladne:
-        d = dict(d, results=dokladne, totalHits=len(dokladne))
-        _drukuj_liste(d, a, f"sygnatura {a.sygnatura}")
+        _drukuj_liste({"results": dokladne, "totalHits": len(dokladne)}, a, f"sygnatura {a.sygnatura}")
         return
-    if d["results"]:
-        if not a.json:
-            print(f"Brak DOKŁADNEJ sygnatury „{a.sygnatura}” — trafienia częściowe:")
-        _drukuj_liste(d, a, f"sygnatura zawiera „{a.sygnatura}”")
+    if czesciowe:
+        _uwaga(a, f"UWAGA: brak DOKŁADNEJ sygnatury „{a.sygnatura}” — niżej trafienia częściowe (INNE dokumenty)"
+                  + ("" if kompletne else f"; pokazano pierwsze {LIMIT_SYGNATURY}") + ".")
+        _drukuj_liste(czesciowe, a, f"sygnatura zawiera „{a.sygnatura}”")
         return
-    raise BrakWynikow(f"Brak sygnatury „{a.sygnatura}” w EUREKA.\n{HEDGE_BRAK}")
+    raise BrakWynikow(_brak_sygnatury(a.sygnatura, kompletne))
 
 
 # --- treść -----------------------------------------------------------------------------------
@@ -356,7 +416,7 @@ class _TekstZHtml(HTMLParser):
         self._po_przypisie = False
 
     def _flush(self):
-        t = re.sub(r"[ \t\r\f\v ]+", " ", "".join(self._buf)).strip()
+        t = re.sub(r"[ \t\r\f\v\xa0]+", " ", "".join(self._buf)).strip()
         self._buf = []
         if t:
             self.linie.append(t)
@@ -431,22 +491,29 @@ def _rozwiaz_id(arg):
     arg = arg.strip()
     if arg.isdigit():
         return arg
-    dokladne, d = _po_sygnaturze(arg)
+    dokladne, czesciowe, kompletne = _po_sygnaturze(arg)
     if len(dokladne) == 1:
         return str(dokladne[0].get("ID_INFORMACJI"))
     if len(dokladne) > 1:
         sys.exit(f"BŁĄD: sygnatura „{arg}” wskazuje {len(dokladne)} dokumenty — podaj ID:\n"
                  + "\n".join(_wiersz(r) for r in dokladne))
-    if d["results"]:
+    if czesciowe:
         sys.exit(f"BŁĄD: brak DOKŁADNEJ sygnatury „{arg}” — trafienia częściowe (podaj ID):\n"
-                 + "\n".join(_wiersz(r) for r in d["results"][:10]))
-    sys.exit(f"BŁĄD: nie znaleziono sygnatury „{arg}” w EUREKA.\n{HEDGE_BRAK}")
+                 + "\n".join(_wiersz(r) for r in czesciowe["results"][:10]))
+    sys.exit("BŁĄD: " + _brak_sygnatury(arg, kompletne))
 
 
 def _metadane(id_):
     """Etykiety słownikowe (autor, status, komentarze, przepisy…) — wyszukiwarka zwraca je jako tekst."""
     d = _szukaj(_zapytanie({"ID_INFORMACJI": str(id_)}, kolumny=KOLUMNY_META), limit=1)
-    return d["results"][0] if d["results"] else {}
+    wiersz = d["results"][0] if d["results"] else None
+    if not isinstance(wiersz, dict) or str(wiersz.get("ID_INFORMACJI") or "").strip() != str(id_):
+        # Bez tego wiersza nie ma etykiet statusu ani komentarzy BIP — wynik bez stanu prawnego byłby
+        # mylący („brak wpisów o uchyleniu” przy uchylonej interpretacji), więc to błąd, nie wynik.
+        sys.exit(f"BŁĄD: wyszukiwarka EUREKA nie zwróciła metadanych informacji {id_} (status, komentarze BIP) — "
+                 "nie da się ustalić stanu prawnego. Spróbuj ponownie za chwilę; to NIE jest brak informacji. "
+                 + NIEOFICJALNE)
+    return wiersz
 
 
 def _zmieniajace(id_):
@@ -497,6 +564,14 @@ def cmd_tresc(a):
     status = _lista(meta.get("STATUS_INFORMACJI"))
     opis_bip = re.sub(r"\s+", " ", _html_na_tekst(str(meta.get("KOM_BIP_OPIS") or pola.get("KOM_BIP_OPIS") or ""))).strip()
     zle, nieaktualna = _podwazona(komentarze, status)
+    # Kontrola krzyżowa po ID z samego dokumentu (gdyby etykiety z wyszukiwarki się rozjechały):
+    # komentarz spoza neutralnych (53 potwierdzona wyrokiem, 62639 WIS nie wygasła) albo status ≠ Aktualna.
+    kom_id = {str(x) for x in (pola.get("KOMENTARZE_BIP") if isinstance(pola.get("KOMENTARZE_BIP"), list)
+                               else [pola.get("KOMENTARZE_BIP")]) if x not in (None, "")}
+    if kom_id - KOMENTARZE_NEUTRALNE_ID and not zle:
+        zle = [f"komentarz BIP (ID {', '.join(sorted(kom_id - KOMENTARZE_NEUTRALNE_ID))}) bez etykiety w wyszukiwarce"]
+    if str(pola.get("STATUS_INFORMACJI") or "").strip() not in ("", str(STATUS_AKTUALNA)):
+        nieaktualna = True
     zmieniajaca = str(meta.get("INFORMACJA_ZMIENIAJACA") or pola.get("INFORMACJA_ZMIENIAJACA") or "").strip()
     zmieniajace = [r for r in zmieniajace if str(r.get("ID_INFORMACJI")) != str(id_)]
     wyroki = _sygnatury_wyrokow(opis_bip)

@@ -52,7 +52,7 @@ EUREKA="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-eureka/scripts/eureka.py"
 #    sprawdzana w kodzie przed zapisem i przed każdym uruchomieniem; niezgodna = helper nie startuje.
 [ -f "$EUREKA" ] || EUREKA=$(python3 - <<'EOF'
 import hashlib, os, sys, urllib.request
-WERSJA, SHA256 = "2.6.0", "77cd53f9f6f33e3415c2bd9870db2bc47dadfae6c515d857fea7f379548feb0f"
+WERSJA, SHA256 = "2.6.0", "063e8fc0a645d4085b5e0c10512e2ea950a67ea6016b1d198e0ec699959d0b1f"
 URL = f"https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/v{WERSJA}/plugins/prawo-pl-eureka/skills/prawo-pl-eureka/scripts/eureka.py"
 p = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"prawo-pl-eureka-{WERSJA}", "eureka.py")
 try:
@@ -80,15 +80,23 @@ Nie szukaj helpera przez `find` po katalogach użytkownika ani systemu i nie pob
   `python3 scripts/eureka.py szukaj "samochód osobowy leasing" --kategoria indywidualna --sort data`
   `python3 scripts/eureka.py szukaj --od 2026-09-01 --do 2026-09-30 --kategoria ogolna,objasnienia`
   Domyślna kategoria `interpretacje` = indywidualne, ogólne, JST i ich zmiany; `--kategoria wszystko`
-  zdejmuje filtr; aliasy i ID: komenda `kategorie`. Z frazą wyniki są sortowane po trafności,
+  zdejmuje filtr; `wis-wszystkie` / `wia-wszystkie` = WIS/WIA razem ze zmianami i uchyleniami;
+  aliasy i ID: komenda `kategorie`. Przy zerze wyników z domyślnym filtrem silnik podpowiada
+  `--kategoria wszystko` (domyślny filtr pomija objaśnienia, WIS/WIA i pisma MF). Z frazą wyniki są sortowane po trafności,
   bez frazy po dacie (`--sort data|najstarsze|trafnosc`). `--dokladnie` = słowa obok siebie
   (z 13 tys. trafień robi się kilkadziesiąt), `--tylko-tresc` = bez tezy i metadanych.
   `--sygnatura` filtruje po FRAGMENCIE sygnatury (wielkość liter ma znaczenie, np. `KDIT1.4011`).
   `--aktualne` = status EUREKA „Aktualna” — patrz Zasada 1, ten filtr NIE odsiewa uchylonych.
   Na liście `!!!` oznacza informację uchyloną, zmienioną, wygaszoną albo nieaktualną.
   Wyszukiwarka zwraca najwyżej 10 000 pierwszych pozycji — dalej zawężaj datami.
-- **sygnatura** — dokument po sygnaturze (gdy nie ma dokładnej, pokazuje trafienia częściowe):
+- **sygnatura** — dokument po sygnaturze (gdy nie ma dokładnej, pokazuje trafienia częściowe —
+  to INNE dokumenty; z `--json` uwaga idzie na stderr, stdout zostaje czystym JSON-em):
   `python3 scripts/eureka.py sygnatura 0115-KDIT1.4011.700.2026.1.MR`
+  Filtr EUREKA rozróżnia wielkość liter, a sygnatury JST mają litery mieszane (`Fn-II-2.310.1.2026.AB`).
+  Gdy sygnatura w podanej postaci i wielkimi literami nic nie daje, silnik pyta o fragment bez liter
+  i porównuje sygnatury bez rozróżniania wielkości liter. Pole sygnatury bywa listą kilku sygnatur
+  rozdzielonych średnikiem — każda jest porównywana osobno. Gdy trafień jest więcej niż 100, a dokładnej
+  sygnatury wśród nich nie ma, wynik to kod 2 (niezweryfikowane), nie „brak”.
 - **tresc** — metadane, **blok „Stan”** i pełna treść po ID albo sygnaturze:
   `python3 scripts/eureka.py tresc 718641`
   `python3 scripts/eureka.py tresc 0112-KDIL2-2.4011.893.2025.2.AA --fragment "pośrednictw"`
@@ -96,7 +104,9 @@ Nie szukaj helpera przez `find` po katalogach użytkownika ani systemu i nie pob
   Blok „Stan” pokazuje: status EUREKA, komentarze BIP (uchylona wyrokiem WSA/NSA, zmieniona przez
   Szefa KAS, wygaszona, potwierdzona prawomocnym wyrokiem), opis z sygnaturą wyroku, dokument
   zmieniający (`INFORMACJA_ZMIENIAJACA`) i dokumenty, które wskazują ten jako zmieniany (wyszukiwanie
-  odwrotne). Informacja podważona zaczyna się od **„!!! INFORMACJA PODWAŻONA”**. `--fragment` wycina
+  odwrotne). Informacja podważona zaczyna się od **„!!! INFORMACJA PODWAŻONA”**. Stan ustala z etykiet
+  wyszukiwarki ORAZ z ID w samym dokumencie (komentarz BIP spoza neutralnych, status ≠ Aktualna); gdy
+  wyszukiwarka nie zwróci metadanych dokumentu, wynik to kod 2 — nigdy treść bez stanu prawnego. `--fragment` wycina
   okna wokół frazy (podawaj RDZEŃ, np. „pośrednictw”). Daty podaje w czasie polskim (API zwraca UTC).
 - **kategorie** — lista kategorii informacji z ID i aliasami do `--kategoria`.
 - każda komenda przyjmuje `--json` oraz `--strict`; obie flagi działają przed komendą i po niej.
@@ -154,4 +164,5 @@ Pytanie: „czy przy sprzedaży kryptowalut mogę odliczyć koszty z lat ubiegł
 3. Treść art. 22 ust. 14–16 PIT dziś: skill prawo-pl-eli.
 4. Jeśli „Stan” pokazuje wyrok: `prawo-pl-cbosa sygnatura "<wyrok>"` (dlaczego sąd uchylił).
 5. W odpowiedzi: rodzaj dokumentu + sygnatura + data + organ + rozstrzygnięcie + stan (uchylona?
-   zmieniona?) + zastrzeżenie, że interpretacja indywidualna wiąże tylko w sprawie wnioskodawcy.
+   zmieniona?) + zastrzeżenie, że zastosowanie się do interpretacji indywidualnej chroni tylko
+   wnioskodawcę (art. 14k § 1 o.p.: „nie może szkodzić wnioskodawcy”).

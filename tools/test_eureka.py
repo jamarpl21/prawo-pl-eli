@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """Offline unit tests for eureka.py (no network — `_http` is mocked). Run: python3 tools/test_eureka.py"""
 import contextlib
+import copy
 import importlib.util
 import io
 import json
@@ -69,9 +70,11 @@ def _wynik(results, total=None):
 class FakeAPI:
     """Mock `_http`: GET /informacje/{id}, POST /wyszukiwarka/informacje (po filtrze), GET słownika."""
 
-    def __init__(self, docs=None, meta=None, zmieniajace=None, lista=None, sygnatury=None):
+    def __init__(self, docs=None, meta=None, zmieniajace=None, lista=None, sygnatury=None, pula=None):
         self.docs, self.meta = docs or {}, meta or {}
         self.zmieniajace, self.lista, self.sygnatury = zmieniajace or {}, lista, sygnatury or {}
+        self.pula = pula or []  # rekordy do filtra SYG: fragment, wielkość liter MA znaczenie (jak EUREKA)
+        self.total_syg = None   # wymuszone totalHits dla filtra SYG (symulacja >100 trafień)
         self.wywolania = []
 
     def __call__(self, path, body=None, binarne=False, brak_ok=False):
@@ -98,7 +101,8 @@ class FakeAPI:
             if "SYG" in f and f["SYG"] in self.sygnatury:
                 return _wynik(self.sygnatury[f["SYG"]])
             if "SYG" in f:
-                return _wynik([])
+                trafienia = [m for m in self.pula if f["SYG"] in m.get("SYG", "")]
+                return _wynik(trafienia, total=self.total_syg)
             return self.lista if self.lista is not None else _wynik([])
         raise AssertionError(f"nieoczekiwane wywołanie {path}")
 
@@ -162,6 +166,11 @@ class TestKategorie(unittest.TestCase):
     def test_domyslne_interpretacje(self):
         self.assertEqual(eureka._kategorie_z_argumentu(None), [1, 2, 3, 4, 69341])
 
+    def test_aliasy_zmian_wis_wia(self):
+        self.assertEqual(eureka._kategorie_z_argumentu("wis-wszystkie"), [18, 19, 62915])
+        self.assertEqual(eureka._kategorie_z_argumentu("wia-wszystkie"), [16, 17, 62916])
+        self.assertEqual(eureka._kategorie_z_argumentu("zmiana-wis,uchylenie-wia"), [19, 62916])
+
     def test_aliasy_id_wszystko(self):
         self.assertEqual(eureka._kategorie_z_argumentu("ogolna, objasnienia,18"), [3, 11, 18])
         self.assertEqual(eureka._kategorie_z_argumentu("wszystko"), [])
@@ -202,6 +211,7 @@ class TestSzukaj(unittest.TestCase):
         kod, _, err = run(["szukaj", "qqzx"], FakeAPI(lista=_wynik([])))
         self.assertEqual(kod, 1)
         self.assertIn("brak w EUREKA ≠ brak interpretacji", err)
+        self.assertIn("--kategoria wszystko", err)
 
     def test_pusta_dalsza_strona_kod_2(self):
         kod, _, err = run(["szukaj", "x", "--strona", "5"], FakeAPI(lista=_wynik([], total=12)))
@@ -258,7 +268,110 @@ class TestSygnatura(unittest.TestCase):
         api.sygnatury["0115-KDIT1.4011.700"] = [META_CZYSTA]
         kod, out, _ = run(["sygnatura", "0115-KDIT1.4011.700"], api)
         self.assertEqual(kod, 0)
-        self.assertIn("Brak DOKŁADNEJ sygnatury", out)
+        self.assertIn("brak DOKŁADNEJ sygnatury", out)
+
+
+META_JST = {"ID_INFORMACJI": "715247", "SYG": "Fn-II-2.310.1.2026.AB", "DT_WYD": "2026-10-01",
+            "KATEGORIA_INFORMACJI": ["Interpretacja indywidualna JST"], "STATUS_INFORMACJI": ["Aktualna"]}
+META_PODWOJNA = {"ID_INFORMACJI": "800", "SYG": "COP-13.310.6.2026.GWA; COP-13/31101/1360/GWA/26",
+                 "KATEGORIA_INFORMACJI": ["Interpretacja indywidualna JST"], "STATUS_INFORMACJI": ["Aktualna"]}
+
+
+class TestSygnaturaMieszaneLitery(unittest.TestCase):
+    """Recenzja PR: filtr SYG rozróżnia wielkość liter, sygnatury JST mają litery mieszane."""
+
+    def _api(self):
+        api = _api_trzy()
+        api.pula = [META_JST, META_PODWOJNA, META_CZYSTA]
+        api.docs["715247"] = _doc(715247, {"ID_INFORMACJI": "715247", "SYG": "Fn-II-2.310.1.2026.AB",
+                                           "STATUS_INFORMACJI": "27", "TRESC_INTERESARIUSZ": "<p>Podatek od nieruchomości</p>"})
+        api.meta["715247"] = META_JST
+        return api
+
+    def test_wielkie_litery_znajduje_przez_fragment_bez_liter(self):
+        api = self._api()
+        kod, out, _ = run(["sygnatura", "FN-II-2.310.1.2026.AB"], api)
+        self.assertEqual(kod, 0)
+        self.assertIn("[715247] Fn-II-2.310.1.2026.AB", out)
+        self.assertIn({"SYG": "2.310.1.2026"}, [b["filter"] for _, b in api.wywolania if b])
+
+    def test_male_litery_i_tresc(self):
+        kod, out, _ = run(["tresc", "fn-ii-2.310.1.2026.ab"], self._api())
+        self.assertEqual(kod, 0)
+        self.assertIn("ID: 715247", out)
+
+    def test_brak_z_literami_mowi_o_wielkosci_liter(self):
+        kod, _, err = run(["sygnatura", "Xy-9.9999.1.2026.QQ"], self._api())
+        self.assertEqual(kod, 1)
+        self.assertIn("Wielkość liter", err)
+
+    def test_wiecej_trafien_niz_pobrano_to_nie_brak(self):
+        api = self._api()
+        api.pula = [META_CZYSTA] * 100   # 100 pobranych, żadne nie jest szukaną
+        api.total_syg = 500
+        kod, _, err = run(["sygnatura", "Qq-1.2026.1.2026.ZZ"], api)
+        self.assertEqual(kod, 2)
+        self.assertIn("NIE jest brak", err)
+
+    def test_pole_z_dwiema_sygnaturami(self):
+        kod, out, _ = run(["sygnatura", "COP-13/31101/1360/GWA/26"], self._api())
+        self.assertEqual(kod, 0)
+        self.assertIn("[800]", out)
+        self.assertNotIn("Brak DOKŁADNEJ", out)
+
+
+class TestJsonCzystyStdout(unittest.TestCase):
+    def test_czesciowe_trafienia_json_uwaga_na_stderr(self):
+        api = _api_trzy()
+        api.sygnatury["0115-KDIT1.4011.700"] = [META_CZYSTA]
+        kod, out, err = run(["sygnatura", "0115-KDIT1.4011.700", "--json"], api)
+        self.assertEqual(kod, 0)
+        json.loads(out)  # stdout = sam JSON
+        self.assertIn("brak DOKŁADNEJ sygnatury", err)
+        self.assertIn("INNE dokumenty", err)
+
+    def test_aktualne_json_uwaga_na_stderr(self):
+        kod, out, err = run(["szukaj", "x", "--aktualne", "--json"], FakeAPI(lista=_wynik([META_CZYSTA])))
+        self.assertEqual(kod, 0)
+        json.loads(out)
+        self.assertIn("filtr „aktualne”", err)
+
+
+class TestMetadaneBrakWiersza(unittest.TestCase):
+    """Recenzja PR: brak wiersza metadanych nie może dać „brak wpisów o uchyleniu” ani przejść --strict."""
+
+    def test_brak_wiersza_kod_2(self):
+        api = _api_trzy()
+        del api.meta["682533"]
+        for argv in (["tresc", "682533"], ["tresc", "682533", "--strict"]):
+            kod, out, err = run(argv, api)
+            self.assertEqual(kod, 2, argv)
+            self.assertEqual(out, "")
+            self.assertIn("nie zwróciła metadanych", err)
+
+    def test_wiersz_z_innym_id_kod_2(self):
+        api = _api_trzy()
+        api.meta["682533"] = dict(META_CZYSTA)  # ID 718641 zamiast 682533
+        kod, _, err = run(["tresc", "682533"], api)
+        self.assertEqual(kod, 2)
+
+    def test_kontrola_po_id_z_dokumentu(self):
+        api = _api_trzy()
+        api.meta["682533"] = {k: v for k, v in META_UCHYLONA.items() if k not in ("KOMENTARZE_BIP", "KOM_BIP_OPIS")}
+        kod, out, _ = run(["tresc", "682533"], api)
+        self.assertEqual(kod, 0)
+        self.assertTrue(out.startswith("!!! INFORMACJA PODWAŻONA"))
+        kod, _, _ = run(["tresc", "682533", "--strict"], api)
+        self.assertEqual(kod, 2)
+
+    def test_status_z_dokumentu_inny_niz_aktualna(self):
+        api = _api_trzy()
+        doc = copy.deepcopy(DOC_CZYSTA)  # nie zmieniaj wspólnego obiektu testowego
+        doc["dokument"]["fields"] = [f if f["key"] != "STATUS_INFORMACJI" else dict(f, value="29")
+                                     for f in doc["dokument"]["fields"]]
+        api.docs["718641"] = doc
+        kod, _, _ = run(["tresc", "718641", "--strict"], api)
+        self.assertEqual(kod, 2)
 
 
 class TestTresc(unittest.TestCase):

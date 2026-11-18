@@ -29,7 +29,22 @@
 - Wyszukiwarka zwraca najwyżej 10 000 pierwszych pozycji (`page × size ≥ 10 000` → HTTP 500). Silnik odrzuca
   takie zapytanie przed wysłaniem i każe zawęzić je datami.
 - Porównanie z urzędowym eksportem PDF tego samego dokumentu (`pdftotext -layout`): 33 dokumenty z lat 2008–2026: 26 interpretacji indywidualnych (co najmniej jedna z każdego okresu 2008, 2011–2012, 2014–2016, 2018, 2021–2026), 2 zmiany interpretacji, 2 interpretacje JST, interpretacja ogólna, objaśnienia podatkowe, WIS. Miara: odsetek słów treści z API, które występują w tej samej kolejności w tekście PDF (difflib). Minimum 99,95%, mediana 100%, średnia 99,99%. Nadmiar słów w PDF to metryka eksportu (nagłówki, stopki). Sygnatura i data wydania (po przeliczeniu UTC na czas polski) są w PDF w 33 z 33 przypadków. Eksport PDF nie odpowiedział w 120–400 s w 9 z 42 prób — te próbki pominięto, nie dobierano nowych.
-- Testy offline: `tools/test_eureka.py` (40 testów, także na Pythonie 3.8). README, `docs/znane-problemy.md`,
+- Poprawki po recenzji (2026-11-18):
+  - sygnatura o mieszanej wielkości liter (sygnatury JST: `Fn-II-2.310.1.2026.AB`) podana inaczej niż w bazie
+    dawała kod 1 („zweryfikowany brak”), choć dokument istnieje — filtr `SYG` rozróżnia wielkość liter. Silnik
+    pyta teraz także o fragment bez liter i porównuje bez rozróżniania wielkości liter; przy dalszym braku
+    komunikat mówi, że wielkość liter ma znaczenie. Pole `SYG` z kilkoma sygnaturami po średniku jest
+    porównywane po każdej. Gdy trafień jest więcej niż pobrane 100, a dokładnego nie ma — kod 2, nie 1;
+  - `tresc` bez wiersza metadanych z wyszukiwarki (albo z wierszem innego ID) pokazywała „status: ?” i „brak
+    wpisów o uchyleniu”, a `--strict` przepuszczał — teraz kod 2. Dodatkowo stan jest liczony z ID w samym
+    dokumencie (komentarz BIP spoza 53/62639, status ≠ 27);
+  - `sygnatura --json` z trafieniami częściowymi i `szukaj --aktualne --json` — uwagi idą na stderr, stdout
+    zostaje czystym JSON-em (jak w `cbosa.py`);
+  - aliasy `zmiana-wis`, `uchylenie-wis`, `zmiana-wia`, `uchylenie-wia` i grupy `wis-wszystkie`, `wia-wszystkie`;
+    przy zerze wyników z filtrem kategorii podpowiedź `--kategoria wszystko`;
+  - `SKILL.md`: „wiąże” zastąpione brzmieniem art. 14k § 1 („nie może szkodzić wnioskodawcy”);
+    `docs/instalacja-claude-desktop.html`: dziewięć skilli i odznaka `prawo-pl-eureka`.
+- Testy offline: `tools/test_eureka.py` (52 testy, także na Pythonie 3.8). README, `docs/znane-problemy.md`,
   walidator i oba katalogi marketplace uwzględniają nowy plugin.
 
 ## 2.6.0 — 2026-11-13

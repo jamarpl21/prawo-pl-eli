@@ -88,8 +88,11 @@ BIP `sid=10`, sądy `sid=17`, zagadnienia `sid=18`, przepisy `sid=19`, organ JST
 
 - **`STATUS_INFORMACJI = Aktualna` nie znaczy, że interpretacja się ostała.**
   0112-KDIL2-2.4011.893.2025.2.AA (ID 682533): status „Aktualna”, a komentarz BIP mówi „Interpretacja
-  uchylona wyrokiem WSA w Poznaniu 22.07.2026 r. sygn. akt I SA/Po 763/26”. Na 2697 interpretacji
-  indywidualnych z komentarzem „uchylona wyrokiem WSA” (2026-11-17) część ma status „Aktualna”.
+  uchylona wyrokiem WSA w Poznaniu 22.07.2026 r. sygn. akt I SA/Po 763/26”. Spośród 2697 interpretacji
+  indywidualnych z komentarzem „uchylona wyrokiem WSA” (ID 58) status „Aktualna” ma 9 (odczyt 2026-11-18).
+- `SYG` rozróżnia wielkość liter, a sygnatury JST mają litery mieszane: `Fn-II-2.310.1.2026.AB` → 1,
+  `FN-II-…` → 0 (2026-11-18). Fragment bez liter (`2.310.1.2026`) znajduje dokument niezależnie od liter.
+- `SYG` bywa listą kilku sygnatur rozdzielonych średnikiem: `COP-13.310.6.2026.GWA; COP-13/31101/1360/GWA/26`.
 - Interpretacja zmieniona przez Szefa KAS ma komentarz i `INFORMACJA_ZMIENIAJACA`
   (669739 → 717939); zmiana ma odwrotne `INFORMACJA_ZMIENIANA`. Silnik sprawdza oba kierunki.
 - Kategoria w wynikach wraca raz jako string, raz jako lista — silnik normalizuje.
