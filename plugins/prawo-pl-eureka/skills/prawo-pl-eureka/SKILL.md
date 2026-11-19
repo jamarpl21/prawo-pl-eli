@@ -1,6 +1,6 @@
 ---
 name: prawo-pl-eureka
-version: 2.6.0
+version: 2.7.0
 description: >-
   Odpytuje publiczne API systemu EUREKA Ministerstwa Finansów (eureka.mf.gov.pl) — bazę
   INTERPRETACJI PODATKOWYCH: interpretacje indywidualne Dyrektora KIS i ogólne Ministra Finansów
@@ -52,7 +52,7 @@ EUREKA="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-eureka/scripts/eureka.py"
 #    sprawdzana w kodzie przed zapisem i przed każdym uruchomieniem; niezgodna = helper nie startuje.
 [ -f "$EUREKA" ] || EUREKA=$(python3 - <<'EOF'
 import hashlib, os, sys, urllib.request
-WERSJA, SHA256 = "2.6.0", "92aa8e596481d4b9071497cd83ee0bbd02b3e2206430453307ed2bf6e478f5ff"
+WERSJA, SHA256 = "2.7.0", "4ecf386b780e9bdaff9a4e8ecd732841b209013e0d302551b12e7aacb724767b"
 URL = f"https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/v{WERSJA}/plugins/prawo-pl-eureka/skills/prawo-pl-eureka/scripts/eureka.py"
 p = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"prawo-pl-eureka-{WERSJA}", "eureka.py")
 try:

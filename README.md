@@ -329,9 +329,9 @@ Każdy tag `v*` publikuje po jednym zipie na plugin w GitHub Releases
 dla każdego z dziewięciu pluginów):
 
 ```bash
-claude --plugin-dir ./prawo-pl-saos-v2.6.0.zip
+claude --plugin-dir ./prawo-pl-saos-v2.7.0.zip
 # albo zdalnie, bez pobierania:
-claude --plugin-url https://github.com/jamarpl21/prawo-pl-eli/releases/download/v2.6.0/prawo-pl-saos-v2.6.0.zip
+claude --plugin-url https://github.com/jamarpl21/prawo-pl-eli/releases/download/v2.7.0/prawo-pl-saos-v2.7.0.zip
 ```
 
 ## Użycie jako samodzielne CLI (bez żadnego LLM-a)
@@ -603,13 +603,13 @@ docs/                                    # raport audytu merytorycznego, lista z
 
 ## Wersjonowanie
 
-Wszystkie pluginy są wersjonowane **razem (lockstep)** — jedna wersja (obecnie **2.6.0**) zadeklarowana
+Wszystkie pluginy są wersjonowane **razem (lockstep)** — jedna wersja (obecnie **2.7.0**) zadeklarowana
 we wszystkich miejscach, identyczna; `tools/validate.py` wymusza to w CI:
 
 - `plugins/<plugin>/.claude-plugin/plugin.json` i `.codex-plugin/plugin.json` (pole `version`) — wszystkie pluginy,
 - wpisy wszystkich pluginów w obu marketplace'ach (`.claude-plugin/marketplace.json`, `.agents/plugins/marketplace.json`),
 - frontmattery `SKILL.md` (`metadata.version`, w starszych skillach pole `version`),
-- silniki: `eli.py`, `edzienniki.py`, `eurlex.py`, `saos.py`, `cbosa.py`, `uodo.py`, `rejestrumow.py`, `orzeczenia_ms.py` (`__version__`; CLI: `--version`),
+- silniki: `eli.py`, `edzienniki.py`, `eurlex.py`, `saos.py`, `cbosa.py`, `uodo.py`, `rejestrumow.py`, `orzeczenia_ms.py`, `eureka.py` (`__version__`; CLI: `--version`),
 - blok „3) Piaskownica” w każdym `SKILL.md`: wersja (= tag `v<wersja>`) i **suma SHA-256 silnika** —
   walidator liczy sumę pliku i odrzuca rozjazd (wypisuje oczekiwaną wartość).
 

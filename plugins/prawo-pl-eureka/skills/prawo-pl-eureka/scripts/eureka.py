@@ -34,7 +34,7 @@ nieznane ID/sygnatura, blokada --strict, pusta dalsza strona, nieprzewidziany b�
 import sys, json, re, time, argparse, urllib.request, urllib.parse, urllib.error
 from html.parser import HTMLParser
 
-__version__ = "2.6.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
+__version__ = "2.7.0"  # trzymaj w zgodzie z plugin.json (sprawdza tools/validate.py)
 HOST = "eureka.mf.gov.pl"
 BASE = f"https://{HOST}/api/public/v1"
 PODGLAD = f"https://{HOST}/informacje/podglad/"
@@ -80,7 +80,9 @@ KOLUMNY_LISTY = ["ID_INFORMACJI", "SYG", "DT_WYD", "TEZA", "KATEGORIA_INFORMACJI
 KOLUMNY_META = KOLUMNY_LISTY + ["DATA_PUBLIKACJI", "KOM_BIP_OPIS", "PRZEPISY", "SLOWA_KLUCZOWE",
                                 "ZAGADNIENIA", "INFORMACJA_ZMIENIAJACA", "INFORMACJA_ZMIENIANA"]
 # Komentarze BIP, które NIE podważają informacji (reszta: uchylona / zmieniona / wygaszona / nieprawidłowa…)
-KOMENTARZE_NEUTRALNE = re.compile(r"potwierdzona prawomocnym wyrokiem|nie wygasła", re.I)
+# Etykieta pozycji 62639 wraca z wyszukiwarki w dwóch brzmieniach: „WIS nie wygasł 1 stycznia 2023 r. …”
+# (większość rekordów) i „WIS nie wygasła …” (obecne brzmienie słownika) — wzorzec obejmuje oba.
+KOMENTARZE_NEUTRALNE = re.compile(r"potwierdzona prawomocnym wyrokiem|nie wygasł", re.I)
 KOMENTARZE_NEUTRALNE_ID = {"53", "62639"}  # słownik sid=10: te same dwie pozycje po ID
 HEDGE_BRAK = ("UWAGA: brak w EUREKA ≠ brak interpretacji. Baza obejmuje interpretacje od 2007 r., ale nie "
               "każdy dokument ma komplet metadanych; sprawdź też wyszukiwarkę na https://eureka.mf.gov.pl.")

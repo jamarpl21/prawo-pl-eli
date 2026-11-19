@@ -1,6 +1,6 @@
 # Znane problemy wpływające na rzetelność danych
 
-Stan na wydanie **2.6.0** (13.11.2026). Lista obejmuje tylko to, co może sprawić, że wynik narzędzia
+Stan na wydanie **2.7.0** (20.11.2026). Lista obejmuje tylko to, co może sprawić, że wynik narzędzia
 jest niepełny, mylący albo niesprawdzony. Nie znamy przypadku, w którym silnik zmyśla dane — każdy
 punkt niżej to albo wada odczytu, albo błąd w samym źródle urzędowym, albo obszar, którego nie dało się
 porównać z niezależnym źródłem.
@@ -95,9 +95,10 @@ Dla tych obszarów nie udało się wykonać porównania z niezależnym źródłe
   sąsiednich stronach też dostaje ostrzeżenie (i blokadę `--strict`); na 13 z 256 zmierzonych stron w obszarach tabel
   nie było niezgodnego wiersza — nie badano, czy przemieszanie jest tam poza wierszami tabeli.
 - **EUREKA:** kompletność komentarzy BIP (jak często uchylenie wyrokiem nie ma wpisu) — nie porównano z CBOSA.
-- **EUREKA:** porównanie treści z urzędowym eksportem PDF dotyczy tego samego systemu MF (inne źródło
-  niezależne nie istnieje publicznie); tabele i załączniki-skany starszych interpretacji nie były porównywane
-  z obrazem strony.
+- **EUREKA:** treść interpretacji porównano tylko z urzędowym eksportem PDF z tego samego systemu MF —
+  niezależnego źródła urzędowego nie znaleziono. Załączniki PDF starszych interpretacji (2007–2016) to skany
+  wniosków ORD-IN, nie interpretacji (6 z 6 sprawdzonych), więc nie nadają się do takiego porównania. Tabele
+  w treści nie były porównywane z obrazem strony.
 - **EUREKA:** WIS i WIA mają w treści dane zastrzeżone („(…)”) — silnik pokazuje je bez zmian; zakres zastrzeżeń
   nie był badany.
 - **UODO → CBOSA:** stanu trzech decyzji nie dało się rozstrzygnąć w CBOSA — DKN.5131.3.2021,

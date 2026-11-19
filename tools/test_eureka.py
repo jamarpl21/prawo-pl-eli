@@ -401,6 +401,23 @@ class TestMetadaneBrakWiersza(unittest.TestCase):
         kod, _, _ = run(["tresc", "682533", "--strict"], api)
         self.assertEqual(kod, 2)
 
+    def test_wis_nie_wygasl_oba_brzmienia_etykiety_neutralne(self):
+        """Wyszukiwarka zwraca etykietę pozycji 62639 jako „WIS nie wygasł …” albo „WIS nie wygasła …”."""
+        for etykieta in ("WIS nie wygasł 1 stycznia 2023 r. w związku z wejściem w życie art. 24a ust. 1",
+                         "WIS nie wygasła 1 stycznia 2023 r. w związku z wejściem w życie art. 24a ust. 1"):
+            api = _api_trzy()
+            api.meta["718641"] = dict(META_CZYSTA, KOMENTARZE_BIP=[etykieta])
+            doc = copy.deepcopy(DOC_CZYSTA)
+            doc["dokument"]["fields"].append({"key": "KOMENTARZE_BIP", "value": ["62639"]})
+            api.docs["718641"] = doc
+            kod, out, _ = run(["tresc", "718641", "--strict"], api)
+            self.assertEqual(kod, 0, etykieta)
+            self.assertNotIn("PODWAŻONA", out)
+            self.assertIn("komentarz: " + etykieta, out)
+            self.assertNotIn("!!!", eureka._wiersz(api.meta["718641"]))
+        zle = dict(META_CZYSTA, KOMENTARZE_BIP=["WIS wygasła 1 kwietnia 2025 r. na podstawie § 1 rozporządzenia"])
+        self.assertIn("!!!", eureka._wiersz(zle))
+
     def test_strict_blokuje_brak_statusu_w_obu_zrodlach(self):
         api = _api_trzy()
         api.meta["718641"] = {k: v for k, v in META_CZYSTA.items() if k != "STATUS_INFORMACJI"}

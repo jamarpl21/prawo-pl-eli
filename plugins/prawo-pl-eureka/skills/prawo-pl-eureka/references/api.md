@@ -15,7 +15,7 @@ bez zapowiedzi — silnik sprawdza go przy każdym wywołaniu i przy niezgodnoś
 | `POST /wyszukiwarka/informacje?size=N&page=P&sort=POLE,KIERUNEK` | wyniki wyszukiwania (body niżej) |
 | `GET /informacje/{ID}` | dokument: `{id, versionId, nazwa, dokument: {fields: [{key, value}]}}` |
 | `GET /informacje/{ID}/eksport/PDF` | urzędowy eksport PDF (metryka + treść) |
-| `GET /informacje/pliki/{ID}/{versionId}/{fileName}` | załącznik (starsze interpretacje: skan PDF) |
+| `GET /informacje/pliki/{ID}/{versionId}/{fileName}` | załącznik (starsze interpretacje: skan wniosku ORD-IN, nie interpretacji) |
 | `GET /informacje/{ID}/metadane` | definicje metadanych szablonu (bez wartości) |
 | `GET /pozycje-slownika/wyszukiwarka?sid=S&isFirstLevel=true&size=N&page=P&sort=kolejnosc,asc` | pozycje słownika `S` |
 | `GET /parametry-wyszukiwarki/all` | lista pól filtrowalnych (kod metadanej, typ, ID słownika) |
@@ -92,11 +92,15 @@ BIP `sid=10`, sądy `sid=17`, zagadnienia `sid=18`, przepisy `sid=19`, organ JST
   indywidualnych z komentarzem „uchylona wyrokiem WSA” (ID 58) status „Aktualna” ma 9 (odczyt 2026-11-18).
 - `SYG` rozróżnia wielkość liter, a sygnatury JST mają litery mieszane: `Fn-II-2.310.1.2026.AB` → 1,
   `FN-II-…` → 0 (2026-11-18). Fragment bez liter (`2.310.1.2026`) znajduje dokument niezależnie od liter.
+- Etykiety słownikowe w wynikach wyszukiwarki mogą różnić się od bieżącego słownika: pozycja 62639
+  (`sid=10`) brzmi w słowniku „WIS nie wygasła 1 stycznia 2023 r. …”, a większość rekordów zwraca
+  „WIS nie wygasł 1 stycznia 2023 r. …”. Silnik uznaje oba brzmienia za komentarz neutralny.
 - `SYG` bywa listą kilku sygnatur rozdzielonych średnikiem: `COP-13.310.6.2026.GWA; COP-13/31101/1360/GWA/26`.
 - Interpretacja zmieniona przez Szefa KAS ma komentarz i `INFORMACJA_ZMIENIAJACA`
   (669739 → 717939); zmiana ma odwrotne `INFORMACJA_ZMIENIANA`. Silnik sprawdza oba kierunki.
 - Kategoria w wynikach wraca raz jako string, raz jako lista — silnik normalizuje.
 - Pojedyncze rekordy mają datę wydania późniejszą niż dzień odczytu (np. 0114-KDIP1-1.4012.578.2026.2.ESZ:
   `DT_WYD` 2026-11-30, odczyt 2026-11-17) — błąd danych źródła; silnik podaje datę bez korekty.
-- Starsze dokumenty (2007–2016) mają treść HTML ORAZ skan PDF w `ZALACZNIKI`; treść HTML zgadza się
-  z urzędowym eksportem PDF (pomiar w CHANGELOG).
+- Starsze dokumenty (2007–2016) mają treść HTML oraz plik PDF w `ZALACZNIKI`. Ten plik to skan WNIOSKU
+  (formularz ORD-IN z uzupełnieniami), nie interpretacji — 6 z 6 sprawdzonych 2026-11-20. Nie służy do
+  weryfikacji treści interpretacji. Treść HTML zgadza się z urzędowym eksportem PDF (pomiar w CHANGELOG).

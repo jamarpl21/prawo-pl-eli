@@ -2,7 +2,11 @@
 
 ## Niewydane
 
+## 2.7.0 — 2026-11-20
+
 ### Nowy skill: prawo-pl-eureka — interpretacje podatkowe z bazy EUREKA (MF)
+
+Plugin zgłosił i napisał matt08 (PR #22); poprawki po recenzji są już w opisie niżej.
 
 - Nowy, dziewiąty plugin `prawo-pl-eureka` (silnik `eureka.py`, tylko biblioteka standardowa). Czyta bazę
   EUREKA Ministerstwa Finansów (eureka.mf.gov.pl): interpretacje indywidualne od 2007 r., interpretacje ogólne,
@@ -15,42 +19,55 @@
   - `kategorie` — słownik kategorii na żywo.
 - API EUREKA nie ma publicznej dokumentacji MF. Silnik korzysta z backendu strony (`/api/public/v1`), sprawdza
   kształt każdej odpowiedzi i przy niezgodności kończy się kodem 2. Kody wyjścia 0/1/2 jak w pozostałych
-  silnikach; HTTP 500 wyszukiwarki (zły filtr, głęboka strona) to kod 2, nie „brak wyników”.
+  silnikach; HTTP 500 wyszukiwarki (zły filtr, głęboka strona) to kod 2, nie „brak wyników”. Z `--json` uwagi
+  idą na stderr, stdout zostaje czystym JSON-em (jak w `cbosa.py`).
 - Status „Aktualna” w EUREKA nie wyklucza uchylenia: 0112-KDIL2-2.4011.893.2025.2.AA ma status „Aktualna”,
   a komentarz BIP mówi o uchyleniu wyrokiem WSA w Poznaniu (I SA/Po 763/26). `tresc` zaczyna taką informację
   od „!!! INFORMACJA PODWAŻONA”, podaje sygnaturę wyroku z zapytaniem `cbosa.py sygnatura`, dokument
   zmieniający (`INFORMACJA_ZMIENIAJACA`) i dokumenty, które wskazują ją jako zmienianą (wyszukiwanie odwrotne).
-  `--strict` blokuje informację uchyloną, zmienioną, wygaszoną, nieaktualną albo bez treści; „potwierdzona
-  prawomocnym wyrokiem” przechodzi. Listy wyników mają znacznik „!!!”.
+  Listy wyników mają znacznik „!!!”.
+- Stan prawny w `tresc` pochodzi z dwóch miejsc: z etykiet wyszukiwarki i z identyfikatorów w samym dokumencie
+  (komentarz BIP spoza dwóch neutralnych, status inny niż „Aktualna”). Gdy wyszukiwarka nie zwróci wiersza
+  metadanych dokumentu albo zwróci wiersz innego ID, wynik to kod 2 — silnik nie pokazuje treści bez stanu.
+- `--strict` w `tresc` blokuje informację uchyloną, zmienioną, wygaszoną, nieaktualną, bez treści albo bez
+  statusu (ani w wyszukiwarce, ani w dokumencie); „potwierdzona prawomocnym wyrokiem” przechodzi. Przechodzi
+  też komentarz „WIS nie wygasł 1 stycznia 2023 r. …” — w obu brzmieniach, w jakich zwraca go wyszukiwarka
+  („nie wygasł” i „nie wygasła”); ma go 1563 WIS ze statusem „Aktualna” (2026-11-19).
+- Sygnatury: filtr EUREKA dopasowuje fragment i rozróżnia wielkość liter, a sygnatury interpretacji JST mają
+  litery mieszane (`Fn-II-2.310.1.2026.AB` → 1 trafienie, `FN-II-2.310.1.2026.AB` → 0). `sygnatura` i `tresc`
+  pytają o zapis podany, zapis wielkimi literami i fragment bez liter, a wynik porównują bez rozróżniania
+  wielkości liter — także wtedy, gdy wcześniejsze zapytanie trafiło częściowo w inny dokument. Pole sygnatury
+  z kilkoma sygnaturami po średniku jest porównywane po każdej. Brak dokładnego trafienia to kod 1 tylko
+  wtedy, gdy jest zweryfikowany; kod 2 (nie „brak”), gdy trafień jest więcej niż pobrane 100 albo gdy sygnatura
+  z literami nie ma fragmentu bez liter z co najmniej 4 cyframi. `szukaj --sygnatura` przekazuje fragment bez
+  zmian — tam wielkość liter nadal ma znaczenie (`docs/znane-problemy.md`).
+- Kategorie: aliasy `zmiana-wis`, `uchylenie-wis`, `zmiana-wia`, `uchylenie-wia` i grupy `wis-wszystkie`,
+  `wia-wszystkie`; przy zerze wyników z filtrem kategorii silnik podpowiada `--kategoria wszystko`.
 - Daty z `/informacje/{ID}` są znacznikami UTC (`2026-03-08T23:00:00Z` = 9 marca w Polsce). Silnik przelicza
-  je na czas polski (CET/CEST, bez tzdata); obcięcie do daty przesuwało ją o dzień.
+  je na czas polski (CET/CEST, bez tzdata); obcięcie do daty przesuwałoby ją o dzień.
 - Przypisy z edytora Word (`<sup>[1]</sup><sup>)</sup>`) są oddawane jako „[1]”; zwykły indeks górny („m2”)
   zostaje bez nawiasów.
 - Wyszukiwarka zwraca najwyżej 10 000 pierwszych pozycji (`page × size ≥ 10 000` → HTTP 500). Silnik odrzuca
   takie zapytanie przed wysłaniem i każe zawęzić je datami.
 - Porównanie z urzędowym eksportem PDF tego samego dokumentu (`pdftotext -layout`): 33 dokumenty z lat 2008–2026: 26 interpretacji indywidualnych (co najmniej jedna z każdego okresu 2008, 2011–2012, 2014–2016, 2018, 2021–2026), 2 zmiany interpretacji, 2 interpretacje JST, interpretacja ogólna, objaśnienia podatkowe, WIS. Miara: odsetek słów treści z API, które występują w tej samej kolejności w tekście PDF (difflib). Minimum 99,95%, mediana 100%, średnia 99,99%. Nadmiar słów w PDF to metryka eksportu (nagłówki, stopki). Sygnatura i data wydania (po przeliczeniu UTC na czas polski) są w PDF w 33 z 33 przypadków. Eksport PDF nie odpowiedział w 120–400 s w 9 z 42 prób — te próbki pominięto, nie dobierano nowych.
-- Poprawki po recenzji (2026-11-18):
-  - sygnatura o mieszanej wielkości liter (sygnatury JST: `Fn-II-2.310.1.2026.AB`) podana inaczej niż w bazie
-    dawała kod 1 („zweryfikowany brak”), choć dokument istnieje — filtr `SYG` rozróżnia wielkość liter. Silnik
-    pyta teraz także o fragment bez liter i porównuje bez rozróżniania wielkości liter; przy dalszym braku
-    komunikat mówi, że wielkość liter ma znaczenie. Pole `SYG` z kilkoma sygnaturami po średniku jest
-    porównywane po każdej. Gdy trafień jest więcej niż pobrane 100, a dokładnego nie ma — kod 2, nie 1;
-  - fragment bez liter jest sprawdzany także wtedy, gdy zapis wielkimi literami trafił częściowo w inny
-    dokument (wcześniej silnik kończył na „brak dokładnej sygnatury” i pokazywał cudzy dokument). Sygnatura
-    z literami, która nie ma fragmentu bez liter z co najmniej 4 cyframi, przy zerze trafień daje kod 2
-    zamiast 1 — silnik nie ma jak zapytać niezależnie od wielkości liter, więc braku nie potwierdza;
-  - `tresc --strict` blokuje informację, dla której EUREKA nie podała statusu ani w wyszukiwarce, ani
-    w dokumencie (wcześniej przechodziła jako niepodważona);
-  - `tresc` bez wiersza metadanych z wyszukiwarki (albo z wierszem innego ID) pokazywała „status: ?” i „brak
-    wpisów o uchyleniu”, a `--strict` przepuszczał — teraz kod 2. Dodatkowo stan jest liczony z ID w samym
-    dokumencie (komentarz BIP spoza 53/62639, status ≠ 27);
-  - `sygnatura --json` z trafieniami częściowymi i `szukaj --aktualne --json` — uwagi idą na stderr, stdout
-    zostaje czystym JSON-em (jak w `cbosa.py`);
-  - aliasy `zmiana-wis`, `uchylenie-wis`, `zmiana-wia`, `uchylenie-wia` i grupy `wis-wszystkie`, `wia-wszystkie`;
-    przy zerze wyników z filtrem kategorii podpowiedź `--kategoria wszystko`;
-  - `SKILL.md`: „wiąże” zastąpione brzmieniem art. 14k § 1 („nie może szkodzić wnioskodawcy”);
-    `docs/instalacja-claude-desktop.html`: dziewięć skilli i odznaka `prawo-pl-eureka`.
-- Testy offline: `tools/test_eureka.py` (58 testów, także na Pythonie 3.8). README, `docs/znane-problemy.md`,
+- Ograniczenie tego pomiaru: eksport PDF pochodzi z tego samego systemu MF, więc potwierdza zamianę HTML na
+  tekst, a nie dane źródła. Próba porównania z załącznikami PDF starszych interpretacji nie dała niezależnego
+  źródła: w 6 z 6 pobranych dokumentów z lat 2007–2016 (ITPP1/443-28/07/AW, IBPBI/2/423-1176/08/PC,
+  IPPP1-443-1835/08-6/S/JF, ITPP1/443-790/12/IK, ILPB2/436-27/13-2/MK, IBPB-2-1/4515-165/15/MCZ) załącznik to
+  skan wniosku ORD-IN, a nie interpretacji (OCR `tesseract -l pol`, 300 dpi: nagłówek formularza w każdym,
+  sygnatury interpretacji w żadnym; wspólne słowa z treścią 6–53% — to stan faktyczny przepisany z wniosku).
+  Siódmy dokument (IPPP1/4512-1158/15-2/RK) nie miał załącznika PDF. Treści interpretacji nie porównano więc
+  z niezależnym źródłem urzędowym; punkt pozostaje w `docs/znane-problemy.md`. Dokumentacja skilla nie nazywa
+  już załączników „skanem interpretacji”.
+- Kontrola na żywym API (2026-11-19 i 2026-11-20): `tresc --strict` przepuszcza dokument bez komentarzy
+  (ID 718641), z komentarzem „potwierdzona prawomocnym wyrokiem” (640493, 367854) i WIS z komentarzem „nie
+  wygasł” (524854), blokuje uchylony wyrokiem (682533) i zmieniony przez Szefa KAS (669739);
+  `sygnatura FN-II-2.310.1.2026.AB` i `sygnatura fn-ii-2.310.1.2026.ab` zwracają dokument 715247,
+  a `sygnatura COP-13/31101/1360/GWA/26` — dokument 719482 z dwiema sygnaturami w polu. Ta kontrola wykryła
+  drugie brzmienie etykiety „WIS nie wygasł” — testy offline go nie zawierały.
+- `SKILL.md` opisuje ochronę z interpretacji brzmieniem art. 14k § 1 Ordynacji podatkowej („nie może szkodzić
+  wnioskodawcy”). `docs/instalacja-claude-desktop.html`: dziewięć skilli i odznaka `prawo-pl-eureka`.
+- Testy offline: `tools/test_eureka.py` (59 testów, także na Pythonie 3.8). README, `docs/znane-problemy.md`,
   walidator i oba katalogi marketplace uwzględniają nowy plugin.
 
 ## 2.6.0 — 2026-11-13

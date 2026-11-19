@@ -1,7 +1,7 @@
 {
   "name": "prawo-pl-eureka",
   "description": "Interpretacje podatkowe z bazy EUREKA Ministerstwa Finansów (eureka.mf.gov.pl): interpretacje indywidualne i ogólne wraz ze zmianami, interpretacje JST, objaśnienia podatkowe, WIS, WIA. Wyszukiwanie pełnotekstowe, po kategorii, dacie i sygnaturze; pełna treść ze stanem prawnym (uchylona wyrokiem / zmieniona / wygaszona). Read-only, bez klucza. Treść przepisów: prawo-pl-eli; wyroki WSA/NSA ze skarg na interpretacje: prawo-pl-cbosa.",
-  "version": "2.6.0",
+  "version": "2.7.0",
   "author": {
     "name": "Krzysztof Gibek",
     "url": "https://www.linkedin.com/in/kgibek/"

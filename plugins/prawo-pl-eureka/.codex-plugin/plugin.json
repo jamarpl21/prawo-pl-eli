@@ -1,6 +1,6 @@
 {
   "name": "prawo-pl-eureka",
-  "version": "2.6.0",
+  "version": "2.7.0",
   "description": "Interpretacje podatkowe z bazy EUREKA Ministerstwa Finansów: interpretacje indywidualne i ogólne, objaśnienia podatkowe, WIS, WIA. Wyszukiwanie i pełna treść ze stanem prawnym (uchylona / zmieniona). Read-only, bez klucza.",
   "author": {
     "name": "Krzysztof Gibek",
