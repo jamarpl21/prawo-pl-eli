@@ -56,7 +56,7 @@ Plugin zgłosił i napisał matt08 (PR #22); poprawki po recenzji są już w opi
   IPPP1-443-1835/08-6/S/JF, ITPP1/443-790/12/IK, ILPB2/436-27/13-2/MK, IBPB-2-1/4515-165/15/MCZ) załącznik to
   skan wniosku ORD-IN, a nie interpretacji (OCR `tesseract -l pol`, 300 dpi: nagłówek formularza w każdym,
   sygnatury interpretacji w żadnym; wspólne słowa z treścią 6–53% — to stan faktyczny przepisany z wniosku).
-  Siódmy dokument (IPPP1/4512-1158/15-2/RK) nie miał załącznika PDF. Treści interpretacji nie porównano więc
+  Siódmy dokument (IPPP1/4512-1158/15-2/RK) pominięto: nie miał załącznika PDF albo treści HTML. Treści interpretacji nie porównano więc
   z niezależnym źródłem urzędowym; punkt pozostaje w `docs/znane-problemy.md`. Dokumentacja skilla nie nazywa
   już załączników „skanem interpretacji”.
 - Kontrola na żywym API (2026-11-19 i 2026-11-20): `tresc --strict` przepuszcza dokument bez komentarzy
