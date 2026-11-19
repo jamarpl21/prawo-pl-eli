@@ -2,6 +2,51 @@
 
 ## Niewydane
 
+### Nowy skill: prawo-pl-eureka — interpretacje podatkowe z bazy EUREKA (MF)
+
+- Nowy, dziewiąty plugin `prawo-pl-eureka` (silnik `eureka.py`, tylko biblioteka standardowa). Czyta bazę
+  EUREKA Ministerstwa Finansów (eureka.mf.gov.pl): interpretacje indywidualne od 2007 r., interpretacje ogólne,
+  zmiany interpretacji, interpretacje JST, objaśnienia podatkowe, WIS, WIA, pisma i wytyczne MF. Komendy:
+  - `szukaj` — fraza (z odmianą słów), `--dokladnie`, `--kategoria` (aliasy; domyślnie wszystkie rodzaje
+    interpretacji), `--od/--do` (data wydania), `--sygnatura` (fragment), `--aktualne`, `--sort data|najstarsze|trafnosc`;
+  - `sygnatura` — dokładne dopasowanie, a przy braku trafienia częściowe;
+  - `tresc` — po ID albo sygnaturze: metadane z etykietami (organ, przepisy, słowa kluczowe), blok „Stan”,
+    pełna treść, `--fragment`, `--pdf` (urzędowy eksport);
+  - `kategorie` — słownik kategorii na żywo.
+- API EUREKA nie ma publicznej dokumentacji MF. Silnik korzysta z backendu strony (`/api/public/v1`), sprawdza
+  kształt każdej odpowiedzi i przy niezgodności kończy się kodem 2. Kody wyjścia 0/1/2 jak w pozostałych
+  silnikach; HTTP 500 wyszukiwarki (zły filtr, głęboka strona) to kod 2, nie „brak wyników”.
+- Status „Aktualna” w EUREKA nie wyklucza uchylenia: 0112-KDIL2-2.4011.893.2025.2.AA ma status „Aktualna”,
+  a komentarz BIP mówi o uchyleniu wyrokiem WSA w Poznaniu (I SA/Po 763/26). `tresc` zaczyna taką informację
+  od „!!! INFORMACJA PODWAŻONA”, podaje sygnaturę wyroku z zapytaniem `cbosa.py sygnatura`, dokument
+  zmieniający (`INFORMACJA_ZMIENIAJACA`) i dokumenty, które wskazują ją jako zmienianą (wyszukiwanie odwrotne).
+  `--strict` blokuje informację uchyloną, zmienioną, wygaszoną, nieaktualną albo bez treści; „potwierdzona
+  prawomocnym wyrokiem” przechodzi. Listy wyników mają znacznik „!!!”.
+- Daty z `/informacje/{ID}` są znacznikami UTC (`2026-03-08T23:00:00Z` = 9 marca w Polsce). Silnik przelicza
+  je na czas polski (CET/CEST, bez tzdata); obcięcie do daty przesuwało ją o dzień.
+- Przypisy z edytora Word (`<sup>[1]</sup><sup>)</sup>`) są oddawane jako „[1]”; zwykły indeks górny („m2”)
+  zostaje bez nawiasów.
+- Wyszukiwarka zwraca najwyżej 10 000 pierwszych pozycji (`page × size ≥ 10 000` → HTTP 500). Silnik odrzuca
+  takie zapytanie przed wysłaniem i każe zawęzić je datami.
+- Porównanie z urzędowym eksportem PDF tego samego dokumentu (`pdftotext -layout`): 33 dokumenty z lat 2008–2026: 26 interpretacji indywidualnych (co najmniej jedna z każdego okresu 2008, 2011–2012, 2014–2016, 2018, 2021–2026), 2 zmiany interpretacji, 2 interpretacje JST, interpretacja ogólna, objaśnienia podatkowe, WIS. Miara: odsetek słów treści z API, które występują w tej samej kolejności w tekście PDF (difflib). Minimum 99,95%, mediana 100%, średnia 99,99%. Nadmiar słów w PDF to metryka eksportu (nagłówki, stopki). Sygnatura i data wydania (po przeliczeniu UTC na czas polski) są w PDF w 33 z 33 przypadków. Eksport PDF nie odpowiedział w 120–400 s w 9 z 42 prób — te próbki pominięto, nie dobierano nowych.
+- Poprawki po recenzji (2026-11-18):
+  - sygnatura o mieszanej wielkości liter (sygnatury JST: `Fn-II-2.310.1.2026.AB`) podana inaczej niż w bazie
+    dawała kod 1 („zweryfikowany brak”), choć dokument istnieje — filtr `SYG` rozróżnia wielkość liter. Silnik
+    pyta teraz także o fragment bez liter i porównuje bez rozróżniania wielkości liter; przy dalszym braku
+    komunikat mówi, że wielkość liter ma znaczenie. Pole `SYG` z kilkoma sygnaturami po średniku jest
+    porównywane po każdej. Gdy trafień jest więcej niż pobrane 100, a dokładnego nie ma — kod 2, nie 1;
+  - `tresc` bez wiersza metadanych z wyszukiwarki (albo z wierszem innego ID) pokazywała „status: ?” i „brak
+    wpisów o uchyleniu”, a `--strict` przepuszczał — teraz kod 2. Dodatkowo stan jest liczony z ID w samym
+    dokumencie (komentarz BIP spoza 53/62639, status ≠ 27);
+  - `sygnatura --json` z trafieniami częściowymi i `szukaj --aktualne --json` — uwagi idą na stderr, stdout
+    zostaje czystym JSON-em (jak w `cbosa.py`);
+  - aliasy `zmiana-wis`, `uchylenie-wis`, `zmiana-wia`, `uchylenie-wia` i grupy `wis-wszystkie`, `wia-wszystkie`;
+    przy zerze wyników z filtrem kategorii podpowiedź `--kategoria wszystko`;
+  - `SKILL.md`: „wiąże” zastąpione brzmieniem art. 14k § 1 („nie może szkodzić wnioskodawcy”);
+    `docs/instalacja-claude-desktop.html`: dziewięć skilli i odznaka `prawo-pl-eureka`.
+- Testy offline: `tools/test_eureka.py` (52 testy, także na Pythonie 3.8). README, `docs/znane-problemy.md`,
+  walidator i oba katalogi marketplace uwzględniają nowy plugin.
+
 ## 2.6.0 — 2026-11-13
 
 ### ELI — tekst z PDF

@@ -1,4 +1,4 @@
-# gibek-skills: prawo polskie i unijne + orzecznictwo (8 skilli)
+# gibek-skills: prawo polskie i unijne + orzecznictwo + interpretacje podatkowe (9 skilli)
 
 [![CI](https://github.com/jamarpl21/prawo-pl-eli/actions/workflows/release.yml/badge.svg)](https://github.com/jamarpl21/prawo-pl-eli/actions/workflows/release.yml)
 [![Release](https://img.shields.io/github/v/release/jamarpl21/prawo-pl-eli)](https://github.com/jamarpl21/prawo-pl-eli/releases/latest)
@@ -11,7 +11,7 @@ Zmiany w kolejnych wydaniach: [CHANGELOG.md](CHANGELOG.md).
 **Prawo polskie i unijne oraz orzecznictwo z OFICJALNYCH źródeł — zamiast cytowania z pamięci.**
 *Cross-tool agent skills (Claude Code + OpenAI Codex): Polish primary law (Sejm ELI API), local law
 (voivodeship journals), EU law (CELLAR/EUR-Lex), Polish case-law (SAOS), administrative courts
-case-law (CBOSA), primary common-court judgments (MS), Polish DPA decisions (UODO) and the public contracts register of Polish public
+case-law (CBOSA), primary common-court judgments (MS), Polish DPA decisions (UODO), Polish tax rulings (EUREKA, Ministry of Finance) and the public contracts register of Polish public
 finance sector entities (Centralny Rejestr Umów).*
 
 **Modele.** Skille są optymalizowane i testowane pod modele **Claude Fable 5.1** i **Claude Opus 5.5** — przy wydaniu 2.2.0
@@ -19,7 +19,7 @@ oba przeszły ten sam zestaw 10 zadań z pułapkami (brzmienie przyszłe, sprost
 kolizje sygnatur, blokada sieci) z wynikiem 10/10: [docs/test-modeli-2026-10.md](docs/test-modeli-2026-10.md). Działają też
 z innymi agentami (OpenAI Codex), ale tam nie są w ten sposób testowane.
 
-Repo zawiera osiem bliźniaczych pluginów/skilli (wspólny marketplace `gibek-skills`, wersjonowane razem):
+Repo zawiera dziewięć bliźniaczych pluginów/skilli (wspólny marketplace `gibek-skills`, wersjonowane razem):
 
 | Plugin / skill | Źródło | Zakres |
 |---|---|---|
@@ -30,6 +30,7 @@ Repo zawiera osiem bliźniaczych pluginów/skilli (wspólny marketplace `gibek-s
 | **prawo-pl-orzeczenia-ms** | [Portal Orzeczeń MS](https://orzeczenia.ms.gov.pl) (HTML/RSS) | orzeczenia SA/SO/SR u źródła, metryka, pełna treść, PDF i RSS |
 | **prawo-pl-cbosa** | [CBOSA](https://orzeczenia.nsa.gov.pl) (brak API — scraping) | orzecznictwo sądów administracyjnych: NSA + 16 WSA |
 | **prawo-pl-uodo** | [API Portalu Orzeczeń UODO](https://orzeczenia.uodo.gov.pl/api-doc/) | decyzje Prezesa UODO (RODO): kary, upomnienia, nakazy |
+| **prawo-pl-eureka** | [EUREKA Ministerstwa Finansów](https://eureka.mf.gov.pl) (API strony, bez dokumentacji MF) | interpretacje podatkowe (indywidualne, ogólne, JST, zmiany), objaśnienia podatkowe, WIS, WIA |
 | **prawo-pl-rejestr-umow** | [API Centralnego Rejestru Umów](https://rejestrumow.gov.pl) | umowy jednostek sektora finansów publicznych (JSFP) od 1.07.2026 |
 
 ## prawo-pl-eli
@@ -188,6 +189,27 @@ daje zero).
 Komplet RODO: treść rozporządzenia → **prawo-eu-eurlex**, decyzje organu → **prawo-pl-uodo**,
 sądowa kontrola decyzji (WSA/NSA) → **prawo-pl-cbosa**.
 
+## prawo-pl-eureka
+
+**Interpretacje podatkowe** z bazy **EUREKA** Ministerstwa Finansów ([eureka.mf.gov.pl](https://eureka.mf.gov.pl),
+ponad 527 tys. interpretacji indywidualnych i ogólnych od 2007 r., bez klucza): interpretacje indywidualne Dyrektora KIS,
+interpretacje ogólne, zmiany interpretacji przez Szefa KAS, interpretacje JST, objaśnienia podatkowe, WIS i WIA.
+MF nie publikuje dokumentacji API — silnik korzysta z tego samego backendu co strona EUREKA i sprawdza kształt
+każdej odpowiedzi. Silnik `eureka.py` pozwala:
+
+- szukać pełnotekstowo (z odmianą polskich słów), po kategorii, dacie wydania i sygnaturze:
+  `szukaj "waluta wirtualna koszty" --kategoria indywidualna --od 2024-01-01`,
+- odszukać dokument po sygnaturze: `sygnatura 0115-KDIT1.4011.700.2026.1.MR`,
+- pobrać **pełną treść** z blokiem **„Stan”**: `tresc 718641 --fragment "art. 22"`, `tresc 718641 --pdf plik.pdf`.
+
+Status „Aktualna” w EUREKA nie oznacza, że interpretacja się ostała: interpretacja uchylona wyrokiem WSA bywa
+nadal „Aktualna”, a o uchyleniu mówi tylko komentarz BIP. `tresc` pokazuje komentarze, sygnaturę wyroku
+(z gotowym zapytaniem do **prawo-pl-cbosa**) i dokumenty zmieniające w obie strony, a `--strict` blokuje
+informację uchyloną, zmienioną, wygaszoną albo nieaktualną.
+
+Komplet podatkowy: treść przepisu → **prawo-pl-eli**, praktyka organu → **prawo-pl-eureka**,
+wyroki ze skarg na interpretacje → **prawo-pl-cbosa**, uchwały podatkowe gmin → **prawo-pl-edzienniki**.
+
 ## prawo-pl-rejestr-umow
 
 Szósty skill wychodzi poza przepisy i orzecznictwo — do **praktyki wydatkowej sektora publicznego**:
@@ -223,7 +245,7 @@ Wszystkie skille są w otwartym standardzie **[Agent Skills](https://agentskills
   pdftotext silnik sięga po tekst zastępczy z głośnym ostrzeżeniem albo odsyła do `--pdf`, a `--strict`
   takiego wyniku nie przepuszcza.
 - dostęp do internetu (`api.sejm.gov.pl`, hosty e-dzienników wojewódzkich, `publications.europa.eu`,
-  `www.saos.org.pl`, `orzeczenia.ms.gov.pl`, `orzeczenia.nsa.gov.pl`, `orzeczenia.uodo.gov.pl`, `rejestrumow.gov.pl`)
+  `www.saos.org.pl`, `orzeczenia.ms.gov.pl`, `orzeczenia.nsa.gov.pl`, `orzeczenia.uodo.gov.pl`, `eureka.mf.gov.pl`, `rejestrumow.gov.pl`)
 
 ## Instalacja
 
@@ -238,6 +260,7 @@ Wszystkie skille są w otwartym standardzie **[Agent Skills](https://agentskills
 /plugin install prawo-pl-orzeczenia-ms@gibek-skills
 /plugin install prawo-pl-cbosa@gibek-skills
 /plugin install prawo-pl-uodo@gibek-skills
+/plugin install prawo-pl-eureka@gibek-skills
 /plugin install prawo-pl-rejestr-umow@gibek-skills
 ```
 
@@ -276,6 +299,7 @@ codex plugin add prawo-pl-saos@gibek-skills
 codex plugin add prawo-pl-orzeczenia-ms@gibek-skills
 codex plugin add prawo-pl-cbosa@gibek-skills
 codex plugin add prawo-pl-uodo@gibek-skills
+codex plugin add prawo-pl-eureka@gibek-skills
 codex plugin add prawo-pl-rejestr-umow@gibek-skills
 ```
 
@@ -291,7 +315,7 @@ Sklonuj repo i podlinkuj sam katalog skilla (otwarty standard Agent Skills):
 
 ```bash
 git clone https://github.com/jamarpl21/prawo-pl-eli
-for s in prawo-pl-eli prawo-pl-edzienniki prawo-eu-eurlex prawo-pl-saos prawo-pl-cbosa prawo-pl-uodo prawo-pl-rejestr-umow prawo-pl-orzeczenia-ms; do
+for s in prawo-pl-eli prawo-pl-edzienniki prawo-eu-eurlex prawo-pl-saos prawo-pl-cbosa prawo-pl-uodo prawo-pl-eureka prawo-pl-rejestr-umow prawo-pl-orzeczenia-ms; do
   SKILL="$PWD/prawo-pl-eli/plugins/$s/skills/$s"
   ln -s "$SKILL" ~/.claude/skills/$s    # Claude Code
   ln -s "$SKILL" ~/.agents/skills/$s    # OpenAI Codex
@@ -302,7 +326,7 @@ done
 
 Każdy tag `v*` publikuje po jednym zipie na plugin w GitHub Releases
 (`<plugin>-v<wersja>.zip`, np. `prawo-pl-eli-v<wersja>.zip`, `prawo-pl-saos-v<wersja>.zip` — po jednym
-dla każdego z ośmiu pluginów):
+dla każdego z dziewięciu pluginów):
 
 ```bash
 claude --plugin-dir ./prawo-pl-saos-v2.6.0.zip
@@ -328,7 +352,7 @@ Dwie flagi globalne, w każdym silniku, działają przed komendą i po niej:
 - `--json` — surowa odpowiedź API / sparsowane dane do dalszego przetwarzania. Zero trafień i nierozpoznana
   odpowiedź kończą się komunikatem z kodem wyjścia ≠ 0 **także z `--json`** — pusty JSON wyglądałby jak
   „sprawdzone, nic nie ma", a to najgroźniejszy fałszywy negatyw w pracy prawnika.
-  **Kody wyjścia** (wspólne dla wszystkich ośmiu silników; siedem od 2.4.0, `cbosa.py` od 2.5.0):
+  **Kody wyjścia** (wspólne dla wszystkich dziewięciu silników; siedem od 2.4.0, `cbosa.py` od 2.5.0, `eureka.py` od początku):
   `0` — jest wynik; `1` — tylko ZWERYFIKOWANY brak (źródło odpowiedziało,
   zero trafień albo frazy nie ma w pełnej treści); `2` — wszystko inne: błąd sieci lub serwera, zły argument,
   nieistniejący dokument, blokada `--strict`, nieustalona aktualność. Skrypt może więc odróżnić „nie ma”
@@ -355,6 +379,9 @@ Dwie flagi globalne, w każdym silniku, działają przed komendą i po niej:
   - **SAOS:** zakres dat poza końcem zbioru SN (22.06.2016) / TK (9.12.2015) / KIO (6.09.2018) —
     granica potwierdzana na żywo; **CBOSA:** treść bez weryfikacji TLS, orzeczenie **nieprawomocne** lub
     bez potwierdzonej prawomocności; **UODO:** decyzja bez pełnej treści, decyzja **uchylona przez sąd**;
+  - **EUREKA:** informacja bez treści, **uchylona** wyrokiem, zmieniona, wygaszona, ze statusem innym niż
+    „Aktualna” albo wskazana jako zmieniana przez inny dokument (komentarz BIP, `INFORMACJA_ZMIENIAJACA`,
+    wyszukiwanie odwrotne);
   - **Portal Orzeczeń MS:** metryka, treść, przepisy lub PDF orzeczenia, którego prawomocności portal
     nie potwierdza;
   - **e-dzienniki:** pominięty lub niekompletny rocznik, tekst z text.html (tylko 1. strona), tekst
@@ -460,6 +487,19 @@ API stosuje jeden warunek filtrujący na zapytanie (fraza ALBO tytuł); zaawanso
 UCHYLONA PRZEZ SĄD" (zakres uchylenia — w sentencji wyroku: skill prawo-pl-cbosa); pole `inforce` API nie
 odzwierciedla uchyleń.
 
+### eureka.py (interpretacje podatkowe — EUREKA MF)
+
+| Komenda | Opis | Przykład |
+|---|---|---|
+| `szukaj` | pełnotekstowo (odmiana słów) / `--dokladnie` / po kategorii, dacie **wydania** (`--od/--do`), fragmencie sygnatury; sort: trafność, data | `szukaj "ulga na złe długi" --dokladnie --od 2024-01-01` |
+| `sygnatura` | dokument po sygnaturze (dokładnie, a gdy brak — trafienia częściowe) | `sygnatura 0115-KDIT1.4011.700.2026.1.MR` |
+| `tresc` | pełna treść po ID albo sygnaturze; blok **„Stan”** (komentarze BIP, wyrok → CBOSA, zmiany w obie strony); `--fragment`, `--pdf` | `tresc 682533 --fragment "pośrednictw"` |
+| `kategorie` | kategorie informacji z ID i aliasami do `--kategoria` | `kategorie` |
+
+Domyślna kategoria to `interpretacje` (indywidualne, ogólne, JST i ich zmiany); `--kategoria wszystko` zdejmuje
+filtr. Wyszukiwarka zwraca najwyżej 10 000 pierwszych pozycji (silnik mówi wprost, gdy zapytanie wychodzi poza
+okno). Daty są w czasie polskim (API dokumentu podaje UTC).
+
 ### rejestrumow.py (umowy sektora finansów publicznych)
 
 | Komenda | Opis | Przykład |
@@ -516,6 +556,14 @@ python3 scripts/uodo.py szukaj "art. 33"                                # → de
 python3 scripts/uodo.py decyzja <sygnatura> --fragment "art. 33"        # → argumentacja organu
 ```
 
+> „czy przy sprzedaży kryptowalut mogę odliczyć koszty z lat ubiegłych?"
+
+```bash
+python3 scripts/eureka.py szukaj "waluta wirtualna koszty" \
+        --kategoria indywidualna --sort data                             # → interpretacje z ID i znacznikiem „!!!”
+python3 scripts/eureka.py tresc <ID> --fragment "art. 22 ust. 14"        # → stanowisko organu + blok „Stan”
+```
+
 > „na co gmina wydaje ostatnio najwięcej i kto jest wykonawcą?"
 
 ```bash
@@ -527,14 +575,14 @@ python3 scripts/rejestrumow.py umowa <idUmowy>                          # → wy
 ## Struktura
 
 ```
-.claude-plugin/marketplace.json          # marketplace dla Claude Code (osiem pluginów)
+.claude-plugin/marketplace.json          # marketplace dla Claude Code (dziewięć pluginów)
 .agents/plugins/marketplace.json         # marketplace dla Codex (Claude czyta .claude-plugin/)
-plugins/<plugin>/                        # prawo-pl-eli | prawo-pl-edzienniki | prawo-eu-eurlex | prawo-pl-saos | prawo-pl-cbosa | prawo-pl-uodo | prawo-pl-rejestr-umow | prawo-pl-orzeczenia-ms
+plugins/<plugin>/                        # prawo-pl-eli | prawo-pl-edzienniki | prawo-eu-eurlex | prawo-pl-saos | prawo-pl-cbosa | prawo-pl-uodo | prawo-pl-eureka | prawo-pl-rejestr-umow | prawo-pl-orzeczenia-ms
 ├── .claude-plugin/plugin.json           # manifest pluginu — Claude
 ├── .codex-plugin/plugin.json            # manifest pluginu — Codex ("skills": "./skills/")
 └── skills/<plugin>/                      # Agent Skills — WSPÓLNE dla obu narzędzi
     ├── SKILL.md
-    ├── scripts/<silnik>.py               # eli.py | edzienniki.py | eurlex.py | saos.py | cbosa.py | uodo.py | rejestrumow.py | orzeczenia_ms.py
+    ├── scripts/<silnik>.py               # eli.py | edzienniki.py | eurlex.py | saos.py | cbosa.py | uodo.py | eureka.py | rejestrumow.py | orzeczenia_ms.py
     └── references/api.md                 # referencja endpointów źródła
 tools/validate.py                        # walidator manifestów wszystkich pluginów (używany w CI)
 tools/release_notes.py                   # opis wydania z CHANGELOG.md (brak wpisu blokuje wydanie)
@@ -575,7 +623,7 @@ Przed tagowaniem uzupełnij `CHANGELOG.md`: przenieś gotowe wpisy z sekcji `Nie
 `## X.Y.Z — RRRR-MM-DD`. Sprawdź ją poleceniem `python3 tools/release_notes.py vX.Y.Z`. W README
 podbij „obecnie X.Y.Z” (wyżej) i numer wersji w przykładzie paczki ZIP (sekcja „Instalacja”).
 GitHub Actions dołącza treść tej sekcji do opisu wydania i blokuje publikację, jeśli wpisu brakuje.
-Po publikacji sprawdź opis GitHub Release oraz dostępność wszystkich ośmiu paczek.
+Po publikacji sprawdź opis GitHub Release oraz dostępność wszystkich dziewięciu paczek.
 
 ## Audyt merytoryczny (sierpień 2026) i wydanie 2.0
 
@@ -642,12 +690,16 @@ raportu.
   zmiana układu stron może chwilowo zepsuć parsowanie. Baza ma charakter informacyjno-edukacyjny (anonimizacja).
 - **Portal orzeczeń UODO jest młody (2025)** — starsze decyzje pojawiają się sukcesywnie; brak decyzji
   w portalu ≠ jej nieistnienie. Sprawdzaj status (prawomocna/nieprawomocna).
+- **API EUREKA nie ma publicznej dokumentacji Ministerstwa Finansów** — to backend strony eureka.mf.gov.pl;
+  zmiana po stronie MF może chwilowo zepsuć skill (silnik kończy się wtedy kodem 2, nigdy „brakiem wyników”).
+  Status „Aktualna” nie wyklucza uchylenia interpretacji wyrokiem — czytaj blok „Stan”. Interpretacja
+  indywidualna chroni tylko wnioskodawcę.
 - **Centralny Rejestr Umów obejmuje tylko umowy zawarte od 1.07.2026** — wcześniejszych i poniżej
   ustawowego progu tam nie ma; dane wpisują ręcznie kierownicy JSFP (literówki, skróty nazw — szukaj
   po NIP/REGON), a brak umowy w rejestrze ≠ jej nieistnienie.
 - Projekt nieoficjalny; korzysta z publicznych API/stron Kancelarii Sejmu, urzędów wojewódzkich (e-dzienniki),
   Urzędu Publikacji UE, SAOS (ICM UW / Fundacja ePaństwo), NSA (CBOSA), UODO i Ministerstwa Finansów
-  (Centralny Rejestr Umów).
+  (Centralny Rejestr Umów, EUREKA).
 
 ## Licencja
 

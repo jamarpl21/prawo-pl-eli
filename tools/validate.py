@@ -21,6 +21,7 @@ PLUGINS = [  # (plugin, [engines]) — plugin może mieć kilka silników (np. e
     ("prawo-pl-orzeczenia-ms", ["orzeczenia_ms.py"]),
     ("prawo-pl-cbosa", ["cbosa.py"]),
     ("prawo-pl-uodo", ["uodo.py"]),
+    ("prawo-pl-eureka", ["eureka.py"]),
     ("prawo-pl-rejestr-umow", ["rejestrumow.py"]),
 ]
 errors = []
