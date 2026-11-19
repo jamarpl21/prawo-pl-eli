@@ -205,7 +205,7 @@ każdej odpowiedzi. Silnik `eureka.py` pozwala:
 Status „Aktualna” w EUREKA nie oznacza, że interpretacja się ostała: interpretacja uchylona wyrokiem WSA bywa
 nadal „Aktualna”, a o uchyleniu mówi tylko komentarz BIP. `tresc` pokazuje komentarze, sygnaturę wyroku
 (z gotowym zapytaniem do **prawo-pl-cbosa**) i dokumenty zmieniające w obie strony, a `--strict` blokuje
-informację uchyloną, zmienioną, wygaszoną albo nieaktualną.
+informację uchyloną, zmienioną, wygaszoną, nieaktualną albo bez statusu.
 
 Komplet podatkowy: treść przepisu → **prawo-pl-eli**, praktyka organu → **prawo-pl-eureka**,
 wyroki ze skarg na interpretacje → **prawo-pl-cbosa**, uchwały podatkowe gmin → **prawo-pl-edzienniki**.
@@ -491,8 +491,8 @@ odzwierciedla uchyleń.
 
 | Komenda | Opis | Przykład |
 |---|---|---|
-| `szukaj` | pełnotekstowo (odmiana słów) / `--dokladnie` / po kategorii, dacie **wydania** (`--od/--do`), fragmencie sygnatury; sort: trafność, data | `szukaj "ulga na złe długi" --dokladnie --od 2024-01-01` |
-| `sygnatura` | dokument po sygnaturze (dokładnie, a gdy brak — trafienia częściowe) | `sygnatura 0115-KDIT1.4011.700.2026.1.MR` |
+| `szukaj` | pełnotekstowo (odmiana słów) / `--dokladnie` / po kategorii, dacie **wydania** (`--od/--do`), fragmencie sygnatury (wielkość liter ma znaczenie); sort: trafność, data | `szukaj "ulga na złe długi" --dokladnie --od 2024-01-01` |
+| `sygnatura` | dokument po sygnaturze (dokładnie, bez rozróżniania wielkości liter; gdy brak — trafienia częściowe; braku niezweryfikowanego nie zgłasza jako kod 1) | `sygnatura 0115-KDIT1.4011.700.2026.1.MR` |
 | `tresc` | pełna treść po ID albo sygnaturze; blok **„Stan”** (komentarze BIP, wyrok → CBOSA, zmiany w obie strony); `--fragment`, `--pdf` | `tresc 682533 --fragment "pośrednictw"` |
 | `kategorie` | kategorie informacji z ID i aliasami do `--kategoria` | `kategorie` |
 

@@ -52,7 +52,7 @@ EUREKA="${CLAUDE_PLUGIN_ROOT}/skills/prawo-pl-eureka/scripts/eureka.py"
 #    sprawdzana w kodzie przed zapisem i przed każdym uruchomieniem; niezgodna = helper nie startuje.
 [ -f "$EUREKA" ] || EUREKA=$(python3 - <<'EOF'
 import hashlib, os, sys, urllib.request
-WERSJA, SHA256 = "2.6.0", "063e8fc0a645d4085b5e0c10512e2ea950a67ea6016b1d198e0ec699959d0b1f"
+WERSJA, SHA256 = "2.6.0", "92aa8e596481d4b9071497cd83ee0bbd02b3e2206430453307ed2bf6e478f5ff"
 URL = f"https://raw.githubusercontent.com/jamarpl21/prawo-pl-eli/v{WERSJA}/plugins/prawo-pl-eureka/skills/prawo-pl-eureka/scripts/eureka.py"
 p = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"prawo-pl-eureka-{WERSJA}", "eureka.py")
 try:
@@ -93,10 +93,12 @@ Nie szukaj helpera przez `find` po katalogach użytkownika ani systemu i nie pob
   to INNE dokumenty; z `--json` uwaga idzie na stderr, stdout zostaje czystym JSON-em):
   `python3 scripts/eureka.py sygnatura 0115-KDIT1.4011.700.2026.1.MR`
   Filtr EUREKA rozróżnia wielkość liter, a sygnatury JST mają litery mieszane (`Fn-II-2.310.1.2026.AB`).
-  Gdy sygnatura w podanej postaci i wielkimi literami nic nie daje, silnik pyta o fragment bez liter
-  i porównuje sygnatury bez rozróżniania wielkości liter. Pole sygnatury bywa listą kilku sygnatur
-  rozdzielonych średnikiem — każda jest porównywana osobno. Gdy trafień jest więcej niż 100, a dokładnej
-  sygnatury wśród nich nie ma, wynik to kod 2 (niezweryfikowane), nie „brak”.
+  Gdy sygnatura w podanej postaci i wielkimi literami nie daje dokładnego trafienia, silnik pyta
+  o fragment bez liter (także wtedy, gdy wcześniejsze zapytanie dało trafienia częściowe) i porównuje
+  sygnatury bez rozróżniania wielkości liter. Pole sygnatury bywa listą kilku sygnatur rozdzielonych
+  średnikiem — każda jest porównywana osobno. Kod 2 (niezweryfikowane), nie „brak”: gdy trafień jest
+  więcej niż 100, a dokładnej sygnatury wśród nich nie ma, oraz gdy sygnatura z literami nie ma
+  fragmentu bez liter z co najmniej 4 cyframi (nie da się zapytać niezależnie od wielkości liter).
 - **tresc** — metadane, **blok „Stan”** i pełna treść po ID albo sygnaturze:
   `python3 scripts/eureka.py tresc 718641`
   `python3 scripts/eureka.py tresc 0112-KDIL2-2.4011.893.2025.2.AA --fragment "pośrednictw"`
@@ -112,7 +114,8 @@ Nie szukaj helpera przez `find` po katalogach użytkownika ani systemu i nie pob
 - każda komenda przyjmuje `--json` oraz `--strict`; obie flagi działają przed komendą i po niej.
   **Kontrakt `--strict`:** w `tresc` kończy błędem (bez wyniku, także z `--json`) informację
   uchyloną, zmienioną, wygaszoną, ze statusem innym niż „Aktualna”, wskazaną jako zmieniana przez
-  inny dokument albo bez treści. „Potwierdzona prawomocnym wyrokiem” przechodzi. W `szukaj`,
+  inny dokument, bez treści albo bez statusu (ani w wyszukiwarce, ani w dokumencie). „Potwierdzona
+  prawomocnym wyrokiem” przechodzi. W `szukaj`,
   `sygnatura` i `kategorie` `--strict` nic nie zmienia (listy to metadane).
   **Kody wyjścia** (także z `--json`, komunikat na stderr): **0** = wynik; **1** = ZWERYFIKOWANY brak
   (zapytanie poprawne, zero trafień albo frazy `--fragment` nie ma w treści); **2** = wszystko inne —

@@ -328,6 +328,11 @@ def cmd_szukaj(a):
 
 
 LIMIT_SYGNATURY = 100
+PRZESZKODA_LIMIT = (f"zapytanie ma więcej niż {LIMIT_SYGNATURY} trafień, a dokładnej sygnatury nie było "
+                    "wśród pobranych")
+PRZESZKODA_LITERY = ("wyszukiwarka EUREKA rozróżnia wielkość liter, a sygnatura nie ma fragmentu bez liter "
+                     "(co najmniej 4 cyfry), którym dałoby się zapytać niezależnie od ich wielkości — "
+                     "sprawdzono tylko zapis podany i zapis wielkimi literami")
 
 
 def _sygnatury_rekordu(r):
@@ -345,31 +350,36 @@ def _fragment_bez_liter(syg):
 
 
 def _po_sygnaturze(syg):
-    """Dokładne trafienia sygnatury → (dokladne, czesciowe, kompletne).
+    """Dokładne trafienia sygnatury → (dokladne, czesciowe, przeszkoda).
 
     EUREKA dopasowuje FRAGMENT i rozróżnia wielkość liter: `Fn-II-2.310.1.2026.AB` → 1, `FN-II-…` → 0.
-    Kolejność: sygnatura jak podana, wielkimi literami, a przy zerze — fragment bez liter (wynik
-    porównywany po stronie silnika bez rozróżniania wielkości liter). `kompletne=False`, gdy któreś
-    zapytanie miało więcej trafień, niż pobrano — wtedy brak dokładnego trafienia NIE jest zweryfikowany."""
+    Kolejność: sygnatura jak podana, wielkimi literami, a gdy dokładnego trafienia nadal nie ma — fragment
+    bez liter (wynik porównywany po stronie silnika bez rozróżniania wielkości liter). Fragment jest
+    sprawdzany także wtedy, gdy wcześniejsze zapytanie dało trafienia częściowe: `FN.310.1.2026.PO1`
+    w bazie nie wyklucza, że jest w niej też `Fn.310.1.2026`.
+    `przeszkoda` mówi, dlaczego brak dokładnego trafienia NIE jest zweryfikowany: PRZESZKODA_LIMIT (któreś
+    zapytanie miało więcej trafień, niż pobrano), PRZESZKODA_LITERY (sygnatura ma litery, a nie ma
+    fragmentu bez liter, którym dałoby się zapytać niezależnie od ich wielkości); None = zweryfikowany."""
     syg = syg.strip()
     szukana = syg.lower()
-    czesciowe, kompletne = None, True
+    czesciowe, przeszkoda = None, None
     warianty = list(dict.fromkeys((syg, syg.upper())))
-    fragment = _fragment_bez_liter(syg) if re.search(r"[^\W\d_]", syg) else None
+    ma_litery = bool(re.search(r"[^\W\d_]", syg))
+    fragment = _fragment_bez_liter(syg) if ma_litery else None
     if fragment and fragment not in warianty:
         warianty.append(fragment)
-    for i, wariant in enumerate(warianty):
-        if i == len(warianty) - 1 and wariant == fragment and czesciowe:
-            break  # są już trafienia częściowe dla samej sygnatury — fragment nic nie doda
+    for wariant in warianty:
         d = _szukaj(_zapytanie({"SYG": wariant}), limit=LIMIT_SYGNATURY, sort="data")
         dokladne = [r for r in d["results"] if szukana in _sygnatury_rekordu(r)]
         if dokladne:
-            return dokladne, None, True
+            return dokladne, None, None
         if (d.get("totalHits") or 0) > len(d["results"]):
-            kompletne = False
+            przeszkoda = PRZESZKODA_LIMIT
         if d["results"] and wariant != fragment and czesciowe is None:
             czesciowe = d
-    return [], czesciowe, kompletne
+    if ma_litery and not fragment and przeszkoda is None:
+        przeszkoda = PRZESZKODA_LITERY
+    return [], czesciowe, przeszkoda
 
 
 def _uwaga(a, tekst):
@@ -377,11 +387,10 @@ def _uwaga(a, tekst):
     print(tekst, file=sys.stderr if a.json else sys.stdout)
 
 
-def _brak_sygnatury(syg, kompletne):
-    if not kompletne:
-        sys.exit(f"BŁĄD: nie udało się potwierdzić sygnatury „{syg}” — zapytanie ma więcej niż {LIMIT_SYGNATURY} "
-                 "trafień, a dokładnej sygnatury nie było wśród pobranych. To NIE jest brak wyników; "
-                 "podaj pełną sygnaturę albo szukaj: szukaj --sygnatura … --od/--do.")
+def _brak_sygnatury(syg, przeszkoda):
+    if przeszkoda:
+        sys.exit(f"BŁĄD: nie udało się potwierdzić sygnatury „{syg}” — {przeszkoda}. To NIE jest brak wyników; "
+                 "podaj pełną sygnaturę w zapisie z dokumentu albo szukaj: szukaj --sygnatura … --od/--do.")
     litery = (" Wielkość liter w sygnaturze ma znaczenie dla wyszukiwarki EUREKA; silnik sprawdził też "
               "fragment bez liter." if re.search(r"[^\W\d_]", syg) else "")
     return f"Brak sygnatury „{syg}” w EUREKA.{litery}\n{HEDGE_BRAK}"
@@ -389,16 +398,16 @@ def _brak_sygnatury(syg, kompletne):
 
 def cmd_sygnatura(a):
     a.limit, a.strona = LIMIT_SYGNATURY, 0
-    dokladne, czesciowe, kompletne = _po_sygnaturze(a.sygnatura)
+    dokladne, czesciowe, przeszkoda = _po_sygnaturze(a.sygnatura)
     if dokladne:
         _drukuj_liste({"results": dokladne, "totalHits": len(dokladne)}, a, f"sygnatura {a.sygnatura}")
         return
     if czesciowe:
         _uwaga(a, f"UWAGA: brak DOKŁADNEJ sygnatury „{a.sygnatura}” — niżej trafienia częściowe (INNE dokumenty)"
-                  + ("" if kompletne else f"; pokazano pierwsze {LIMIT_SYGNATURY}") + ".")
+                  + (f"; braku nie udało się potwierdzić: {przeszkoda}" if przeszkoda else "") + ".")
         _drukuj_liste(czesciowe, a, f"sygnatura zawiera „{a.sygnatura}”")
         return
-    raise BrakWynikow(_brak_sygnatury(a.sygnatura, kompletne))
+    raise BrakWynikow(_brak_sygnatury(a.sygnatura, przeszkoda))
 
 
 # --- treść -----------------------------------------------------------------------------------
@@ -491,7 +500,7 @@ def _rozwiaz_id(arg):
     arg = arg.strip()
     if arg.isdigit():
         return arg
-    dokladne, czesciowe, kompletne = _po_sygnaturze(arg)
+    dokladne, czesciowe, przeszkoda = _po_sygnaturze(arg)
     if len(dokladne) == 1:
         return str(dokladne[0].get("ID_INFORMACJI"))
     if len(dokladne) > 1:
@@ -500,7 +509,7 @@ def _rozwiaz_id(arg):
     if czesciowe:
         sys.exit(f"BŁĄD: brak DOKŁADNEJ sygnatury „{arg}” — trafienia częściowe (podaj ID):\n"
                  + "\n".join(_wiersz(r) for r in czesciowe["results"][:10]))
-    sys.exit("BŁĄD: " + _brak_sygnatury(arg, kompletne))
+    sys.exit("BŁĄD: " + _brak_sygnatury(arg, przeszkoda))
 
 
 def _metadane(id_):
@@ -580,6 +589,9 @@ def cmd_tresc(a):
     if a.strict:
         if not tekst:
             sys.exit(f"BLOKADA --strict: informacja {id_} nie ma treści w EUREKA (sprawdź PDF: --pdf).")
+        if not status and str(pola.get("STATUS_INFORMACJI") or "").strip() == "":
+            sys.exit(f"BLOKADA --strict: EUREKA nie podała statusu informacji {id_} ani w wyszukiwarce, ani "
+                     "w dokumencie — nie da się potwierdzić, że jest aktualna.")
         if podwazona:
             powod = "; ".join(x for x in (", ".join(zle), opis_bip,
                                           f"status: {', '.join(status)}" if nieaktualna else "",

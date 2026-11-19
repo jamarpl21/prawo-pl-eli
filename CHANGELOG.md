@@ -35,6 +35,12 @@
     pyta teraz także o fragment bez liter i porównuje bez rozróżniania wielkości liter; przy dalszym braku
     komunikat mówi, że wielkość liter ma znaczenie. Pole `SYG` z kilkoma sygnaturami po średniku jest
     porównywane po każdej. Gdy trafień jest więcej niż pobrane 100, a dokładnego nie ma — kod 2, nie 1;
+  - fragment bez liter jest sprawdzany także wtedy, gdy zapis wielkimi literami trafił częściowo w inny
+    dokument (wcześniej silnik kończył na „brak dokładnej sygnatury” i pokazywał cudzy dokument). Sygnatura
+    z literami, która nie ma fragmentu bez liter z co najmniej 4 cyframi, przy zerze trafień daje kod 2
+    zamiast 1 — silnik nie ma jak zapytać niezależnie od wielkości liter, więc braku nie potwierdza;
+  - `tresc --strict` blokuje informację, dla której EUREKA nie podała statusu ani w wyszukiwarce, ani
+    w dokumencie (wcześniej przechodziła jako niepodważona);
   - `tresc` bez wiersza metadanych z wyszukiwarki (albo z wierszem innego ID) pokazywała „status: ?” i „brak
     wpisów o uchyleniu”, a `--strict` przepuszczał — teraz kod 2. Dodatkowo stan jest liczony z ID w samym
     dokumencie (komentarz BIP spoza 53/62639, status ≠ 27);
@@ -44,7 +50,7 @@
     przy zerze wyników z filtrem kategorii podpowiedź `--kategoria wszystko`;
   - `SKILL.md`: „wiąże” zastąpione brzmieniem art. 14k § 1 („nie może szkodzić wnioskodawcy”);
     `docs/instalacja-claude-desktop.html`: dziewięć skilli i odznaka `prawo-pl-eureka`.
-- Testy offline: `tools/test_eureka.py` (52 testy, także na Pythonie 3.8). README, `docs/znane-problemy.md`,
+- Testy offline: `tools/test_eureka.py` (58 testów, także na Pythonie 3.8). README, `docs/znane-problemy.md`,
   walidator i oba katalogi marketplace uwzględniają nowy plugin.
 
 ## 2.6.0 — 2026-11-13

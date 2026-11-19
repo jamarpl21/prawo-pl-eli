@@ -260,8 +260,23 @@ class TestSygnatura(unittest.TestCase):
         self.assertIn("[718641]", out)
 
     def test_brak_sygnatury_kod_1(self):
-        kod, _, _ = run(["sygnatura", "NIE.MA.1"], _api_trzy())
+        kod, _, _ = run(["sygnatura", "NIE.MA.123.2026"], _api_trzy())
         self.assertEqual(kod, 1)
+
+    def test_same_cyfry_brak_kod_1(self):
+        kod, _, err = run(["sygnatura", "9999/99"], _api_trzy())
+        self.assertEqual(kod, 1)
+        self.assertNotIn("Wielkość liter", err)
+
+    def test_litery_bez_fragmentu_cyfr_to_nie_brak(self):
+        """Sygnatura z literami, bez fragmentu ≥4 cyfr: nie ma jak zapytać niezależnie od wielkości liter,
+        więc zero trafień NIE jest zweryfikowanym brakiem (kod 2, nie 1)."""
+        for argv in (["sygnatura", "NIE.MA.1"], ["tresc", "NIE.MA.1"]):
+            kod, out, err = run(argv, _api_trzy())
+            self.assertEqual(kod, 2, argv)
+            self.assertEqual(out, "")
+            self.assertIn("NIE jest brak", err)
+            self.assertIn("wielkość liter", err)
 
     def test_czesciowe_trafienia(self):
         api = _api_trzy()
@@ -313,6 +328,28 @@ class TestSygnaturaMieszaneLitery(unittest.TestCase):
         self.assertEqual(kod, 2)
         self.assertIn("NIE jest brak", err)
 
+    def test_fragment_sprawdzany_mimo_trafien_czesciowych(self):
+        """Zapis wielkimi literami trafia częściowo w INNY dokument — fragment bez liter i tak jest pytany."""
+        api = self._api()
+        inny = dict(META_CZYSTA, ID_INFORMACJI="900", SYG="FN-II-2.310.1.2026.AB.PO1")
+        api.pula = [inny, META_JST]
+        kod, out, _ = run(["sygnatura", "fn-ii-2.310.1.2026.ab"], api)
+        self.assertEqual(kod, 0)
+        self.assertIn("[715247] Fn-II-2.310.1.2026.AB", out)
+        self.assertNotIn("[900]", out)
+        self.assertNotIn("brak DOKŁADNEJ", out)
+
+    def test_czesciowe_i_niepelny_fragment_mowi_o_niepewnosci(self):
+        api = self._api()
+        api.pula = [dict(META_CZYSTA, ID_INFORMACJI="900", SYG="Qq-1.2026.1.2026.ZZ.PO1")]
+        api.total_syg = 500
+        kod, out, _ = run(["sygnatura", "Qq-1.2026.1.2026.ZZ"], api)
+        self.assertEqual(kod, 0)
+        self.assertIn("brak DOKŁADNEJ sygnatury", out)
+        self.assertIn("braku nie udało się potwierdzić", out)
+        kod, _, err = run(["tresc", "Qq-1.2026.1.2026.ZZ"], api)
+        self.assertEqual(kod, 2)
+
     def test_pole_z_dwiema_sygnaturami(self):
         kod, out, _ = run(["sygnatura", "COP-13/31101/1360/GWA/26"], self._api())
         self.assertEqual(kod, 0)
@@ -363,6 +400,26 @@ class TestMetadaneBrakWiersza(unittest.TestCase):
         self.assertTrue(out.startswith("!!! INFORMACJA PODWAŻONA"))
         kod, _, _ = run(["tresc", "682533", "--strict"], api)
         self.assertEqual(kod, 2)
+
+    def test_strict_blokuje_brak_statusu_w_obu_zrodlach(self):
+        api = _api_trzy()
+        api.meta["718641"] = {k: v for k, v in META_CZYSTA.items() if k != "STATUS_INFORMACJI"}
+        doc = copy.deepcopy(DOC_CZYSTA)
+        doc["dokument"]["fields"] = [f for f in doc["dokument"]["fields"] if f["key"] != "STATUS_INFORMACJI"]
+        api.docs["718641"] = doc
+        kod, out, _ = run(["tresc", "718641"], api)
+        self.assertEqual(kod, 0)
+        self.assertIn("status EUREKA: ?", out)
+        kod, out, err = run(["tresc", "718641", "--strict"], api)
+        self.assertEqual(kod, 2)
+        self.assertEqual(out, "")
+        self.assertIn("nie podała statusu", err)
+
+    def test_strict_status_tylko_w_dokumencie_przechodzi(self):
+        api = _api_trzy()
+        api.meta["718641"] = {k: v for k, v in META_CZYSTA.items() if k != "STATUS_INFORMACJI"}
+        kod, _, _ = run(["tresc", "718641", "--strict"], api)
+        self.assertEqual(kod, 0)
 
     def test_status_z_dokumentu_inny_niz_aktualna(self):
         api = _api_trzy()
