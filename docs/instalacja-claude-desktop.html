@@ -3,15 +3,16 @@
   :root {
     --paper: #F6F5F1;
     --ink: #24262C;
-    --muted: #6B6F79;
+    --muted: #666A74;
     --line: #DEDCD4;
     --card: #FFFFFF;
     --accent: #A93B4A;
     --accent-soft: #F3E4E6;
+    --on-accent: #FFFFFF;
     --code-bg: #26272E;
     --code-ink: #E9E7DF;
     --code-accent: #E9A0AC;
-    --ok: #3E7C4F;
+    --ok: #357048;
     --ok-soft: #E4EEE6;
     --bad: #A93B3B;
     --bad-soft: #F3E3E3;
@@ -26,6 +27,7 @@
       --card: #1F2127;
       --accent: #D97A88;
       --accent-soft: #3A272B;
+      --on-accent: #1B1114;
       --code-bg: #101115;
       --code-ink: #D9D7CF;
       --code-accent: #E9A0AC;
@@ -38,16 +40,16 @@
   }
   :root[data-theme="dark"] {
     --paper: #17181D; --ink: #E8E6E0; --muted: #9B9EA8; --line: #33353D;
-    --card: #1F2127; --accent: #D97A88; --accent-soft: #3A272B;
+    --card: #1F2127; --accent: #D97A88; --accent-soft: #3A272B; --on-accent: #1B1114;
     --code-bg: #101115; --code-ink: #D9D7CF; --code-accent: #E9A0AC;
     --ok: #7FB98E; --ok-soft: #22302A; --bad: #D98A8A; --bad-soft: #362426;
     --shadow: 0 1px 2px rgba(0,0,0,.3), 0 6px 24px rgba(0,0,0,.25);
   }
   :root[data-theme="light"] {
-    --paper: #F6F5F1; --ink: #24262C; --muted: #6B6F79; --line: #DEDCD4;
-    --card: #FFFFFF; --accent: #A93B4A; --accent-soft: #F3E4E6;
+    --paper: #F6F5F1; --ink: #24262C; --muted: #666A74; --line: #DEDCD4;
+    --card: #FFFFFF; --accent: #A93B4A; --accent-soft: #F3E4E6; --on-accent: #FFFFFF;
     --code-bg: #26272E; --code-ink: #E9E7DF; --code-accent: #E9A0AC;
-    --ok: #3E7C4F; --ok-soft: #E4EEE6; --bad: #A93B3B; --bad-soft: #F3E3E3;
+    --ok: #357048; --ok-soft: #E4EEE6; --bad: #A93B3B; --bad-soft: #F3E3E3;
     --shadow: 0 1px 2px rgba(30,30,40,.06), 0 6px 24px rgba(30,30,40,.07);
   }
 
@@ -123,7 +125,7 @@
     font-size: 13.5px; line-height: 1.65; margin: 14px 0;
   }
   pre code { background: none; color: inherit; padding: 0; font-size: inherit; }
-  pre .c { color: #8B8F9C; }
+  pre .c { color: #9195A1; }
   pre .a { color: var(--code-accent); }
 
   /* Faux-UI mockups */
@@ -166,7 +168,7 @@
   .toggle.on::after { left: auto; right: 3px; }
   .mock-btn {
     flex: none; display: inline-block; padding: 6px 14px; border-radius: 8px;
-    background: var(--accent); color: #fff; font-weight: 600; font-size: 13px;
+    background: var(--accent); color: var(--on-accent); font-weight: 600; font-size: 13px;
   }
   .mock-btn.ghost { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
   .mock-btn.done { background: var(--ok-soft); color: var(--ok); }
@@ -195,7 +197,8 @@
   }
   .note p { margin: 0 0 8px; } .note p:last-child { margin: 0; }
 
-  table { border-collapse: collapse; width: 100%; font-size: 14px; margin: 14px 0; }
+  /* color: inherit — plik otwarty bez doctype (tryb quirks) nie dziedziczy koloru tekstu w tabeli */
+  table { border-collapse: collapse; width: 100%; font-size: 14px; margin: 14px 0; color: inherit; }
   .tbl-wrap { overflow-x: auto; }
   th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
   th { font-size: 12px; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); font-weight: 600; }

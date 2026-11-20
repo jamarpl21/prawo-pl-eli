@@ -2,6 +2,16 @@
 
 ## Niewydane
 
+### Dokumentacja
+
+- `docs/instalacja-claude-desktop.html`: kontrast tekstu spełnia WCAG AA (4,5:1) w obu motywach. W ciemnym
+  motywie biały napis na przycisku „Install” miał 2,96:1 (teraz ciemny napis, 6,24:1), a tekst w tabeli
+  „Objaw / Przyczyna” zostawał ciemny na ciemnym tle (1,17:1; zmierzone przy pliku otwartym wprost, bez
+  doctype, z ciemnym motywem ustawionym atrybutem `data-theme`).
+  W jasnym motywie znacznik „✓ Installed” miał 4,21:1 (teraz 4,96:1); szary tekst pomocniczy i komentarze
+  w blokach kodu dostały zapas (4,61 → 4,96). Pomiar w przeglądarce: 157 węzłów tekstu, w obu motywach żaden
+  poniżej 4,5:1.
+
 ## 2.7.0 — 2026-11-20
 
 ### Nowy skill: prawo-pl-eureka — interpretacje podatkowe z bazy EUREKA (MF)
